@@ -31,6 +31,11 @@ const handleDislike = () => {
     emit('dislike', props.message.id)
   }
 }
+
+const isThinkingExpanded = ref(true)
+const toggleThinking = () => {
+  isThinkingExpanded.value = !isThinkingExpanded.value
+}
 </script>
 
 <template>
@@ -56,6 +61,42 @@ const handleDislike = () => {
           ? 'bg-[#8b5cf6]/15 border border-[#8b5cf6]/30 text-white rounded-tr-none'
           : 'bg-[#111827] border border-white/8 text-[#f3f4f6] rounded-tl-none'"
       >
+        <!-- Thinking Process Accordion -->
+        <div v-if="message.thinking || message.isThinking" class="mb-3 border border-white/10 rounded-xl bg-white/5 overflow-hidden">
+          <button 
+            @click="toggleThinking"
+            class="w-full flex items-center justify-between px-4 py-2.5 text-xs text-white/60 hover:text-white/90 hover:bg-white/5 transition-all focus:outline-none"
+          >
+            <div class="flex items-center gap-2">
+              <!-- Loading spinner or check icon -->
+              <svg v-if="message.isThinking" class="animate-spin h-3.5 w-3.5 text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <svg v-else class="h-3.5 w-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+              <span>{{ message.isThinking ? '思考中...' : '已完成思考' }}</span>
+            </div>
+            <!-- Chevron -->
+            <svg 
+              class="w-3.5 h-3.5 transition-transform duration-200" 
+              :class="{ 'rotate-180': isThinkingExpanded }"
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            >
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </button>
+          
+          <!-- Collapsible Content -->
+          <div 
+            v-show="isThinkingExpanded"
+            class="px-4 pb-3 pt-1 border-t border-white/5 text-xs text-white/50 whitespace-pre-wrap font-mono leading-relaxed max-h-[250px] overflow-y-auto"
+          >
+            {{ message.thinking || '正在整理思緒...' }}
+          </div>
+        </div>
+
         <!-- Renders content using markdown renderer for assistant -->
         <StreamRenderer v-if="message.role === 'assistant'" :content="message.content" />
         <div v-else class="white-space-pre-wrap text-sm leading-relaxed">{{ message.content }}</div>

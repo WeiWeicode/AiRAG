@@ -48,7 +48,7 @@ const paramsStore = useParamsStore()
         v-model.number="paramsStore.maxTokens" 
         type="range" 
         min="256" 
-        max="4096" 
+        max="12288" 
         step="128" 
         class="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#8b5cf6]"
       />

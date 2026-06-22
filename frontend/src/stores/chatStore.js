@@ -36,6 +36,18 @@ export const useChatStore = defineStore('chat', {
         console.error('Failed to delete history:', error)
       }
     },
+    clearMessages() {
+      this.messages = [
+        {
+          id: 'welcome',
+          role: 'assistant',
+          content: '您好！我是 AiRAG 內部測試助手。您可以向我提問，我將根據您在右側設定的知識庫及參數進行檢索，並生成回答。',
+          sources: null,
+          thinking: '',
+          isThinking: false
+        }
+      ]
+    },
     async sendQuestion(question) {
       const paramsStore = useParamsStore()
       const authStore = useAuthStore()
@@ -54,6 +66,8 @@ export const useChatStore = defineStore('chat', {
         role: 'assistant',
         content: '',
         sources: null,
+        thinking: '',
+        isThinking: false,
         created_at: new Date().toISOString()
       }
       this.messages.push(assistantMessage)
@@ -90,7 +104,8 @@ export const useChatStore = defineStore('chat', {
         const reader = response.body.getReader()
         const decoder = new TextDecoder('utf-8')
         let buffer = ''
-        let currentContent = ''
+        let rawContentAccumulator = ''
+        let reasoningAccumulator = ''
 
         while (true) {
           const { value, done } = await reader.read()
@@ -115,14 +130,51 @@ export const useChatStore = defineStore('chat', {
               try {
                 const data = JSON.parse(dataStr)
                 if (currentEvent === 'chunk') {
-                  if (data.type === 'content') {
-                    currentContent += data.content
-                    const msg = this.messages.find(m => m.id === assistantMessageId)
-                    if (msg) {
-                      msg.content = currentContent
-                    }
+                  if (data.type === 'reasoning') {
+                    reasoningAccumulator += data.content
+                  } else if (data.type === 'content') {
+                    rawContentAccumulator += data.content
                   } else if (data.type === 'done') {
                     // Completed
+                  }
+
+                  const msg = this.messages.find(m => m.id === assistantMessageId)
+                  if (msg) {
+                    let contentToShow = rawContentAccumulator
+                    let thinkingToShow = reasoningAccumulator
+                    let hasClosedThinkTag = false
+
+                    let thinkStartIdx = rawContentAccumulator.indexOf('<think>')
+                    let tagLength = 7
+                    let thinkEndIdx = -1
+                    let endTagLength = 8
+
+                    if (thinkStartIdx === -1) {
+                      // Try <thought> tag
+                      thinkStartIdx = rawContentAccumulator.indexOf('<thought>')
+                      if (thinkStartIdx !== -1) {
+                        tagLength = 9
+                        thinkEndIdx = rawContentAccumulator.indexOf('</thought>')
+                        endTagLength = 10
+                      }
+                    } else {
+                      thinkEndIdx = rawContentAccumulator.indexOf('</think>')
+                    }
+
+                    if (thinkStartIdx !== -1) {
+                      if (thinkEndIdx !== -1) {
+                        hasClosedThinkTag = true
+                        thinkingToShow = reasoningAccumulator + rawContentAccumulator.substring(thinkStartIdx + tagLength, thinkEndIdx)
+                        contentToShow = rawContentAccumulator.substring(0, thinkStartIdx) + rawContentAccumulator.substring(thinkEndIdx + endTagLength)
+                      } else {
+                        thinkingToShow = reasoningAccumulator + rawContentAccumulator.substring(thinkStartIdx + tagLength)
+                        contentToShow = rawContentAccumulator.substring(0, thinkStartIdx)
+                      }
+                    }
+
+                    msg.thinking = thinkingToShow.trim()
+                    msg.content = contentToShow
+                    msg.isThinking = (reasoningAccumulator.length > 0 && contentToShow.length === 0) || (thinkStartIdx !== -1 && !hasClosedThinkTag)
                   }
                 } else if (currentEvent === 'sources') {
                   const msg = this.messages.find(m => m.id === assistantMessageId)
@@ -144,6 +196,10 @@ export const useChatStore = defineStore('chat', {
         }
       } finally {
         this.isLoading = false
+        const msg = this.messages.find(m => m.id === assistantMessageId)
+        if (msg) {
+          msg.isThinking = false
+        }
       }
     }
   }

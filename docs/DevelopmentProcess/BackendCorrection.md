@@ -1,5 +1,32 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-22 支援 vLLM 思考模式/推理解析
+
+### 修改內容
+1. `backend/routers/rag.py`:
+   - 調整 `rag_chat_stream` 產生器，在提取 `choices[0].delta` 時，支援從 `reasoning_content`、`thought` 或 `reasoning` 多個欄位提取思考區塊，確保對不同 vLLM 版本或推論引擎具有最大相容性。
+   - 若有思考區塊，會以符合 SSE 協議之 `event: chunk` 流式推送 `type: 'reasoning'` 的 JSON 片段給前端，讓前端能夠獨立呈現思考過程。
+
+## 2026-06-22 實現 RAG 串接真實 vLLM 推論與 Qdrant 檢索服務
+
+### 修改內容
+1. `backend/routers/rag.py`:
+   - 移除原有的模擬對話產生器 (`mock_chat_stream`)，改用真實的對話流 `rag_chat_stream`。
+   - 整合 `EmbeddingService` 提問向量化與 `QdrantService.search_similar` 向量檢索：如果請求包含 `knowledge_base_id` 則自動從對應 Collection 檢索相似文檔區塊 (Chunks) 並整合成 Context。
+   - 串接 `LLMService.chat_completion(..., stream=True)`：將組裝好的 Prompt (含 Context) 與聊天歷史併同呼叫外部 vLLM 服務（`.env` 指定的 `10.10.130.45:8080/v1`），實現即時串流生成回答。
+   - 以符合 SSE 協議之 `event: chunk` 與 `event: sources` 流式推送字元片段及參考來源引用給前端。
+
+## 2026-06-22 實現 RAG 對話串流模擬 (Mock SSE Stream)
+
+
+### 修改內容
+1. `backend/routers/rag.py`:
+   - 定義 `ChatRequest`、`ChatHistoryItem`、`ChatParams` 等 Pydantic Schema，符合 `/api/rag/chat` 的請求規格。
+   - 實作符合 Server-Sent Events (SSE) 規格之 `mock_chat_stream` 產生器，能根據使用者問題（例如含有「分機」時回傳 Markdown 團隊分機表，其他則回傳參數摘要與問候）提供模擬的回答與參考文檔引用 (Sources)。
+   - 回傳 `StreamingResponse` 搭配 `text/event-stream` 格式，讓前端 `chatStore` 可正確以串流形式接收並渲染，提供高保真的 RAG 端到端介面測試。
+   - 新增 `DELETE /history/{session_id}` 模擬路由以符合刪除歷史對話 API 合約。
+
+
 ## 2026-06-22 實現資料庫初始化引導種植 (Database Seeding)
 
 ### 修改內容

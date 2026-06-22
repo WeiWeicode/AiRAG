@@ -61,10 +61,33 @@ watch(() => chatStore.messages, () => {
 onMounted(() => {
   scrollToBottom()
 })
+
+const handleNewChat = () => {
+  chatStore.clearMessages()
+}
 </script>
 
 <template>
   <div class="flex-grow flex flex-col bg-[#111827]/40 border border-white/8 rounded-2xl overflow-hidden relative">
+    <!-- Chat Header -->
+    <div class="px-6 py-4 border-b border-white/8 bg-[#111827]/60 flex items-center justify-between flex-shrink-0">
+      <div class="flex items-center gap-2">
+        <span class="w-2.5 h-2.5 rounded-full bg-[#8b5cf6] animate-pulse"></span>
+        <span class="text-sm font-medium text-white/80">對話視窗</span>
+      </div>
+      <button 
+        @click="handleNewChat"
+        :disabled="chatStore.isLoading"
+        class="flex items-center gap-1.5 px-3 py-1.5 bg-[#8b5cf6]/10 hover:bg-[#8b5cf6]/20 disabled:opacity-50 disabled:cursor-not-allowed border border-[#8b5cf6]/30 text-[#a78bfa] text-xs font-semibold rounded-lg transition-all"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+        <span>新對話</span>
+      </button>
+    </div>
+
     <!-- Messages Box -->
     <div 
       ref="messageContainer"
