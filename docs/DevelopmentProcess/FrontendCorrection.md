@@ -1,5 +1,19 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-22 實作 Qdrant 分類標籤寫入、篩選參數面板及檢索結果呈現
+
+### 修改內容
+1. `frontend/src/views/EmbeddingTestView.vue`:
+   - 新增 `tagsString` 狀態。
+   - 於文本編輯區下方新增玻璃擬物化「分類標籤」輸入框，支援英文逗號分隔多個標籤。
+   - 於 `triggerVectorization` 寫入時，將逗號分隔字串切分為陣列，並填入 chunk 的 `metadata.tags` 中。
+2. `frontend/src/stores/paramsStore.js` & `chatStore.js`:
+   - 於檢索參數 store 新增全域狀態 `filterTagsString`。
+   - 於 `sendQuestion` 時，將篩選標籤字串切割為陣列並加入 `filter_tags` 參數傳遞給後端。
+3. `frontend/src/components/params/RagParamsPanel.vue` & `views/RetrievalTestView.vue`:
+   - 於對話設定邊欄及向量檢索頁面邊欄中，新增「標籤過濾篩選 (Filter Tags)」輸入框。
+   - 於 `RetrievalTestView.vue` 搜尋結果呈現列表中，將回傳之段落標籤渲染成精緻的小標籤氣泡 (Tag Badges)。
+
 ## 2026-06-22 新增「檔案名稱」輸入欄位以解決向量化檔案名稱為 unknown 問題
 
 ### 修改內容

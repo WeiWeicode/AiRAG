@@ -28,6 +28,10 @@ const handleSearch = async () => {
   transformedQuery.value = ''
   
   try {
+    const parsedFilterTags = paramsStore.filterTagsString.split(',')
+      .map(t => t.trim())
+      .filter(t => t.length > 0)
+
     const payload = {
       query: queryText.value.trim(),
       knowledge_base_id: paramsStore.knowledgeBaseId,
@@ -35,7 +39,8 @@ const handleSearch = async () => {
         top_k: paramsStore.topK,
         score_threshold: paramsStore.scoreThreshold,
         search_type: searchType.value,
-        hnsw_ef_search: hnswEfSearch.value
+        hnsw_ef_search: hnswEfSearch.value,
+        filter_tags: parsedFilterTags.length > 0 ? parsedFilterTags : undefined
       }
     }
     const response = await retrievalService.search(payload)
@@ -167,9 +172,18 @@ const handleTransform = async (strategy) => {
             class="bg-white/2 border border-white/8 rounded-xl p-4 hover:border-white/16 hover:bg-white/4 transition-all"
           >
             <div class="flex justify-between items-center gap-4 mb-3 border-b border-white/5 pb-2">
-              <span class="text-xs font-semibold text-white truncate">
-                [{{ res.metadata?.filename || '未知檔案' }}] P.{{ res.metadata?.page || '?' }} 
-                <span class="text-[#6b7280] ml-2">段落索引: #{{ res.metadata?.chunk_index || idx }}</span>
+              <span class="text-xs font-semibold text-white truncate flex items-center gap-2">
+                <span>[{{ res.metadata?.filename || '未知檔案' }}] P.{{ res.metadata?.page || '?' }}</span>
+                <span class="text-[#6b7280]">段落索引: #{{ res.metadata?.chunk_index || idx }}</span>
+                <span v-if="res.metadata?.tags?.length" class="flex gap-1">
+                  <span 
+                    v-for="t in res.metadata.tags" 
+                    :key="t"
+                    class="bg-[#8b5cf6]/10 border border-[#8b5cf6]/20 text-[#a78bfa] px-1.5 py-0.5 rounded text-[9px]"
+                  >
+                    {{ t }}
+                  </span>
+                </span>
               </span>
               <div class="flex gap-2">
                 <span class="bg-[#10b981]/15 text-[#10b981] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
@@ -226,6 +240,17 @@ const handleTransform = async (strategy) => {
             max="1" 
             step="0.05" 
             class="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#8b5cf6]"
+          />
+        </div>
+
+        <!-- Tags Filter -->
+        <div class="flex flex-col gap-2">
+          <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">標籤過濾篩選 (Filter Tags)</label>
+          <input 
+            v-model="paramsStore.filterTagsString" 
+            type="text" 
+            class="bg-white/5 border border-white/8 rounded-lg text-white px-3 py-2 text-xs focus:outline-none focus:border-[#8b5cf6] transition-all"
+            placeholder="輸入篩選標籤，以英文逗號分隔"
           />
         </div>
 

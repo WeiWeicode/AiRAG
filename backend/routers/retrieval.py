@@ -46,7 +46,8 @@ async def search(request: RetrievalRequest):
             collection_name=kb.qdrant_collection_name,
             query_vector=query_vector,
             top_k=request.params.top_k,
-            score_threshold=request.params.score_threshold
+            score_threshold=request.params.score_threshold,
+            filter_tags=request.params.filter_tags
         )
         
         # 3. 包裝為回應格式
@@ -61,7 +62,8 @@ async def search(request: RetrievalRequest):
                         filename=meta.get("filename"),
                         page=meta.get("page"),
                         section=meta.get("section"),
-                        chunk_index=meta.get("chunk_index")
+                        chunk_index=meta.get("chunk_index"),
+                        tags=meta.get("tags", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)
@@ -132,7 +134,8 @@ async def query_transform(request: QueryTransformRequest):
                         filename=meta.get("filename"),
                         page=meta.get("page"),
                         section=meta.get("section"),
-                        chunk_index=meta.get("chunk_index")
+                        chunk_index=meta.get("chunk_index"),
+                        tags=meta.get("tags", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)

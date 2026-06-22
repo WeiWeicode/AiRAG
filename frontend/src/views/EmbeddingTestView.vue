@@ -12,6 +12,7 @@ const paramsStore = useParamsStore()
 // State
 const uploadedFileId = ref('')
 const filename = ref('unknown')
+const tagsString = ref('')
 const rawTextContent = ref('')
 const isChunking = ref(false)
 const chunksList = ref([])
@@ -67,13 +68,18 @@ const triggerVectorization = async () => {
   vectorizationStats.value = null
   
   try {
+    const parsedTags = tagsString.value.split(',')
+      .map(t => t.trim())
+      .filter(t => t.length > 0)
+
     const payload = {
       chunks: chunksList.value.map(c => ({ 
         index: c.index, 
         content: c.content, 
         metadata: { 
           filename: filename.value || 'unknown',
-          source: uploadedFileId.value ? 'upload' : 'manual'
+          source: uploadedFileId.value ? 'upload' : 'manual',
+          tags: parsedTags
         } 
       })),
       knowledge_base_id: paramsStore.knowledgeBaseId,
@@ -125,6 +131,21 @@ const triggerVectorization = async () => {
             type="text" 
             class="flex-grow bg-transparent text-white text-xs outline-none"
             placeholder="請輸入檔案名稱 (例如: doc_01.txt)"
+          />
+        </div>
+
+        <!-- Tags Input -->
+        <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded-lg px-3 py-1.5 focus-within:border-[#8b5cf6] transition-all">
+          <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path>
+            <line x1="7" y1="7" x2="7.01" y2="7"></line>
+          </svg>
+          <span class="text-xs text-[#9ca3af] select-none whitespace-nowrap">分類標籤:</span>
+          <input 
+            v-model="tagsString"
+            type="text" 
+            class="flex-grow bg-transparent text-white text-xs outline-none"
+            placeholder="請輸入標籤，以英文逗號分隔 (例如: HR, 請假規定, 2026)"
           />
         </div>
 

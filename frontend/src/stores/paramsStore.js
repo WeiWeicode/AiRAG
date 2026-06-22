@@ -8,6 +8,7 @@ export const useParamsStore = defineStore('params', {
     scoreThreshold: 0.70,
     searchMode: 'vector',
     hnswEfSearch: 64,
+    filterTagsString: '',
 
     // Generation parameters
     model: 'Qwen3.6-35B-A3B-FP8',

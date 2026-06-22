@@ -1,5 +1,21 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-22 新增 Qdrant 標籤 (Tags) 寫入與過濾功能
+
+### 修改內容
+1. `backend/services/qdrant_service.py`:
+   - 擴充 `search_similar` 方法，新增 `filter_tags` 參數。若有指定標籤篩選，則動態構建 Qdrant 的 `models.Filter(must=[FieldCondition(key="tags", match=MatchAny(any=filter_tags))])` 篩選條件，實現高效 Pre-filtering。
+   - 在搜尋回傳的 metadata 中加入 `tags` 欄位。
+2. `backend/schemas/retrieval.py`:
+   - 於 `SearchParams` 中新增 `filter_tags: Optional[List[str]]`。
+   - 於 `RetrievalMetadata` 中新增 `tags: Optional[List[str]]`。
+3. `backend/routers/retrieval.py`:
+   - 在 `/search` 與 `/query-transform` 路由中，將 `filter_tags` 傳入 `search_similar`，並將回傳的標籤對應至回應。
+4. `backend/routers/rag.py`:
+   - 於 `ChatParams` 中新增 `filter_tags: Optional[List[str]]`，並在 RAG 串流中傳入相似度檢索，並隨 `sources` 回傳給前端。
+5. `backend/routers/embedding.py`:
+   - 修正向量化寫入時遺漏標籤之 Bug：在將 Chunks payload 寫入 Qdrant 以前，顯式自 `chunk.metadata` 提取 `tags` 寫入 Qdrant 的 payload。
+
 ## 2026-06-22 支援 vLLM 思考模式/推理解析
 
 ### 修改內容

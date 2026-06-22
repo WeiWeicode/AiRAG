@@ -6,6 +6,7 @@ class SearchParams(BaseModel):
     score_threshold: float = Field(default=0.4)
     search_type: str = Field(default="vector")  # "vector" or "hybrid"
     hnsw_ef_search: int = Field(default=128)
+    filter_tags: Optional[List[str]] = Field(default=None)
 
 class RetrievalRequest(BaseModel):
     query: str
@@ -17,6 +18,7 @@ class RetrievalMetadata(BaseModel):
     page: Optional[int] = 1
     section: Optional[str] = ""
     chunk_index: Optional[int] = None
+    tags: Optional[List[str]] = Field(default_factory=list)
 
 class RetrievalResultItem(BaseModel):
     chunk_id: str

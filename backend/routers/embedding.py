@@ -124,6 +124,7 @@ async def vectorize_chunks(request: VectorizeRequest):
                 "token_count": ChunkingService.estimate_tokens(chunk.content),
                 "char_count": len(chunk.content),
                 "source": chunk.metadata.get("source", "upload"),
+                "tags": chunk.metadata.get("tags", []),
                 "created_at": datetime.utcnow().isoformat()
             })
             

@@ -75,6 +75,10 @@ export const useChatStore = defineStore('chat', {
       this.isLoading = true
       
       try {
+        const parsedFilterTags = paramsStore.filterTagsString.split(',')
+          .map(t => t.trim())
+          .filter(t => t.length > 0)
+
         const payload = {
           question,
           knowledge_base_id: paramsStore.knowledgeBaseId,
@@ -84,7 +88,8 @@ export const useChatStore = defineStore('chat', {
             temperature: paramsStore.temperature,
             max_tokens: paramsStore.maxTokens,
             top_k: paramsStore.topK,
-            score_threshold: paramsStore.scoreThreshold
+            score_threshold: paramsStore.scoreThreshold,
+            filter_tags: parsedFilterTags.length > 0 ? parsedFilterTags : undefined
           }
         }
 

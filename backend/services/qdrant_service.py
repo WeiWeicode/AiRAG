@@ -100,7 +100,8 @@ class QdrantService:
         collection_name: str, 
         query_vector: List[float], 
         top_k: int = 5, 
-        score_threshold: float = 0.7
+        score_threshold: float = 0.7,
+        filter_tags: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
         依據向量相似度檢索資料塊。
@@ -112,11 +113,23 @@ class QdrantService:
                 logger.warning(f"Collection '{collection_name}' does not exist.")
                 return []
             
+            query_filter = None
+            if filter_tags:
+                query_filter = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="tags",
+                            match=models.MatchAny(any=filter_tags)
+                        )
+                    ]
+                )
+            
             response = await client.query_points(
                 collection_name=collection_name,
                 query=query_vector,
                 limit=top_k,
-                score_threshold=score_threshold
+                score_threshold=score_threshold,
+                query_filter=query_filter
             )
             results = response.points
             
@@ -129,7 +142,8 @@ class QdrantService:
                         "filename": res.payload.get("filename"),
                         "page": res.payload.get("page"),
                         "section": res.payload.get("section"),
-                        "chunk_index": res.payload.get("chunk_index")
+                        "chunk_index": res.payload.get("chunk_index"),
+                        "tags": res.payload.get("tags", [])
                     },
                     "score": res.score,
                     "distance": 1.0 - res.score

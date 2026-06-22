@@ -25,6 +25,7 @@ class ChatParams(BaseModel):
     max_tokens: Optional[int] = None
     top_k: Optional[int] = None
     score_threshold: Optional[float] = None
+    filter_tags: Optional[List[str]] = None
 
 class ChatRequest(BaseModel):
     question: str
@@ -40,6 +41,7 @@ async def rag_chat_stream(request: ChatRequest):
     top_k = 13
     score_threshold = 0.65
     max_tokens = 1024
+    filter_tags = None
     
     if request.params:
         if request.params.temperature is not None:
@@ -50,6 +52,8 @@ async def rag_chat_stream(request: ChatRequest):
             score_threshold = request.params.score_threshold
         if request.params.max_tokens is not None:
             max_tokens = request.params.max_tokens
+        if request.params.filter_tags is not None:
+            filter_tags = request.params.filter_tags
 
     sources = []
     context_str = ""
@@ -68,7 +72,8 @@ async def rag_chat_stream(request: ChatRequest):
                         collection_name=kb.qdrant_collection_name,
                         query_vector=query_vector,
                         top_k=top_k,
-                        score_threshold=score_threshold
+                        score_threshold=score_threshold,
+                        filter_tags=filter_tags
                     )
                     
                     # 整理 Chunks 為 Context
@@ -82,7 +87,8 @@ async def rag_chat_stream(request: ChatRequest):
                                 "filename": meta.get("filename"),
                                 "page": meta.get("page"),
                                 "section": meta.get("section"),
-                                "chunk_index": meta.get("chunk_index")
+                                "chunk_index": meta.get("chunk_index"),
+                                "tags": meta.get("tags", [])
                             },
                             "score": item.get("score", 0.0)
                         })
