@@ -11,6 +11,7 @@ const paramsStore = useParamsStore()
 
 // State
 const uploadedFileId = ref('')
+const filename = ref('unknown')
 const rawTextContent = ref('')
 const isChunking = ref(false)
 const chunksList = ref([])
@@ -21,6 +22,9 @@ const vectorizationStats = ref(null)
 const handleUploadSuccess = (data) => {
   uploadedFileId.value = data.file_id || 'file_uploaded_id'
   rawTextContent.value = data.content || ''
+  if (data.filename) {
+    filename.value = data.filename
+  }
 }
 
 const triggerChunking = async () => {
@@ -64,7 +68,14 @@ const triggerVectorization = async () => {
   
   try {
     const payload = {
-      chunks: chunksList.value.map(c => ({ index: c.index, content: c.content, metadata: {} })),
+      chunks: chunksList.value.map(c => ({ 
+        index: c.index, 
+        content: c.content, 
+        metadata: { 
+          filename: filename.value || 'unknown',
+          source: uploadedFileId.value ? 'upload' : 'manual'
+        } 
+      })),
       knowledge_base_id: paramsStore.knowledgeBaseId,
       embedding_model: 'Qwen3-Embedding-8B-Q8_0.gguf'
     }
@@ -102,6 +113,21 @@ const triggerVectorization = async () => {
           <TokenCounter :text="rawTextContent" />
         </div>
         
+        <!-- Filename Input -->
+        <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded-lg px-3 py-1.5 focus-within:border-[#8b5cf6] transition-all">
+          <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+          </svg>
+          <span class="text-xs text-[#9ca3af] select-none whitespace-nowrap">檔案名稱:</span>
+          <input 
+            v-model="filename"
+            type="text" 
+            class="flex-grow bg-transparent text-white text-xs outline-none"
+            placeholder="請輸入檔案名稱 (例如: doc_01.txt)"
+          />
+        </div>
+
         <textarea 
           v-model="rawTextContent"
           rows="8"

@@ -1,5 +1,14 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-22 新增「檔案名稱」輸入欄位以解決向量化檔案名稱為 unknown 問題
+
+### 修改內容
+1. `frontend/src/views/EmbeddingTestView.vue`:
+   - 新增 `filename` reactive 狀態變數，預設值為 `'unknown'`。
+   - 上傳檔案成功後（`handleUploadSuccess`），自動提取並填入檔案的真實檔名。
+   - 在編輯文本區域上方，新增具 premium 玻璃擬物風格的「檔案名稱」輸入欄位，使用者可即時檢視或任意修改。
+   - 於 `triggerVectorization` 組裝 payload 時，將 `filename` 帶入各 chunk 的 `metadata` 屬性中發送給後端。
+
 ## 2026-06-22 新增「新對話」按鈕以清空對話紀錄
 
 ### 修改內容
