@@ -1,0 +1,40 @@
+import os
+from dotenv import load_dotenv
+
+# 載入 .env 檔案
+load_dotenv()
+
+class Settings:
+    # 認證
+    AUTH_USERNAME: str = os.getenv("AUTH_USERNAME", "admin")
+    AUTH_PASSWORD_HASH: str = os.getenv("AUTH_PASSWORD_HASH", "")
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "8f3c7c2b4d8d1e2e3f4a5b6c7d8e9f0a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q")
+    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
+    JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
+
+    # vLLM
+    VLLM_BASE_URL: str = os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1")
+    VLLM_MODEL: str = os.getenv("VLLM_MODEL", "Qwen3.6-35B-A3B-FP8")
+
+    # llama.cpp
+    LLAMACPP_BASE_URL: str = os.getenv("LLAMACPP_BASE_URL", "http://localhost:8081")
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "Qwen3-Embedding-8B-Q8_0.gguf")
+
+    # Qdrant
+    QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
+    QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))
+
+    # MongoDB
+    MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+    MONGODB_DATABASE: str = os.getenv("MONGODB_DATABASE", "airag")
+
+    # SQL Server (唯讀連線字串)
+    SQLSERVER_CONNECTION_STRING: str = os.getenv("SQLSERVER_CONNECTION_STRING", "")
+
+    # 預設參數
+    DEFAULT_TOP_K: int = int(os.getenv("DEFAULT_TOP_K", "5"))
+    DEFAULT_SCORE_THRESHOLD: float = float(os.getenv("DEFAULT_SCORE_THRESHOLD", "0.7"))
+    DEFAULT_CHUNK_SIZE: int = int(os.getenv("DEFAULT_CHUNK_SIZE", "512"))
+    DEFAULT_CHUNK_OVERLAP: int = int(os.getenv("DEFAULT_CHUNK_OVERLAP", "50"))
+
+settings = Settings()

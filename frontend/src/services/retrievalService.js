@@ -1,0 +1,12 @@
+import api from './api'
+
+export default {
+  async search(payload) {
+    const response = await api.post('/api/retrieval/search', payload)
+    return response.data
+  },
+  async queryTransform(payload) {
+    const response = await api.post('/api/retrieval/query-transform', payload)
+    return response.data
+  }
+}

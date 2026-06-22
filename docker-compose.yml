@@ -1,0 +1,72 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: airag-backend
+    ports:
+      - "53020:53020"
+    volumes:
+      - ./backend:/app
+    env_file:
+      - ./backend/.env
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017
+      - QDRANT_HOST=qdrant
+      - VLLM_BASE_URL=http://host.docker.internal:8080/v1
+      - LLAMACPP_BASE_URL=http://host.docker.internal:8081
+      - AUTH_PASSWORD_HASH=$$2b$$12$$XOLoLbldxgU3vdmkYsTEteZqF02GKcAw6zIWXNy6Q7yJwi9kziqsm
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mongodb
+      - qdrant
+    networks:
+      - airag-network
+
+  mongodb:
+    image: mongo:7
+    container_name: airag-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=airag
+    networks:
+      - airag-network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: airag-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - airag-network
+
+  frontend:
+    image: nginx:alpine
+    container_name: airag-frontend
+    ports:
+      - "53010:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+    networks:
+      - airag-network
+
+volumes:
+  mongo_data:
+  qdrant_data:
+
+networks:
+  airag-network:
+    name: airag-network
+    driver: bridge
