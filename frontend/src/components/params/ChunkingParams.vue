@@ -1,5 +1,6 @@
 <script setup>
 import { useParamsStore } from '../../stores/paramsStore'
+import KnowledgeBaseSelector from '../common/KnowledgeBaseSelector.vue'
 
 const paramsStore = useParamsStore()
 </script>
@@ -9,6 +10,9 @@ const paramsStore = useParamsStore()
     <div class="text-sm font-bold text-white border-b border-white/8 pb-2 tracking-wider">
       Chunking 參數調優
     </div>
+
+    <!-- Target Knowledge Base -->
+    <KnowledgeBaseSelector />
 
     <!-- Chunk Size Slider -->
     <div class="flex flex-col gap-2">

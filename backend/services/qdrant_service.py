@@ -112,12 +112,13 @@ class QdrantService:
                 logger.warning(f"Collection '{collection_name}' does not exist.")
                 return []
             
-            results = await client.search(
+            response = await client.query_points(
                 collection_name=collection_name,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=top_k,
                 score_threshold=score_threshold
             )
+            results = response.points
             
             search_results = []
             for res in results:

@@ -257,6 +257,43 @@ const handleTransform = async (strategy) => {
           />
         </div>
       </div>
+
+      <!-- Parameter Explanation Card -->
+      <div class="flex flex-col gap-4 bg-white/3 border border-white/8 rounded-2xl p-5 backdrop-blur-md">
+        <div class="text-sm font-bold text-white border-b border-white/8 pb-2 tracking-wider flex items-center gap-1.5">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+          檢索參數說明
+        </div>
+        
+        <div class="flex flex-col gap-3.5 text-xs text-[#9ca3af] leading-relaxed">
+          <div>
+            <div class="font-bold text-[#e5e7eb] mb-1">檢索數量 (Top-K)</div>
+            <p>決定向量資料庫最多回傳幾筆相關段落。較高的 Top-K 能提供更豐富的脈絡資訊，但會增加後續 LLM 處理的 Token 消耗與生成延遲。</p>
+          </div>
+          
+          <div>
+            <div class="font-bold text-[#e5e7eb] mb-1">相似度閾值 (Score Threshold)</div>
+            <p>設定最低相關度門檻（0.0 到 1.0）。只有高於此門檻的段落才會被檢索。調高可篩除無關雜訊，調低可避免漏掉潛在相關資料。</p>
+          </div>
+          
+          <div>
+            <div class="font-bold text-[#e5e7eb] mb-1">檢索模式 (Search Type)</div>
+            <ul class="list-disc pl-4 mt-0.5 space-y-0.5">
+              <li><span class="text-[#a78bfa]">向量搜尋</span>：依據語意概念進行特徵相似度比對。</li>
+              <li><span class="text-[#a78bfa]">混合搜尋</span>：結合語意搜尋與傳統全文關鍵字檢索。</li>
+            </ul>
+          </div>
+          
+          <div>
+            <div class="font-bold text-[#e5e7eb] mb-1">HNSW ef_search</div>
+            <p>控制 Qdrant 在 HNSW 索引樹中搜尋時的候選列表大小。數值調高（例如 128 以上）會提高精準度但增加少許耗時；調低能提升效能。</p>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>

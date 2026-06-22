@@ -144,3 +144,17 @@
 | LLM | vLLM — Qwen3.6-35B-A3B-FP8 |
 | Embedding | llama.cpp — Qwen3-Embedding-8B-Q8_0.gguf |
 | 部署 | Docker + Docker Compose |
+
+
+## 9. 修正紀錄
+
+Bug修改紀錄與新增功能紀錄、前端修改紀錄、後端修改紀錄
+1.由用戶自行進行測試，你不需要開啟瀏覽器檢測
+2.每次修正都需留紀錄
+
+| 文件 | 路徑 | 說明 |
+|:---|:---|:---|
+| Bug修改紀錄 | `docs/DevelopmentProcess/BugFix.md` | Bug修改紀錄 |
+| 新增功能紀錄 | `docs/DevelopmentProcess/NewFeatures.md` | 新增功能紀錄 |
+| 前端修改紀錄 | `docs/DevelopmentProcess/FrontendCorrection.md` | 前端修改紀錄 |
+| 後端修改紀錄 | `docs/DevelopmentProcess/BackendCorrection.md` | 後端修改紀錄 |

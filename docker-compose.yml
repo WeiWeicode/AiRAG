@@ -1,3 +1,7 @@
+# docker-compose up --build -d
+# docker-compose up --build -d backend
+
+
 version: "3.8"
 
 services:
@@ -15,8 +19,6 @@ services:
     environment:
       - MONGODB_URL=mongodb://mongodb:27017
       - QDRANT_HOST=qdrant
-      - VLLM_BASE_URL=http://host.docker.internal:8080/v1
-      - LLAMACPP_BASE_URL=http://host.docker.internal:8081
       - AUTH_PASSWORD_HASH=$$2b$$12$$XOLoLbldxgU3vdmkYsTEteZqF02GKcAw6zIWXNy6Q7yJwi9kziqsm
     extra_hosts:
       - "host.docker.internal:host-gateway"
