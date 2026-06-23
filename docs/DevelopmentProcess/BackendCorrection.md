@@ -1,5 +1,21 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-23 新增預設 RAG 智慧對話 Prompt 範本測試紀錄 (PromptTestRecord)
+
+### 修改內容
+1. `backend/models/prompt_test_record.py`:
+   - 新增 `seed_default_records` 異步方法。該方法會檢查 MongoDB 中是否已存在名為「預設 RAG 智慧對話範本」的 `PromptTestRecord`。若不存在，則自動寫入該紀錄（包含最新的 `rag.py` 系統設定、使用者範本、測試 Context 與測試問題），方便在「自訂 Context 生成」頁面中直接從歷史紀錄中載入並選取。
+2. `backend/models/mongodb.py`:
+   - 於 `init_mongodb` 的資料庫引導種植階段呼叫 `seed_default_records()`。
+   - 於 `seed_default_prompt_templates` 中同步更新預設 RAG 助手 `PromptTemplate` 的系統設定，同樣新增文檔與段落引用規則。
+
+## 2026-06-23 修正 RAG 智慧對話 Prompt 以強制要求 AI 引用文檔段落編號
+
+### 修改內容
+1. `backend/routers/rag.py`:
+   - 於向量檢索完成組裝 `context_parts` 時，在提示詞中併入段落編號 `meta.get("chunk_index")` 與檔名。
+   - 重構 RAG 的 `system_prompt`，於規則中新增第 4 點，明確要求 AI 必須在回答的開頭或結尾指出參考了哪些來源文件與段落，並指定固定格式為：「依據 [文件名] 段落: #段落編號 做出以下結論：」或是「（參考來源：[文件名] 段落: #段落編號）」，並給予多重引用之頓號分隔範例。
+
 ## 2026-06-23 修正無向量條件之 Scroll 檢索產生的 Record 物件無 score 屬性錯誤
 
 ### 修改內容

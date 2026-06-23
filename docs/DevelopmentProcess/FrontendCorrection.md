@@ -1,5 +1,19 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-23 新增對話引用來源 Chunks 內容懸浮視窗 (Tooltip)
+
+### 修改內容
+1. `frontend/src/components/chat/SourceChunks.vue`:
+   - 於列表項目外層加上 `group relative cursor-help` 樣式。
+   - 新增一個精美的 CSS/Tailwind 懸浮視窗 (Tooltip) 元件，當滑鼠懸停於 Chunks 項目時顯示，呈現該段落的 Qdrant 原始文本內容 (`source.content`)，具備深色透明背景、邊框、柔和陰影與指向箭頭。
+   - **滑鼠移入滾動優化**：將懸浮視窗調整為無縫連貼的 `pointer-events-auto` 雙層結構（外層 wrapper 使用 `pb-2` 建立透明熱區橋接間距，內層呈現內容與滾動條），使滑鼠能流暢移入視窗中進行內容滾動、全選與複製，且移出後視窗會正常消失。
+
+## 2026-06-23 修正對話引用來源顯示為段落編號 (chunk_index)
+
+### 修改內容
+1. `frontend/src/components/chat/SourceChunks.vue`:
+   - 修改參考文檔引用顯示，將原先的頁碼 `頁碼: P.{{ ... }}` 改為顯示段落編號 `段落: #{{ ... }}`，並使用安全的三元運算子妥善讀取 `chunk_index` 或 `metadata.chunk_index` 以處理零（0）值索引之呈現。
+
 ## 2026-06-23 新增 Prompt 測試預設值回復按鈕
 
 ### 修改內容

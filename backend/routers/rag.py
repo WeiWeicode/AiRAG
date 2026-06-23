@@ -92,7 +92,9 @@ async def rag_chat_stream(request: ChatRequest):
                             },
                             "score": item.get("score", 0.0)
                         })
-                        context_parts.append(f"文件檔名：{meta.get('filename', '未知')}\n內容：{item.get('content', '')}")
+                        chunk_idx = meta.get("chunk_index")
+                        chunk_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
+                        context_parts.append(f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{item.get('content', '')}")
                     
                     if context_parts:
                         context_str = "\n---\n".join(context_parts)
@@ -110,7 +112,10 @@ async def rag_chat_stream(request: ChatRequest):
             "規則：\n"
             "1. 儘量使用參考資料中的資訊來回答。\n"
             "2. 如果參考資料不足以回答問題，請直接回答『知識庫沒有相關資訊。』，絕對不要使用你的既有知識回答，也不要編造任何內容。\n"
-            "3. 保持回答清晰、專業且符合邏輯。\n\n"
+            "3. 保持回答清晰、專業且符合邏輯。\n"
+            "4. 回答時，必須明確在回答的開頭或結尾指出你是參考了哪些文檔引用段落，格式範例：\n"
+            "   「依據 [文件名] 段落: #段落編號 做出以下結論：」或是「（參考來源：[文件名] 段落: #段落編號）」\n"
+            "   若是引用多個段落，請使用頓號（、）或逗號分隔，例如：「依據[知識庫操作說明.md] 段落: #43、[知識庫操作說明.md] 段落: #45、[知識庫操作說明.md] 段落: #10 做出以下結論：」\n\n"
             f"【參考資料】\n{context_str}"
         )
     else:

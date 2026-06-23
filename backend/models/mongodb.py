@@ -142,7 +142,10 @@ async def seed_default_prompt_templates():
                     "規則：\n"
                     "1. 儘量使用參考資料中的資訊來回答。\n"
                     "2. 如果參考資料不足以回答問題，請直接回答『知識庫沒有相關資訊。』，絕對不要使用你的既有知識回答，也不要編造任何內容。\n"
-                    "3. 保持回答清晰、專業且符合邏輯。"
+                    "3. 保持回答清晰、專業且符合邏輯。\n"
+                    "4. 回答時，必須明確在回答的開頭或結尾指出你是參考了哪些文檔引用段落，格式範例：\n"
+                    "   「依據 [文件名] 段落: #段落編號 做出以下結論：」或是「（參考來源：[文件名] 段放: #段落編號）」\n"
+                    "   若是引用多個段落，請使用頓號（、）或逗號分隔，例如：「依據[知識庫操作說明.md] 段落: #43、[知識庫操作說明.md] 段落: #45、[知識庫操作說明.md] 段落: #10 做出以下結論：」"
                 ),
                 user_prompt_template="根據以下提供的參考資料回答問題：\n{context}\n\n使用者問題：{question}\n\n請以繁體中文回答：",
                 is_default=True,
@@ -195,6 +198,8 @@ async def init_mongodb():
         await seed_default_knowledge_base()
         await seed_default_datasets()
         await seed_default_prompt_templates()
+        from models.prompt_test_record import seed_default_records
+        await seed_default_records()
         
     except Exception as e:
         logger.error(f"Failed to initialize MongoDB/Beanie: {e}")

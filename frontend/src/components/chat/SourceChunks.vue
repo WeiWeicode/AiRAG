@@ -21,15 +21,31 @@ defineProps({
     <div 
       v-for="(source, idx) in sources" 
       :key="idx" 
-      class="bg-white/3 border border-white/8 px-3 py-1.5 rounded-lg flex items-center justify-between gap-4 text-xs hover:bg-white/8 hover:border-white/16 transition-all"
+      class="group relative bg-white/3 border border-white/8 px-3 py-1.5 rounded-lg flex items-center justify-between gap-4 text-xs hover:bg-white/8 hover:border-white/16 transition-all cursor-help"
     >
       <span class="truncate">
         [{{ source.file || source.metadata?.filename || '未知檔案' }}] 
-        頁碼: P.{{ source.page || source.metadata?.page || '?' }}
+        段落: #{{ (source.chunk_index !== undefined && source.chunk_index !== null) ? source.chunk_index : (source.metadata?.chunk_index !== undefined && source.metadata?.chunk_index !== null ? source.metadata.chunk_index : '?') }}
       </span>
       <span class="bg-[#8b5cf6]/15 text-[#a78bfa] font-semibold font-display px-1.5 py-0.5 rounded text-[10px] flex-shrink-0">
         Similarity: {{ (source.score !== undefined ? source.score : 0).toFixed(2) }}
       </span>
+
+      <!-- Tooltip Content Popup Wrapper (bridges gap with pb-2, allows hover persistence) -->
+      <div class="pointer-events-auto absolute left-4 bottom-full pb-2 w-96 scale-95 origin-bottom-left opacity-0 invisible group-hover:opacity-100 group-hover:visible group-hover:scale-100 transition-all duration-200 z-50">
+        <!-- Styled Inner Box -->
+        <div class="bg-[#0f172a]/95 border border-[#8b5cf6]/40 shadow-[0_10px_30px_rgba(0,0,0,0.6)] backdrop-blur-md rounded-xl p-3.5 text-[11px] text-[#e2e8f0] whitespace-pre-wrap leading-relaxed relative">
+          <div class="text-[10px] font-bold text-[#a78bfa] border-b border-white/10 pb-1 mb-1.5 flex justify-between items-center">
+            <span>📄 Chunk 內容詳情</span>
+            <span class="text-[9px] text-[#9ca3af] font-normal">段落 #{{ (source.chunk_index !== undefined && source.chunk_index !== null) ? source.chunk_index : (source.metadata?.chunk_index ?? '?') }}</span>
+          </div>
+          <div class="font-mono text-left max-h-48 overflow-y-auto pr-1 select-all scrollbar-thin">
+            {{ source.content || '無內容' }}
+          </div>
+          <!-- Arrow -->
+          <div class="absolute top-full left-4 -mt-1 w-2.5 h-2.5 bg-[#0f172a] border-r border-b border-[#8b5cf6]/40 rotate-45"></div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
