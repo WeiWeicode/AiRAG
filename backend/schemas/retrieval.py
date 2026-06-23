@@ -7,6 +7,7 @@ class SearchParams(BaseModel):
     search_type: str = Field(default="vector")  # "vector" or "hybrid"
     hnsw_ef_search: int = Field(default=128)
     filter_tags: Optional[List[str]] = Field(default=None)
+    filter_filename: Optional[str] = Field(default=None)
 
 class RetrievalRequest(BaseModel):
     query: str

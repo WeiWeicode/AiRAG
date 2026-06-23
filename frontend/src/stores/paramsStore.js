@@ -13,7 +13,7 @@ export const useParamsStore = defineStore('params', {
     // Generation parameters
     model: 'Qwen3.6-35B-A3B-FP8',
     temperature: 0.3,
-    maxTokens: 8192,
+    maxTokens: 22768,
 
     // Chunking / Embedding parameters
     chunkSize: 512,

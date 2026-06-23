@@ -120,3 +120,26 @@ async def delete_knowledge_base(id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"刪除知識庫紀錄失敗: {str(e)}"
         )
+
+@router.get("/{id}/metadata")
+async def get_kb_metadata(id: str):
+    """
+    獲取知識庫內的所有唯一檔案名稱與標籤。
+    """
+    try:
+        kb_id = PydanticObjectId(id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="無效的知識庫 ID 格式"
+        )
+        
+    kb = await KnowledgeBase.get(kb_id)
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定的知識庫不存在"
+        )
+        
+    metadata = await QdrantService.get_unique_metadata(kb.qdrant_collection_name)
+    return metadata

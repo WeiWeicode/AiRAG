@@ -38,16 +38,20 @@ async def search(request: RetrievalRequest):
         )
         
     try:
-        # 1. 取得查詢字串的向量
-        query_vector = await EmbeddingService.get_embedding(request.query)
+        # 1. 取得查詢字串的向量 (有輸入關鍵字才計算向量)
+        query_vector = None
+        has_query = bool(request.query and request.query.strip())
+        if has_query:
+            query_vector = await EmbeddingService.get_embedding(request.query)
         
-        # 2. 向 Qdrant 進行向量檢索
+        # 2. 向 Qdrant 進行向量檢索或直接 Scroll
         raw_results = await QdrantService.search_similar(
             collection_name=kb.qdrant_collection_name,
             query_vector=query_vector,
             top_k=request.params.top_k,
-            score_threshold=request.params.score_threshold,
-            filter_tags=request.params.filter_tags
+            score_threshold=request.params.score_threshold if has_query else 0.0,
+            filter_tags=request.params.filter_tags,
+            filter_filename=request.params.filter_filename
         )
         
         # 3. 包裝為回應格式

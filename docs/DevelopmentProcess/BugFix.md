@@ -1,5 +1,47 @@
 <!-- BUG修正 -->
 
+## 2026-06-23 修正無向量條件之 Scroll 檢索產生的 Record 物件無 score 屬性錯誤 (導致檔名/標籤純篩選查不到資料)
+
+### 問題描述
+在「Prompt 測試」或檢索搜尋時，若未輸入查詢關鍵字（即 Query 為空）但有設定「篩選檔案名稱」或「篩選標籤」，後端會跳過向量生成並執行 Qdrant 的 `client.scroll`。由於 `client.scroll` 回傳的點為 `Record` 物件而非向量檢索的 `ScoredPoint` 物件，而 `Record` 物件本身並無 `.score` 屬性，導致後端存取 `res.score` 時拋出 `AttributeError: 'Record' object has no attribute 'score'` 異常，最後使檢索結果回傳空陣列（查不到資料）。
+
+### 解決方案
+1. **安全讀取屬性**：修改 `backend/services/qdrant_service.py` 中的 `search_similar` 邏輯，對於每一個點物件使用 `getattr(res, "score", 0.0)` 進行安全讀取，並在值為 `None` 時 fallback 至 `0.0`。
+2. **計算 distance**：利用安全讀取到的 `score` 重新計算 `distance = 1.0 - score`，避免直接存取無屬性的 `res.score` 造成系統崩潰。
+
+### 修改檔案
+- `backend/services/qdrant_service.py`
+
+## 2026-06-23 修正 Prompt A/B 測試 Variant 生成長度受限 1024 Token 問題
+
+### 問題描述
+在「Prompt 測試」中，即使使用者透過右側參數面板（LlmParamsPanel）設定最大 Token 數（Max Tokens）為更高值（如 32768），A/B 測試時的回答依然會在達到 1024 tokens 時發生截斷/停住。此原因在於 `PromptTestView.vue` 的 `handleABTest` 中，傳入後端的 variants 參數裡的 `max_tokens` 被寫死（hardcoded）為 `1024`。
+
+### 解決方案
+1. **引用 paramsStore 的動態設定**：
+   - 於 `frontend/src/views/PromptTestView.vue` 導入 `useParamsStore` 並進行實例化。
+   - 將 `handleABTest` 中 Variant A 與 Variant B 的 payload 參數調整為 `max_tokens: paramsStore.maxTokens`，使 A/B 測試能直接讀取使用者於面板拉動的 Max Tokens 長度。
+
+## 2026-06-23 修正 Prompt 測試與 A/B 測試預覽/生成無法連線與 Stub 模擬問題
+
+### 問題描述
+在「Prompt 測試」頁面中，點擊「預覽組合 Prompt」或「A/B 參數對照生成」會拋出連線失敗之錯誤，原因為前端 API 請求路徑（`/prompt/preview` 與 `/prompt/ab-test`）遺漏了統一的 `/api` 前綴，導致請求無法正確對接到後端對應端點；且後端 `backend/routers/prompt.py` 中該兩項 API 僅為 Stub 模擬空值，無實際渲染與 LLM 生成功能。
+
+### 解決方案
+1. **補全前端 API 前綴**：
+   - 修改 `frontend/src/views/PromptTestView.vue`，將預覽組合與 A/B 參數對照的 API 請求路徑分別補正為 `/api/prompt/preview` 與 `/api/prompt/ab-test`（以 `/api` 為首）。
+   - 修改 `frontend/src/components/API/prompt_api.js` 的 path，補齊 `/api` 前綴。
+2. **後端實作 Prompt 渲染與估計**：
+   - 重構 `backend/routers/prompt.py`，定義相關 Pydantic schemas。
+   - 於 `POST /api/prompt/preview` 端點中，將 template 中的 `{context}` 與 `{question}` 以實際內容替換，並以 `length * 1.3` 作為 token 估計標準（與前端一致）返回給前端渲染。
+3. **後端實作 A/B 測試大模型對比生成**：
+   - 於 `POST /api/prompt/ab-test` 端點中，讀取多個 variants 參數，分別套用不同的 `system_prompt`、`user_prompt`、`temperature` 及 `max_tokens` 參數，呼叫 `LLMService.chat_completion` 取得各組大模型生成的回答，並計算與返回耗時。
+
+### 修改檔案
+- `frontend/src/views/PromptTestView.vue`
+- `frontend/src/components/API/prompt_api.js`
+- `backend/routers/prompt.py`
+
 ## 2026-06-23 修正 Python 3.11 環境下 Evaluation API 產生的 f-string 語法錯誤
 
 ### 問題描述

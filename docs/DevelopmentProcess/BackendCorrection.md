@@ -1,5 +1,37 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-23 修正無向量條件之 Scroll 檢索產生的 Record 物件無 score 屬性錯誤
+
+### 修改內容
+1. `backend/services/qdrant_service.py`:
+   - 於 `search_similar` 中，對無向量條件下使用 `client.scroll` 檢索回傳的 `Record` 列表，改以 `getattr(res, "score", 0.0)` 安全讀取 `score`，解決 `Record` 無 `score` 屬性引發 `AttributeError` 崩潰並造成回傳空資料的 Bug。
+
+## 2026-06-23 實作 A/B 測試平行異步串流、知識庫元數據接口與 Qdrant 檔案篩選
+
+### 修改內容
+1. `backend/services/qdrant_service.py`:
+   - **過濾檔案與標籤條件**：擴充 `search_similar` 方法以支援額外的 `filter_filename` 參數。如果提供，它會與標籤過濾一起被包裝為 Qdrant 的 `must` 篩選條件。若 `query_vector` 為 `None`，則透過 `client.scroll` 進行純篩選查詢。
+   - **元數據提取功能**：新增 `get_unique_metadata` 方法。該方法使用 Qdrant client 的 `scroll` 功能（只抓取 payload 中的 "filename" 與 "tags" 以取得最大效能，關閉 vector 載入），遍歷收集並回傳所有唯一的檔案名稱與標籤。
+2. `backend/schemas/retrieval.py`:
+   - 在 `SearchParams` 類中新增可選的 `filter_filename: Optional[str]` schema 屬性。
+3. `backend/routers/retrieval.py`:
+   - 在 `/search` 路由的 Qdrant 檢索中傳遞 `filter_filename` 參數。若 `query` 參數為空則跳過向量生成，直接執行無向量 Scroll 檢索。
+4. `backend/routers/knowledge_base.py`:
+   - 新增 `GET /knowledge-bases/{id}/metadata` 路由。在檢索到指定的知識庫後，調用 `QdrantService.get_unique_metadata` 回傳集合內所有的唯一 filename 與 tags 陣列。
+5. `backend/routers/prompt.py`:
+   - **A/B 測試平行異步串流**：
+     - 重構 `POST /ab-test` 路由以回傳 `StreamingResponse`。
+     - 內部實作異步 `ab_test_stream_generator()` 產生器，使用 `asyncio.Queue` 搭配 `asyncio.create_task` 在背景平行執行 Variant A 與 Variant B 的 LLM 對答流式推論。
+     - 各任務取得 `delta` 區塊時（包含 content 與 reasoning_content 等），寫入 queue 中。產生器持續從 queue 取出資料，以標準 Server-Sent Events (SSE) 格式推送到前端。
+
+## 2026-06-23 實作自訂 Context 與多參數 A/B 測試 Prompt 端點功能
+
+### 修改內容
+1. `backend/routers/prompt.py`:
+   - 重構原 Stub 端點，定義 `PreviewRequest`、`PreviewResponse`、`ABTestRequest` 與 `ABTestResponse` 等 Pydantic models。
+   - 於 `/preview` 中，實作安全字串替換，組合出最終的 user prompt，並套用 `(len(sys) + len(user)) * 1.3` 的 token 估計規則回傳。
+   - 於 `/ab-test` 中，解析 variants 的超參數列表，呼叫 `LLMService.chat_completion` 完成真實 LLM 推論生成，並以毫秒精準統計耗時，回傳各 variants 的比較回答。
+
 ## 2026-06-23 實作自動化評估即時串流 (SSE Streaming) 與問答上限限制
 
 ### 修改內容

@@ -1,5 +1,69 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-23 新增 Prompt 測試預設值回復按鈕
+
+### 修改內容
+1. `frontend/src/views/PromptTestView.vue`:
+   - 於「Prompt 參數與 Context 注入測試」面板標題欄右側新增「🔄 回復預設值」按鈕。
+   - 定義初始值常量 `DEFAULT_SYSTEM_PROMPT`、`DEFAULT_USER_PROMPT_TEMPLATE`、`DEFAULT_MANUAL_CONTEXT` 與 `DEFAULT_TEST_QUESTION`。
+   - 實作 `resetToDefaults` 函數，在點擊該按鈕時一鍵重設系統設定、使用者範本、參考資料、測試問題為初始值，並清空歷史預覽、A/B 測試結果及數據集標準答案 (Ground Truth) 引用狀態。
+
+## 2026-06-23 修正 Qdrant Chunks 引用行為由附加改為直接覆蓋
+
+### 修改內容
+1. `frontend/src/views/PromptTestView.vue`:
+   - 於 `confirmQdrantReference` 中，將原本選取的 Qdrant 段落內容「附加（append）到原有參考資料 (Context)」的邏輯，修正為直接「覆蓋（overwrite）」原有的參考資料內容，滿足使用者直接覆蓋舊資料的測試需求。
+
+## 2026-06-23 實作 A/B 測試即時串流與 Qdrant 檔案、標籤篩選與 chunk_index 排序
+
+### 修改內容
+1. `frontend/src/views/PromptTestView.vue`:
+   - **A/B 測試即時串流 (SSE Streaming)**：
+     - 重構 `handleABTest` 方法，替換原本的單次請求為 SSE 串流。
+     - 當點選生成時，立即初始化 Variant A 與 Variant B 的 placeholder 卡片（顯示「思考中...」與載入動畫），並利用原生 `fetch` 配合 `reader.read()` 解析 Server-Sent Events。
+     - 支援實時串流 `type: 'reasoning'` (思考過程) 與 `type: 'content'` (答案)，並解析答案中夾帶之 `<think>` 或 `<thought>` 區塊，呈現於專屬思考過程折疊式面板中。
+   - **組合 Prompt 預覽高度限制**：
+     - 為 System Prompt 與 User Prompt 預覽 `<pre>` 元素加上 `max-h-[250px]`、`max-h-[300px]` 與 `overflow-y-auto` 樣式，限制超長 Prompt 撐爆頁面高度，增強操作體驗。
+   - **Qdrant 檢索篩選 filename 與 tags**：
+     - 新增狀態變數 `qdrantSearchFilename`、`uniqueFilenames`、`uniqueTags` 與 `selectedFilterTags`。
+     - 點開檢索彈窗時自動呼叫後端 `/api/knowledge-bases/{id}/metadata`，動態載入該知識庫之所有唯一檔案與標籤清單。
+     - 於檢索 Dialog 中新增支援 datalist 自動提示的檔案輸入框以及 clickable 的標籤多選氣泡徽章。
+     - 重構 `searchQdrantChunks`，將所選之 filename 與 tags 作為過濾參數送至後端向量搜尋。
+   - **選取匯入依 chunk_index 排序**：
+     - 重構 `confirmQdrantReference` 方法，在勾選匯入 chunks 時，會先依據 `metadata.chunk_index` 對所選 chunks 進行遞增排序，再行拼接注入至參考資料輸入框。
+
+## 2026-06-23 擴充 Qdrant 檢索全選與評估集 Ground Truth 對照顯示功能
+
+### 修改內容
+1. `frontend/src/views/PromptTestView.vue`:
+   - **檢索結果全選功能**：在「檢索並引用 Qdrant Chunks」彈窗的檢索結果頂部，新增「全選 / 全不選」Checkbox 與計算屬性 `isAllChunksSelected`，點擊可一鍵切換所有搜尋結果的勾選狀態。
+   - **標準答案對照顯示與 A/B 測試聯動**：
+     - 在「測試問題 (User Query)」輸入框下方新增 `selectedQuestionGroundTruth` 標準答案卡片，點擊引用評估集問題時，會自動將 Ground Truth 載入至該處（不再強制塞入 Context），並提供一鍵「清除引用」功能。
+     - 在 A/B 測試結果對照區域，若有引用之標準答案 (Ground Truth)，會自動切換為三欄網格（`md:grid-cols-3`），並將 Ground Truth 作為專屬紫色主題卡片併排呈現，便於使用者直接將兩組 Variant 答案與標準答案進行並列比對。
+
+## 2026-06-23 新增 Prompt 測試頁面存檔與引用互動 UI 功能
+
+### 修改內容
+1. `frontend/src/views/PromptTestView.vue`:
+   - 擴充並導入 `onMounted` 生命週期函數，在掛載時獲取範本、歷史紀錄、知識庫清單與測試集。
+   - 新增儲存紀錄、套用紀錄、刪除紀錄、載入既有範本、儲存自訂範本、刪除範本、知識庫 Chunk 檢索引用、以及評估集測試問題與 GT/Context 引用等完整前端 Logic。
+   - 於 Template 中新增：
+     - 頂部「📂 檢視歷史紀錄」按鈕與對應之暗色玻璃擬物 Modal 彈窗。
+     - 系統設定區「📂 載入範本」與「💾 儲存為範本」連結與範本管理 Modal 彈窗。
+     - 參考資料區「🔍 檢索並引用 Qdrant Chunks」連結與檢索 Modal 彈窗。
+     - 測試問題區「🎯 引用評估集問題」連結與問答多選引用 Modal 彈窗。
+     - 操作列新增「💾 儲存本次測試與結果」按鈕。
+   - 修正 Vue 語法：移除重複 class 屬性並刪除普通 div 元素上不正確的 `v-slot:loading` 指令，確保生產環境打包 (Vite build) 順暢通過。
+
+## 2026-06-23 修正 Prompt 測試頁面 API 請求前綴以正常連線
+
+### 修改內容
+1. `frontend/src/views/PromptTestView.vue`:
+   - 修正 `handlePreview` 方法中的 API 請求，由 `/prompt/preview` 改為 `/api/prompt/preview`。
+   - 修正 `handleABTest` 方法中的 API 請求，由 `/prompt/ab-test` 改為 `/api/prompt/ab-test`。
+2. `frontend/src/components/API/prompt_api.js`:
+   - 同步修正 `/prompt/generate`、`/prompt/preview` 與 `/prompt/ab-test` 的請求前綴，全面補上 `/api`。
+
 ## 2026-06-23 實作自動化評估即時串流 (SSE Streaming) 與問答上限提示
 
 ### 修改內容

@@ -18,7 +18,6 @@ const paramsStore = useParamsStore()
         class="bg-white/5 border border-white/8 rounded-lg text-white px-3.5 py-2.5 text-sm focus:outline-none focus:border-[#8b5cf6] transition-all"
       >
         <option value="Qwen3.6-35B-A3B-FP8" class="bg-[#111827] text-white">Qwen3.6-35B-A3B-FP8 (vLLM)</option>
-        <option value="Llama-3-8B-Instruct" class="bg-[#111827] text-white">Llama-3-8B-Instruct (local)</option>
       </select>
     </div>
 
@@ -48,7 +47,7 @@ const paramsStore = useParamsStore()
         v-model.number="paramsStore.maxTokens" 
         type="range" 
         min="256" 
-        max="12288" 
+        max="22768" 
         step="128" 
         class="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#8b5cf6]"
       />

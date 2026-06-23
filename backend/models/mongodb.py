@@ -17,6 +17,7 @@ if not hasattr(AsyncIOMotorClient, "append_metadata"):
 from models.app_config import AppConfig
 from models.knowledge_base import KnowledgeBase
 from models.prompt_template import PromptTemplate
+from models.prompt_test_record import PromptTestRecord
 from models.chat_session import ChatSession
 from models.chat_message import ChatMessage
 from models.feedback import Feedback
@@ -123,6 +124,52 @@ async def seed_default_datasets():
     except Exception as e:
         logger.error(f"Failed to seed default datasets: {e}")
 
+async def seed_default_prompt_templates():
+    """
+    如果資料庫中沒有任何 Prompt 範本，則建立預設範本。
+    """
+    try:
+        count = await PromptTemplate.count()
+        if count == 0:
+            logger.info("No prompt templates found in database. Seeding default templates...")
+            from datetime import datetime
+            
+            # Default RAG template
+            template1 = PromptTemplate(
+                name="預設 RAG 助手",
+                system_prompt=(
+                    "你是一個專業的 RAG 智慧對話助理。請根據以下提供的「參考資料」回答使用者的問題。\n"
+                    "規則：\n"
+                    "1. 儘量使用參考資料中的資訊來回答。\n"
+                    "2. 如果參考資料不足以回答問題，請直接回答『知識庫沒有相關資訊。』，絕對不要使用你的既有知識回答，也不要編造任何內容。\n"
+                    "3. 保持回答清晰、專業且符合邏輯。"
+                ),
+                user_prompt_template="根據以下提供的參考資料回答問題：\n{context}\n\n使用者問題：{question}\n\n請以繁體中文回答：",
+                is_default=True,
+                created_by="system",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            await template1.insert()
+
+            # Strict template
+            template2 = PromptTemplate(
+                name="嚴格知識問答",
+                system_prompt=(
+                    "你是一個極度嚴謹的資訊檢索助理。你必須且僅能依賴 [參考資料] 提供事實性回答。\n"
+                    "若資料中沒有明確提到答案，請回覆『無法從參考資料中找到答案』，不得參雜任何推論與外部資訊。"
+                ),
+                user_prompt_template="[參考資料]\n{context}\n\n[問題]\n{question}\n\n請根據參考資料給出簡短精確的回答：",
+                is_default=False,
+                created_by="system",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            await template2.insert()
+            logger.info("Default prompt templates seeded successfully.")
+    except Exception as e:
+        logger.error(f"Failed to seed default prompt templates: {e}")
+
 async def init_mongodb():
     try:
         logger.info(f"Connecting to MongoDB at: {settings.MONGODB_URL}")
@@ -134,6 +181,7 @@ async def init_mongodb():
                 AppConfig,
                 KnowledgeBase,
                 PromptTemplate,
+                PromptTestRecord,
                 ChatSession,
                 ChatMessage,
                 Feedback,
@@ -146,6 +194,7 @@ async def init_mongodb():
         # 進行資料庫引導種植
         await seed_default_knowledge_base()
         await seed_default_datasets()
+        await seed_default_prompt_templates()
         
     except Exception as e:
         logger.error(f"Failed to initialize MongoDB/Beanie: {e}")
