@@ -52,7 +52,11 @@ class LLMService:
                     response = await client.post(url, headers=headers, json=payload)
                     response.raise_for_status()
                     data = response.json()
-                    return data["choices"][0]["message"]["content"]
+                    msg = data["choices"][0]["message"]
+                    content = msg.get("content")
+                    if not content:
+                        content = msg.get("reasoning") or msg.get("reasoning_content") or ""
+                    return content
         except Exception as e:
             logger.error(f"Failed to call vLLM chat_completion: {e}")
             raise e

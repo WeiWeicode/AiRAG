@@ -17,6 +17,14 @@ export default {
     const response = await api.get(`/api/evaluation/reports/${reportId}`)
     return response.data
   },
+  async getDatasetDetails(datasetId) {
+    const response = await api.get(`/api/evaluation/datasets/${datasetId}`)
+    return response.data
+  },
+  async updateDataset(datasetId, payload) {
+    const response = await api.put(`/api/evaluation/datasets/${datasetId}`, payload)
+    return response.data
+  },
   async exportReport(reportId, format = 'csv') {
     const response = await api.get(`/api/evaluation/reports/${reportId}/export`, {
       params: { format },

@@ -1,5 +1,28 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-23 實作自動化評估即時串流 (SSE Streaming) 與問答上限限制
+
+### 修改內容
+1. `backend/routers/evaluation.py`:
+   - 修改 `POST /run` 評估路由。限制評估問答項目最大上限為 5 筆（使用 `dataset.items[:5]`），並回傳 `StreamingResponse`。
+   - `StreamingResponse` 中定義 `event_generator()` 異步產生器，以 Server-Sent Events (SSE) 協議向前端推送狀態事件：
+     - `event: init`：發送評估總筆數與測試集名稱。
+     - `event: progress`：發送當前正在評估的問答索引與問題文字。
+     - `event: item_done`：發送當前問題經 RAG 向量檢索、AI對答生成及 LLM-as-a-Judge 評分完成後之詳細結果（含有 generated_answer 與每項評分 metrics）。
+     - `event: result`：發送最終評估總分數與所有明細，並將評估報告持久化儲存至 MongoDB。
+
+## 2026-06-23 實作 RAG 準確度評估自動化系統
+
+### 修改內容
+1. `backend/models/mongodb.py`:
+   - 新增 `seed_default_datasets` 異步方法。在系統啟動時若發現資料庫無測試集資料，則自動寫入「技術規格測試集」與「人事規章測試集」，以供使用者立即開始進行 RAG 評估。
+2. `backend/routers/evaluation.py`:
+   - 將原本的 Stub 接口重構為實質功能。
+   - `GET /datasets`：返回測試集清單，並依測試集名稱將 ID 動態轉為 `"dataset_tech"` 與 `"dataset_hr"` 以對接前端的硬編碼設定。
+   - `POST /datasets`：實作測試集新增與匯入功能，並寫入 MongoDB `test_datasets` 集合。
+   - `POST /run`：解析傳入的測試集與知識庫 ID（支援 dummy ID 與真實 ID 解析）。針對每筆測試問答執行真實 RAG 向量檢索與生成，再呼叫後端 LLM 執行 LLM-as-a-Judge 計算 Faithfulness、Relevancy、Precision 與 Recall，最終計算平均分並保存為 `EvalReport` 紀錄返回。
+   - `GET /reports/{report_id}`：實作讀取指定評估報告詳情。
+
 ## 2026-06-23 修正無參考資料時 AI 的回覆規則
 
 ### 修改內容

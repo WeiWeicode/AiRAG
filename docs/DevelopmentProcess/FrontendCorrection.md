@@ -1,5 +1,36 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-23 實作自動化評估即時串流 (SSE Streaming) 與問答上限提示
+
+### 修改內容
+1. `frontend/src/views/EvaluationView.vue`:
+   - 引入並註冊 `authStore` 以讀取使用者權限 token。
+   - 重構 `startEvaluation` 方法，將 `evalService.runEvaluation` 呼叫替換為原生 `fetch` 配合 `reader.read()` 來接收後端傳回的 SSE 串流。
+   - 解析四種事件類型：
+     - `init`：取得總筆數。
+     - `progress`：更新當前評分進度索引。
+     - `item_done`：實時將該筆問答對比細節推入表格明細陣列中，提供跑分過程之即時畫面渲染。
+     - `result`：當評估全部完成，載入最終總分並刷新全部元件與雷達圖。
+   - 更新進度條 UI。移除 `animate-pulse` 改為顯示當前進度如 `已完成 2 / 5 筆問答`，並利用比例百分比更新進度條寬度。
+2. `frontend/src/components/eval/TestSetManager.vue`:
+   - 在控制面板底部新增顯目的 Amber (琥珀色) 警告提示 Banner，警示使用者「因推理模型生成較慢，每次評估上限強制為 5 筆，防範連線逾時斷線」。
+
+## 2026-06-23 實作前端測試集匯入與即時微調編輯器
+
+### 修改內容
+1. `frontend/src/services/evalService.js`:
+   - 新增 `getDatasetDetails(datasetId)` API 方法，用於向後端請求單個測試集的問答明細。
+   - 新增 `updateDataset(datasetId, payload)` API 方法，用於更新已有測試集的名稱、描述與問答清單。
+2. `frontend/src/components/eval/TestSetManager.vue`:
+   - 在控制面版頂部新增「匯入測試集」按鈕。
+   - 實作「匯入新測試集」的 Modal 彈窗，支援輸入測試集名稱、描述與粘貼 JSON 格式的問答陣列，點擊確認後上傳後端並自動重新整理下拉選單且選取最新匯入之測試集。
+   - 當下拉選單載入完畢或切換時，觸發並傳遞 `select-dataset` 事件，確保頁面載入時能自動綁定初始測試集。
+3. `frontend/src/views/EvaluationView.vue`:
+   - 於 `TestSetManager` 下方新增「測試集項目微調」主面板。
+   - 面板能響應選取事件，向後端獲取詳細資料，並以精美的玻璃擬物卡片呈現各項問答的輸入框 (Question & Ground Truth)。
+   - 提供「新增問答項目」與「刪除此項目」的動態編輯按鈕，以及「儲存修改」按鈕。
+   - 在點選「開始自動評估」時，若檢測到本地有正在編輯微調的項目，會在啟動後端跑分前**自動先儲存修改**，確保評估使用的是最新的微調資料。
+
 ## 2026-06-22 實作 Qdrant 分類標籤寫入、篩選參數面板及檢索結果呈現
 
 ### 修改內容

@@ -1,5 +1,35 @@
 <!-- BUG修正 -->
 
+## 2026-06-23 修正 Python 3.11 環境下 Evaluation API 產生的 f-string 語法錯誤
+
+### 問題描述
+後端 Docker 容器在啟動時（採用 Python 3.11 運作環境），Uvicorn 啟動失敗並拋出 `SyntaxError: unterminated string literal`。
+原因是在 `backend/routers/evaluation.py` 的第 376 行 `event: result` 的 `yield` 語句中，於雙引號 f-string（`f"..."`）中巢狀撰寫了多行的 `{json.dumps({...})}` 字典字面量，且內部包含單引號。在 Python 3.12 之前的版本中，f-string 不支援內嵌運算式跨多行或 quotes 解析限制，因此在 3.11 中編譯失敗。
+
+### 解決方案
+1. **獨立 JSON 字典宣告**：將 `result_data` 字典字面量從 f-string 運算式中完全抽離，在 `yield` 之前宣告為常規的多行 Python 字典物件。
+2. **簡化 f-string 傳參**：將序列化後的 `json.dumps(result_data, ensure_ascii=False)` 以單個變數傳入 f-string，避免多行與巢狀引號衝突，維持完美的向下相容性。
+
+### 修改檔案
+- `backend/routers/evaluation.py`
+
+## 2026-06-23 修正大模型評估指標分數全部為 0.00 之異常 (LLM-as-a-Judge 針對 Reasoning 模型的 JSON 提取異常修正)
+
+### 問題描述
+在自動化 RAG 評估執行時，雖然 LLM 生成了正常的回答，但四項指標打分（忠實度、相關性、精確率、召回率）全部呈現 `0.00`。
+經診斷，後端所串接的本地 vLLM 大模型 `Qwen3.6-35B-A3B-FP8` 是一隻具有內建思考過程的 Reasoning 模型。由於 Reasoning 模型的思考鏈極其冗長，且 vLLM 預設將思考過程寫在 `choice.message.reasoning` 欄位中，導致：
+1. 原本設定的 `max_tokens=256` 導致生成在思考階段就觸發長度限制中斷，`choice.message.content` 返回 `null`。
+2. 即使調大 token，真正的 JSON 仍有可能寫在 `reasoning` 欄位中，而舊版 JSON 解析器只能解析 `content` 且無法容忍 JSON 外包覆的大量思考文字。
+
+### 解決方案
+1. **vLLM 思考欄位 Fallback**：修改 `backend/services/llm_service.py`，當請求非串流完成時，若 `content` 為空或 `null`，則自動 Fallback 到 `reasoning` 或 `reasoning_content` 的文字內容作為 LLM 的輸出返回。
+2. **調高 Judge 最大生成長度**：在 `backend/routers/evaluation.py` 中，將 LLM-as-a-Judge 的 `max_tokens` 由 `256` 上調至 `1536`，給予充足的 Token 生成完整思考鏈及 JSON 指標。
+3. **優化 JSON 提取器**：重構 `parse_judge_json` 方法，導入更強韌 (Robust) 的解析策略。先進行常規 JSON 解析，若失敗則使用正則表達式定位包含 `"faithfulness"` 欄位的完整 `{...}` JSON 結構，成功從冗長混雜的思考文字中精準擷取出打分 JSON。
+
+### 修改檔案
+- `backend/services/llm_service.py`
+- `backend/routers/evaluation.py`
+
 ## 2026-06-23 修正無參考資料或參考資料不足時 AI 產生幻覺/回答既有知識之問題
 
 ### 問題描述
