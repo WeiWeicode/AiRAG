@@ -1,5 +1,33 @@
 <!-- 新增功能紀錄 -->
 
+## 2026-06-23 新增 Qdrant 雙路召回與 RRF 混合檢索 (Hybrid Search) 功能
+
+### 功能描述
+實作結合「密集語意向量 (Dense Vector) 檢索」與「稀疏關鍵字向量 (Sparse Vector / SPLADE) 檢索」的雙路融合檢索（Hybrid Search）。以 Qdrant 的 Reciprocal Rank Fusion (RRF) 整合兩路檢索結果，顯著提升專有名詞與精確型號、關鍵字的查詢準確度。
+
+### 實作內容
+1. **依賴管理**：
+   - 於 `backend/requirements.txt` 中新增 `fastembed>=0.3.0` 套件依賴，以高效地生成語意與詞頻稀疏向量。
+2. **稀疏向量產生模組**：
+   - 新建 `backend/services/sparse_embedding_service.py`，封裝 `fastembed.SparseTextEmbedding` (預設為 SPLADE) 生成器，支援單筆與批次文字的稀疏向量生成。
+3. **向量庫 Schema 與寫入更新**：
+   - 修改 `backend/services/qdrant_service.py`：
+     - `create_collection`：在建立 Collection 時定義命名空間 `"sparse-text"` 及其對應的稀疏索引。
+     - `upsert_chunks`：變更資料寫入的 Vector 結構，呼叫 `SparseEmbeddingService` 自動批次計算並儲存對應的稀疏向量。
+4. **雙路檢索與安全降級 (Fallback)**：
+   - 修改 `search_similar` 介面：支援 `search_type` 與原始 `query_text` 參數。
+   - 當 `search_type` 為 `"hybrid"` 時，同時預檢索 Dense 與 Sparse 兩路，再利用 Qdrant `FusionQuery(fusion=models.Fusion.RRF)` 計算最佳綜合排序。
+   - 增加安全降級防線：若因舊 Collection 不支援或其他未知異常，會自動捕捉例外並降級為常規純向量搜尋，保障高可用性。
+5. **RAG 對話與檢索 API 銜接**：
+   - 修改 `backend/routers/retrieval.py` 與 `backend/routers/rag.py` 路由，將前端發送的 `search_type`（混合/向量）參數穿透傳遞給底層檢索引擎，使對話串流與獨立檢索都支援 Hybrid 模式。
+
+### 修改檔案
+- `backend/requirements.txt`
+- `backend/services/sparse_embedding_service.py` (新設)
+- `backend/services/qdrant_service.py`
+- `backend/routers/retrieval.py`
+- `backend/routers/rag.py`
+
 ## 2026-06-23 新增人工回饋紀錄單筆刪除與批次刪除功能
 
 ### 功能描述

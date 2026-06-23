@@ -20,6 +20,7 @@ class QdrantService:
     async def create_collection(cls, collection_name: str) -> bool:
         """
         若 Collection 不存在則建立，設定向量維度為 4096，使用 Cosine 相似度。
+        並新增 sparse-text 稀疏向量空間支援。
         """
         client = cls.get_client()
         try:
@@ -31,6 +32,13 @@ class QdrantService:
                         size=4096,  # 配合 Qwen3-Embedding-8B
                         distance=models.Distance.COSINE
                     ),
+                    sparse_vectors_config={
+                        "sparse-text": models.SparseVectorParams(
+                            index=models.SparseIndexParams(
+                                on_disk=True
+                            )
+                        )
+                    },
                     hnsw_config=models.HnswConfigDiff(
                         m=16,
                         ef_construct=100
@@ -66,11 +74,16 @@ class QdrantService:
         vectors: List[List[float]]
     ) -> int:
         """
-        批次將切分好的區塊與對應向量寫入 Qdrant。
+        批次將切分好的區塊與對應向量寫入 Qdrant（包含密集向量與稀疏向量）。
         """
         client = cls.get_client()
         # 確保 Collection 存在
         await cls.create_collection(collection_name)
+        
+        # 批次生成 Chunks 的稀疏向量
+        from services.sparse_embedding_service import SparseEmbeddingService
+        texts = [chunk.get("content", "") for chunk in chunks]
+        sparse_vectors = SparseEmbeddingService.get_sparse_vectors_batch(texts)
         
         points = []
         for i, chunk in enumerate(chunks):
@@ -78,7 +91,10 @@ class QdrantService:
             points.append(
                 models.PointStruct(
                     id=point_id,
-                    vector=vectors[i],
+                    vector={
+                        "": vectors[i],                       # 預設密集向量
+                        "sparse-text": sparse_vectors[i]      # 稀疏向量
+                    },
                     payload=chunk
                 )
             )
@@ -88,24 +104,50 @@ class QdrantService:
                 collection_name=collection_name,
                 points=points
             )
-            logger.info(f"Upserted {len(points)} points into Qdrant collection '{collection_name}'.")
+            logger.info(f"Upserted {len(points)} points into Qdrant collection '{collection_name}' with sparse vectors.")
             return len(points)
         except Exception as e:
-            logger.error(f"Failed to upsert points to Qdrant collection '{collection_name}': {e}")
-            raise e
+            error_str = str(e)
+            if "Not existing vector name error: sparse-text" in error_str or "sparse-text" in error_str:
+                logger.warning(f"Collection '{collection_name}' does not support sparse vectors. Falling back to dense vector only upsert.")
+                points_dense_only = []
+                for i, chunk in enumerate(chunks):
+                    point_id = points[i].id
+                    points_dense_only.append(
+                        models.PointStruct(
+                            id=point_id,
+                            vector=vectors[i],  # 純密集向量
+                            payload=chunk
+                        )
+                    )
+                try:
+                    await client.upsert(
+                        collection_name=collection_name,
+                        points=points_dense_only
+                    )
+                    logger.info(f"Successfully upserted {len(points_dense_only)} points with dense vectors only.")
+                    return len(points_dense_only)
+                except Exception as ex_dense:
+                    logger.error(f"Fallback dense-only upsert failed: {ex_dense}")
+                    raise ex_dense
+            else:
+                logger.error(f"Failed to upsert points to Qdrant collection '{collection_name}': {e}")
+                raise e
 
     @classmethod
     async def search_similar(
         cls, 
         collection_name: str, 
         query_vector: Optional[List[float]] = None, 
+        query_text: Optional[str] = None,
+        search_type: str = "vector",
         top_k: int = 5, 
         score_threshold: float = 0.7,
         filter_tags: Optional[List[str]] = None,
         filter_filename: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        依據向量相似度檢索資料塊（若無向量則執行 Scroll 查詢）。
+        依據向量相似度檢索資料塊（可切換純向量或 Hybrid 雙路 RRF 混合檢索）。
         """
         client = cls.get_client()
         try:
@@ -134,7 +176,48 @@ class QdrantService:
             if must_conditions:
                 query_filter = models.Filter(must=must_conditions)
             
-            if query_vector is None:
+            if search_type == "hybrid" and query_vector is not None and query_text is not None and query_text.strip():
+                try:
+                    from services.sparse_embedding_service import SparseEmbeddingService
+                    query_sparse = SparseEmbeddingService.get_sparse_vector(query_text)
+                    
+                    prefetch_dense = models.Prefetch(
+                        query=query_vector,
+                        using="",  # 預設密集向量空間
+                        limit=top_k * 2,
+                        filter=query_filter
+                    )
+                    
+                    prefetch_sparse = models.Prefetch(
+                        query=query_sparse,
+                        using="sparse-text",  # 稀疏向量空間
+                        limit=top_k * 2,
+                        filter=query_filter
+                    )
+                    
+                    # Qdrant 雙路召回與 RRF 融合
+                    response = await client.query_points(
+                        collection_name=collection_name,
+                        prefetch=[prefetch_dense, prefetch_sparse],
+                        query=models.FusionQuery(
+                            fusion=models.Fusion.RRF
+                        ),
+                        limit=top_k
+                    )
+                    results = response.points
+                    logger.info("Hybrid search executed successfully via Qdrant RRF.")
+                except Exception as he:
+                    logger.warning(f"Hybrid search failed, falling back to pure vector search: {he}")
+                    # 安全降級：純密集向量檢索
+                    response = await client.query_points(
+                        collection_name=collection_name,
+                        query=query_vector,
+                        limit=top_k,
+                        score_threshold=score_threshold,
+                        query_filter=query_filter
+                    )
+                    results = response.points
+            elif query_vector is None:
                 # 執行無向量條件的 Scroll 查詢
                 scroll_result = await client.scroll(
                     collection_name=collection_name,
@@ -145,6 +228,7 @@ class QdrantService:
                 )
                 results = scroll_result[0]
             else:
+                # 執行常規純密集向量檢索
                 response = await client.query_points(
                     collection_name=collection_name,
                     query=query_vector,

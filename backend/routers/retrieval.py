@@ -44,10 +44,12 @@ async def search(request: RetrievalRequest):
         if has_query:
             query_vector = await EmbeddingService.get_embedding(request.query)
         
-        # 2. 向 Qdrant 進行向量檢索或直接 Scroll
+        # 2. 向 Qdrant 進行雙路融合檢索、純向量檢索或直接 Scroll
         raw_results = await QdrantService.search_similar(
             collection_name=kb.qdrant_collection_name,
             query_vector=query_vector,
+            query_text=request.query,
+            search_type=request.params.search_type,
             top_k=request.params.top_k,
             score_threshold=request.params.score_threshold if has_query else 0.0,
             filter_tags=request.params.filter_tags,

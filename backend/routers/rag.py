@@ -26,6 +26,7 @@ class ChatParams(BaseModel):
     top_k: Optional[int] = None
     score_threshold: Optional[float] = None
     filter_tags: Optional[List[str]] = None
+    search_type: Optional[str] = "vector"
 
 class ChatRequest(BaseModel):
     question: str
@@ -42,6 +43,7 @@ async def rag_chat_stream(request: ChatRequest):
     score_threshold = 0.65
     max_tokens = 1024
     filter_tags = None
+    search_type = "vector"
     
     if request.params:
         if request.params.temperature is not None:
@@ -54,6 +56,8 @@ async def rag_chat_stream(request: ChatRequest):
             max_tokens = request.params.max_tokens
         if request.params.filter_tags is not None:
             filter_tags = request.params.filter_tags
+        if request.params.search_type is not None:
+            search_type = request.params.search_type
 
     sources = []
     context_str = ""
@@ -67,10 +71,12 @@ async def rag_chat_stream(request: ChatRequest):
                 try:
                     # 取得提問向量
                     query_vector = await EmbeddingService.get_embedding(question)
-                    # Qdrant 相似度檢索
+                    # Qdrant 相似度與雙路融合檢索
                     raw_results = await QdrantService.search_similar(
                         collection_name=kb.qdrant_collection_name,
                         query_vector=query_vector,
+                        query_text=question,
+                        search_type=search_type,
                         top_k=top_k,
                         score_threshold=score_threshold,
                         filter_tags=filter_tags

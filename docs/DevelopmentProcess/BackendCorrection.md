@@ -1,5 +1,23 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-23 實作 Qdrant 雙路召回與 RRF 混合檢索 (Hybrid Search) 後端支援
+
+### 修改內容
+1. `backend/requirements.txt`:
+   - 增加 `fastembed>=0.3.0` 依賴。
+2. `backend/services/sparse_embedding_service.py` (新增檔案):
+   - 封裝 `fastembed.SparseTextEmbedding`。
+   - 提供 `get_sparse_vector(text)` 與 `get_sparse_vectors_batch(texts)` 方法，將生成之 sparse 向量映射為 Qdrant 的 `models.SparseVector` 結構。
+3. `backend/services/qdrant_service.py`:
+   - `create_collection`: 新增 `sparse_vectors_config` 將 `"sparse-text"` 指定為稀疏向量空間，配置在磁碟上儲存索引。
+   - `upsert_chunks`: 呼叫 `SparseEmbeddingService` 批次算出稀疏向量，將原點向量改為 `{ "": vectors[i], "sparse-text": sparse_vectors[i] }`。同時增加錯誤捕獲與安全退回機制：若目標集合不支援 `"sparse-text"`（例如舊有集合），自動退回成僅寫入密集向量，防止寫入出錯。
+   - `search_similar`: 擴充 `query_text` 與 `search_type` 參數。若為 `"hybrid"` 且有查詢文字，則建立雙 `Prefetch`（Dense + Sparse），使用 `FusionQuery(fusion=models.Fusion.RRF)` 進行檢索；設有 `try-except` 捕獲異常並安全降級為純密集向量搜尋。
+4. `backend/routers/retrieval.py`:
+   - `search`: 呼叫 `QdrantService.search_similar` 時額外傳入 `query_text=request.query` 與 `search_type=request.params.search_type`。
+5. `backend/routers/rag.py`:
+   - `ChatParams`: 新增 `search_type: Optional[str] = "vector"` 選項定義。
+   - `rag_chat_stream`: 解析 `search_type`，並在呼叫 `search_similar` 時將 `query_text` 與 `search_type` 穿透傳送。
+
 ## 2026-06-23 於回饋模組路由新增單筆與批次刪除 API 端點
 
 ### 修改內容
