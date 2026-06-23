@@ -51,6 +51,24 @@ export const useFeedbackStore = defineStore('feedback', {
         console.error('Failed to export feedback:', error)
         throw error
       }
+    },
+    async deleteFeedback(feedbackId) {
+      try {
+        const response = await api.delete(`/api/feedback/${feedbackId}`)
+        return response.data
+      } catch (error) {
+        console.error('Failed to delete feedback:', error)
+        throw error
+      }
+    },
+    async batchDeleteFeedbacks(feedbackIds) {
+      try {
+        const response = await api.post('/api/feedback/batch-delete', { feedback_ids: feedbackIds })
+        return response.data
+      } catch (error) {
+        console.error('Failed to batch delete feedbacks:', error)
+        throw error
+      }
     }
   }
 })

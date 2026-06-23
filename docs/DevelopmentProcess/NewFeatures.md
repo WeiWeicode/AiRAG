@@ -1,5 +1,25 @@
 <!-- 新增功能紀錄 -->
 
+## 2026-06-23 新增人工回饋紀錄單筆刪除與批次刪除功能
+
+### 功能描述
+為「人工回饋與標註歷史」頁面擴充紀錄清理與刪除功能，支援單筆回饋紀錄刪除，以及多選核取方塊後的批次刪除，以便於管理與整理匯入測試集前的標註數據。
+
+### 實作內容
+1. **後端刪除 API 實作**：
+   - 實作 `DELETE /api/feedback/{feedback_id}` 端點，用於刪除指定的單一回饋紀錄。
+   - 實作 `POST /api/feedback/batch-delete` 端點，以接收包含多個 ID 的 payload，進行安全的 MongoDB 批次刪除。
+2. **前端 Store 狀態對接**：
+   - 在 Pinia Store (`feedbackStore.js`) 中新增 `deleteFeedback` 與 `batchDeleteFeedbacks` Actions 以連接後端刪除端點。
+3. **前端 UI 與操作交互**：
+   - 在 `FeedbackView.vue` 列表的標題操作列新增「刪除選取」按鈕，並於多選 checkbox 有勾選時啟用，點擊後會彈出確認視窗，執行完成後清空選取狀態並重新載入列表。
+   - 在表格每行末尾新增一個「操作」欄位，擺放紅色的垃圾桶按鈕以支援單筆刪除。
+
+### 修改檔案
+- `backend/routers/feedback.py`
+- `frontend/src/stores/feedbackStore.js`
+- `frontend/src/views/FeedbackView.vue`
+
 ## 2026-06-23 新增 Prompt 測試多源引用與 A/B 測試結果歷史存檔系統
 
 ### 功能描述

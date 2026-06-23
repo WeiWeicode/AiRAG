@@ -1,5 +1,33 @@
 <!-- BUG修正 -->
 
+## 2026-06-23 修正回饋歷史篩選錯誤分類下拉選單白字底看不清問題
+
+### 問題描述
+在「人工回饋與標註歷史」頁面中，錯誤分類篩選下拉選單的選項在部分瀏覽器原生渲染時出現「白色背景搭配白色文字」的狀況，導致選單內的文字完全隱形看不清。這是因為選項繼承了父元件的 `text-white`，但瀏覽器預設將下拉選項底色渲染為白色。
+
+### 解決方案
+1. **指定選項背景與文字顏色**：在 `frontend/src/views/FeedbackView.vue` 錯誤分類下拉選單的每一個 `<option>` 標籤中，顯式添加 `class="bg-[#111827] text-white"` 以覆寫原生樣式，確保背景為深色且文字為白色。
+
+### 修改檔案
+- `frontend/src/views/FeedbackView.vue`
+
+## 2026-06-23 修正 RAG 功能測試回饋無法在「人工回饋與標註歷史」中顯示之問題
+
+### 問題描述
+使用者在進行 RAG 功能測試回饋後，POST `/api/feedback` 雖然回傳 `200 OK`，但在「人工回饋與標註歷史」頁面中看不到任何已提交的回饋紀錄。原因如下：
+1. 後端 `backend/routers/feedback.py` 中的回饋 API 端點全是 Stub 模擬端點，並未對資料庫進行任何讀取或寫入。
+2. 後端對話為無狀態 (Stateless) 設計，並未在資料庫持久化儲存 `ChatMessage` 與 `ChatSession`，而前端傳遞的 `chat_message_id` 是前端暫時生成的字串（如 `"msg_assistant_1782202045238"`）。因此，後端無法僅依據 `chat_message_id` 從資料庫查找問題 `question` 與 AI 回覆 `ai_answer`，且該 ID 也無法通過 Beanie 模型原本定義的 `PydanticObjectId` 格式驗證。
+
+### 解決方案
+1. **修改前端提交資料**：修改 `frontend/src/components/chat/FeedbackPanel.vue`，在提交回饋時，除原本欄位外，主動送出問題（`props.query`）與 AI 回覆（`props.content`）至後端 API。
+2. **調整後端資料庫模型**：修改 `backend/models/feedback.py` 中的 `Feedback` 模型，將 `chat_message_id` 欄位類型從 `PydanticObjectId` 調整為 `str`，且將 `session_id` 設為 `Optional[str] = None`（預設為 `None`），以相容前端的暫時性欄位。
+3. **實作後端 API 端點邏輯**：重構 `backend/routers/feedback.py`，完整實作回饋紀錄的創建（`POST`）、分頁與篩選查詢（`GET`）、回饋紀錄同步/導出至測試數據集（`POST /export-to-dataset`）以及回饋紀錄導出為 CSV/JSON（`GET /export`，其中 CSV 使用 `utf-8-sig` 編碼防亂碼）。
+
+### 修改檔案
+- `frontend/src/components/chat/FeedbackPanel.vue`
+- `backend/models/feedback.py`
+- `backend/routers/feedback.py`
+
 ## 2026-06-23 修正無向量條件之 Scroll 檢索產生的 Record 物件無 score 屬性錯誤 (導致檔名/標籤純篩選查不到資料)
 
 ### 問題描述

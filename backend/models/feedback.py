@@ -4,8 +4,8 @@ from beanie import Document, Indexed, PydanticObjectId
 from pydantic import Field
 
 class Feedback(Document):
-    chat_message_id: Indexed(PydanticObjectId)
-    session_id: PydanticObjectId
+    chat_message_id: Indexed(str)
+    session_id: Optional[str] = None
     question: str
     ai_answer: str
     is_correct: bool

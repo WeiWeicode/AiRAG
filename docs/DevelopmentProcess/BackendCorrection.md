@@ -1,5 +1,23 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-23 於回饋模組路由新增單筆與批次刪除 API 端點
+
+### 修改內容
+1. `backend/routers/feedback.py`:
+   - 定義 `BatchDeleteRequest` Pydantic Schema（接收 `feedback_ids: List[str]`）。
+   - 實作 `DELETE /{feedback_id}`：根據 PydanticObjectId 解析 ID 並安全刪除特定回饋紀錄。
+   - 實作 `POST /batch-delete`：接受一組 IDs，執行 MongoDB 批次安全刪除。
+
+## 2026-06-23 調整 Feedback 模型並實作回饋 API 端點
+
+### 修改內容
+1. `backend/models/feedback.py`:
+   - 調整 `Feedback` Beanie 模型之欄位。將 `chat_message_id` 的類型從原先的 `PydanticObjectId` 調整為 `str`，以符合前端提交的暫時性字串 ID（例如 `"msg_assistant_1782202045238"`）；並將 `session_id` 設為 `Optional[str] = None`。
+2. `backend/routers/feedback.py`:
+   - 重構該檔案，移除原本僅回傳 `"stub"` 的 Mock 端點，改為對 MongoDB/Beanie 進行真實讀寫。
+   - 實作 `POST /` (建立回饋)、`GET /` (分頁及條件篩選取得回饋清單)、`POST /export-to-dataset` (將特定不正確回饋同步/匯出至指定的評估測試集，若無指定則動態建立新測試集，且在完成後回填回饋資料中的 `exported_to_dataset_id` 欄位)。
+   - 實作 `GET /export` (支援依 format 參數將所有回饋資料匯出下載為 JSON 或 CSV 檔，其中 CSV 格式使用 `utf-8-sig` 編碼，以確保微軟 Excel 能正確解碼繁體中文字元熱區)。
+
 ## 2026-06-23 新增預設 RAG 智慧對話 Prompt 範本測試紀錄 (PromptTestRecord)
 
 ### 修改內容

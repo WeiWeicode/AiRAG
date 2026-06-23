@@ -114,6 +114,36 @@ const submitSync = async () => {
   }
 }
 
+const isDeleting = ref(false)
+
+const handleDelete = async (id) => {
+  if (!confirm('確定要刪除此筆回饋紀錄嗎？')) return
+  
+  try {
+    await feedbackStore.deleteFeedback(id)
+    selectedIds.value.delete(id)
+    await fetchRecords()
+  } catch (error) {
+    alert('刪除失敗，請檢查後端服務與連線')
+  }
+}
+
+const handleBatchDelete = async () => {
+  if (selectedIds.value.size === 0) return
+  if (!confirm(`確定要刪除選取的 ${selectedIds.value.size} 筆回饋紀錄嗎？`)) return
+  
+  isDeleting.value = true
+  try {
+    await feedbackStore.batchDeleteFeedbacks(Array.from(selectedIds.value))
+    selectedIds.value.clear()
+    await fetchRecords()
+  } catch (error) {
+    alert('批次刪除失敗，請檢查後端服務與連線')
+  } finally {
+    isDeleting.value = false
+  }
+}
+
 onMounted(() => {
   fetchRecords()
 })
@@ -133,12 +163,12 @@ onMounted(() => {
             @change="handleFilterChange"
             class="bg-white/5 border border-white/8 rounded-lg text-white px-3.5 py-2 text-xs focus:outline-none focus:border-[#8b5cf6] transition-all min-w-[150px]"
           >
-            <option value="">全部問題類型</option>
-            <option value="hallucination">幻覺 (Hallucination)</option>
-            <option value="incomplete">資訊不完整</option>
-            <option value="wrong_source">引用來源錯誤</option>
-            <option value="format_issue">格式問題</option>
-            <option value="other">其他問題</option>
+            <option value="" class="bg-[#111827] text-white">全部問題類型</option>
+            <option value="hallucination" class="bg-[#111827] text-white">幻覺 (Hallucination)</option>
+            <option value="incomplete" class="bg-[#111827] text-white">資訊不完整</option>
+            <option value="wrong_source" class="bg-[#111827] text-white">引用來源錯誤</option>
+            <option value="format_issue" class="bg-[#111827] text-white">格式問題</option>
+            <option value="other" class="bg-[#111827] text-white">其他問題</option>
           </select>
         </div>
       </div>
@@ -164,6 +194,13 @@ onMounted(() => {
         >
           匯入至評估測試集 ({{ selectedIds.size }})
         </button>
+        <button 
+          @click="handleBatchDelete"
+          :disabled="selectedIds.size === 0 || isDeleting"
+          class="px-4 py-2 bg-rose-600 hover:bg-rose-500 hover:shadow-[0_4px_12px_rgba(244,63,94,0.3)] disabled:bg-rose-950/50 disabled:text-rose-300/30 text-xs text-white font-semibold rounded-lg transition-all"
+        >
+          {{ isDeleting ? '刪除中...' : `刪除選取 (${selectedIds.size})` }}
+        </button>
       </div>
     </div>
 
@@ -185,14 +222,15 @@ onMounted(() => {
               <th class="pb-3 font-medium">問答與回饋標記比對</th>
               <th class="pb-3 text-center w-[120px] font-medium">錯誤類型</th>
               <th class="pb-3 text-right w-[150px] font-medium">提交時間</th>
+              <th class="pb-3 text-center w-[80px] font-medium">操作</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-white/4">
             <tr v-if="feedbackStore.isLoading" class="text-[#9ca3af] text-center">
-              <td colspan="5" class="py-8">載入中...</td>
+              <td colspan="6" class="py-8">載入中...</td>
             </tr>
             <tr v-else-if="feedbackStore.feedbackList.length === 0" class="text-[#6b7280] text-center">
-              <td colspan="5" class="py-8">尚無符合條件的回饋紀錄</td>
+              <td colspan="6" class="py-8">尚無符合條件的回饋紀錄</td>
             </tr>
             <tr 
               v-else
@@ -224,6 +262,17 @@ onMounted(() => {
               </td>
               <td class="py-4 text-right text-[#6b7280] font-display">
                 {{ new Date(item.created_at || Date.now()).toLocaleString() }}
+              </td>
+              <td class="py-4 text-center">
+                <button 
+                  @click="handleDelete(item.feedback_id)"
+                  class="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 p-1.5 rounded-lg transition-all"
+                  title="刪除此紀錄"
+                >
+                  <svg class="w-4 h-4 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                  </svg>
+                </button>
               </td>
             </tr>
           </tbody>

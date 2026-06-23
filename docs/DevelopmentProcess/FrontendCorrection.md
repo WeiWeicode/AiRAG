@@ -1,5 +1,29 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-23 於回饋歷史頁面新增單筆與批次刪除操作
+
+### 修改內容
+1. `frontend/src/stores/feedbackStore.js`:
+   - 在 Pinia store 中新增 `deleteFeedback(feedbackId)` 與 `batchDeleteFeedbacks(feedbackIds)` 兩個 API 請求 actions。
+2. `frontend/src/views/FeedbackView.vue`:
+   - 新增 `handleDelete(id)` 與 `handleBatchDelete()` 方法，分別實行帶確認提示的單筆與批次刪除。
+   - 列表標題操作欄新增「刪除選取 (N)」按鈕（使用 rose 紅色主題與 shadow），在無項目被勾選時設為 disabled。
+   - 資料表格新增「操作」欄位，並為每筆回饋項目末端新增紅色的垃圾桶圖示按鈕，提供快速的單筆刪除管道。
+   - 更新載入中與無數據時的 `colspan` 設定為 `6`，確保表格佈局正常對齊。
+
+## 2026-06-23 修正回饋歷史篩選下拉式選單選項文字看不清之問題
+
+### 修改內容
+1. `frontend/src/views/FeedbackView.vue`:
+   - 在篩選錯誤分類的 `<select>` 下拉選單中，為各 `<option>` 標籤添加 `class="bg-[#111827] text-white"`。以避免瀏覽器在原生渲染下拉選單時，因為繼承父級 `text-white` 而在預設的白色背景中顯示白字，導致選項文字看不清的問題。
+   - 執行 `npm run build` 重新編譯前端發布資源。
+
+## 2026-06-23 修正回饋提交載荷以包含問題與回答內容
+
+### 修改內容
+1. `frontend/src/components/chat/FeedbackPanel.vue`:
+   - 修改 `handleSave` 函式。在呼叫 `feedbackStore.submitFeedback` 時，除了原先傳送的 `chat_message_id`、`is_correct`、`correct_answer`、`error_type` 與 `note` 外，主動加上 `question`（帶入 `props.query`）與 `ai_answer`（帶入 `props.content`）欄位，使後端在對話歷史無狀態下亦能獲取並儲存完整的回饋問答比對內容。
+
 ## 2026-06-23 新增對話引用來源 Chunks 內容懸浮視窗 (Tooltip)
 
 ### 修改內容

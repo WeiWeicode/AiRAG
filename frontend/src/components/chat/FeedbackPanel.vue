@@ -71,7 +71,9 @@ const handleSave = async () => {
       is_correct: false,
       correct_answer: groundTruth.value.trim(),
       error_type,
-      note: note.value.trim() || `多選標記: ${errorTypes.join(', ')}`
+      note: note.value.trim() || `多選標記: ${errorTypes.join(', ')}`,
+      question: props.query,
+      ai_answer: props.content
     })
     
     emit('saved')
