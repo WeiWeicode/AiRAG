@@ -1,5 +1,23 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-24 於自訂資料向量化頁面新增「清空與重置」按鈕
+
+### 修改內容
+1. `frontend/src/views/EmbeddingTestView.vue`:
+   - **新增重設狀態函式 `resetFields`**：實作狀態重置邏輯，將上傳檔案 ID、文字內容、檔案名稱（回復預設 `unknown`）、標籤欄位、切分預覽陣列以及向量化統計狀態一鍵清空/還原。
+   - **按鈕 UI 佈局整合**：於主編輯區下方的動作按鈕列（Action Buttons Container）最右側，新增一個紅字/紅框半透明的「🔄 清空與重置」按鈕，並使用 `ml-auto` 使其與主要功能按鈕保持適當的視覺區隔。
+
+## 2026-06-24 於自訂資料向量化頁面實作段落文字結構化 (Structured Chunks) 控制與格式整合
+
+### 修改內容
+1. `frontend/src/stores/paramsStore.js`:
+   - 新增 `enableStructuring: true` 到 Pinia params store 中，用於全域控制與保存是否啟用文字結構化切分。
+2. `frontend/src/components/params/ChunkingParams.vue`:
+   - 於切分參數邊欄的「切分符號」下方，新增磨砂玻璃風格的「啟用文字結構化 (Structure Text)」Checkbox 核取方塊，實現開關狀態與 store 的雙向綁定。
+3. `frontend/src/views/EmbeddingTestView.vue`:
+   - **自訂 Token 估算函式 `estimateTokens`**：實作與後端一致的 CJK / 英文 / 其它字元 Token 比例計算機制，以精確估算結構化後段落的真實 Token 數。
+   - **切分內容重組邏輯**：於 `triggerChunking` 中獲取後端原始切分 chunks 後，若 `enableStructuring` 為真，自動將各 chunk 的 content 重組成含有 `[檔案名稱]`、`[段落編號]`（1-based 遞增）、`[分類標籤]` 與 `[主要內容]` 的結構化 Markdown 文字段落，並同步覆寫其字元數與 Token 數，使用戶預覽與最終寫入 Qdrant 的向量段落能完全對齊一致。
+
 ## 2026-06-24 提升 E2E 測試對話之 SSE Stream 串流與來源資料 Chunks 解析穩定度
 
 ### 修改內容

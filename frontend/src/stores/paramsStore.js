@@ -19,6 +19,7 @@ export const useParamsStore = defineStore('params', {
     chunkSize: 512,
     chunkOverlap: 50,
     separator: '\\n\\n',
+    enableStructuring: true,
   }),
   actions: {
     updateParams(newParams) {

@@ -1,5 +1,24 @@
 <!-- 新增功能紀錄 -->
 
+## 2026-06-24 新增自訂資料向量化文字結構化 (Structured Chunks) 功能
+
+### 功能描述
+於「自訂資料向量化 (Embedding & Indexing)」頁面之切分預覽功能中，新增文字結構化設定。啟用此功能後，文字切分時將自動結合檔案名稱、段落編號與分類標籤資訊，整合成結構化格式再進行向量化寫入 Qdrant 向量資料庫，以強化後續 RAG 檢索的語意關聯與元資料提取品質。
+
+### 實作內容
+1. **全域參數擴充**：
+   - 修改 `frontend/src/stores/paramsStore.js`，於 Pinia store 中新增 `enableStructuring` 狀態開關，預設為 `true`。
+2. **參數控制面板整合**：
+   - 修改 `frontend/src/components/params/ChunkingParams.vue`，在切分參數邊欄的切分符號下方新增「啟用文字結構化 (Structure Text)」的 checkbox 開關，支援全域狀態雙向綁定。
+3. **前端切分邏輯整合與精確估算**：
+   - 修改 `frontend/src/views/EmbeddingTestView.vue`，當執行「開始文本切分」時，若啟用文字結構化，則自動將各個 chunk 依據格式範本（含檔名、段落、標籤與主要內容）進行字串重新格式化。
+   - 實作前端的 CJK 字元/英文 token 精確估算器 `estimateTokens`，動態更新結構化段落的 tokens 數與字元數以提供最真實的切分預覽，並確保寫入資料庫的內容完全與預覽一致。
+
+### 修改檔案
+- `frontend/src/stores/paramsStore.js`
+- `frontend/src/components/params/ChunkingParams.vue`
+- `frontend/src/views/EmbeddingTestView.vue`
+
 ## 2026-06-23 新增 Qdrant 雙路召回與 RRF 混合檢索 (Hybrid Search) 功能
 
 ### 功能描述

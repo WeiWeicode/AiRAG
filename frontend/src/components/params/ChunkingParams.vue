@@ -56,5 +56,18 @@ const paramsStore = useParamsStore()
         placeholder="例如: \n\n"
       />
     </div>
+
+    <!-- Structure Text Option -->
+    <div class="flex items-center gap-2.5 pt-1 border-t border-white/5 mt-1">
+      <input 
+        v-model="paramsStore.enableStructuring" 
+        type="checkbox" 
+        id="enableStructuring"
+        class="w-4 h-4 rounded bg-white/5 border border-white/12 text-[#8b5cf6] focus:ring-[#8b5cf6]/50 cursor-pointer accent-[#8b5cf6]"
+      />
+      <label for="enableStructuring" class="text-xs font-semibold text-[#9ca3af] cursor-pointer select-none">
+        啟用文字結構化 (Structure Text)
+      </label>
+    </div>
   </div>
 </template>

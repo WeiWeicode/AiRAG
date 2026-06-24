@@ -38,6 +38,15 @@ const handleUploadSuccess = (data) => {
   }
 }
 
+const estimateTokens = (text) => {
+  if (!text) return 0
+  const englishWords = (text.match(/\b[a-zA-Z0-9]+\b/g) || []).length
+  const cjkChars = (text.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length
+  const otherChars = text.length - (englishWords * 4) - cjkChars
+  const estimated = Math.round(cjkChars * 0.85 + englishWords * 1.3 + otherChars * 0.3)
+  return Math.max(1, estimated)
+}
+
 const triggerChunking = async () => {
   if (!rawTextContent.value.trim()) {
     alert('請上傳檔案或在此貼上純文字內容以進行切分測試。')
@@ -59,13 +68,42 @@ const triggerChunking = async () => {
       }
     }
     const response = await embeddingService.chunkText(payload)
-    chunksList.value = response.chunks || []
+    let chunks = response.chunks || []
+    
+    if (paramsStore.enableStructuring) {
+      const parsedTags = tagsString.value.split(',')
+        .map(t => t.trim())
+        .filter(t => t.length > 0)
+      const tags = parsedTags.join(', ') || '一般'
+      const fname = filename.value || 'unknown'
+      
+      chunks = chunks.map(c => {
+        const structuredContent = `[檔案名稱] ${fname}\n[段落編號] 第 ${c.index + 1} 段\n[分類標籤] ${tags}\n[主要內容]\n${c.content}`
+        return {
+          ...c,
+          content: structuredContent,
+          char_count: structuredContent.length,
+          token_count: estimateTokens(structuredContent)
+        }
+      })
+    }
+    
+    chunksList.value = chunks
   } catch (error) {
     console.error('Backend chunking call failed:', error)
     alert('文本切分失敗，請檢查後端服務與連線')
   } finally {
     isChunking.value = false
   }
+}
+
+const resetFields = () => {
+  uploadedFileId.value = ''
+  filename.value = 'unknown'
+  tagsString.value = ''
+  rawTextContent.value = ''
+  chunksList.value = []
+  vectorizationStats.value = null
 }
 
 const triggerVectorization = async () => {
@@ -316,6 +354,15 @@ const handleBatchDeleteManagement = async () => {
               class="px-5 py-2.5 bg-[#8b5cf6] hover:bg-[#a78bfa] hover:shadow-[0_4px_12px_rgba(139,92,246,0.3)] disabled:bg-purple-900/50 disabled:text-purple-300/50 text-xs text-white font-semibold rounded-lg transition-all"
             >
               {{ isVectorizing ? '寫入中...' : '向量化並寫入資料庫' }}
+            </button>
+            <button 
+              @click="resetFields"
+              class="px-5 py-2.5 border border-red-500/20 hover:border-red-500/40 text-xs text-red-300 font-semibold rounded-lg bg-red-500/5 hover:bg-red-500/10 transition-all ml-auto flex items-center gap-1.5"
+            >
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+              </svg>
+              清空與重置
             </button>
           </div>
         </div>
