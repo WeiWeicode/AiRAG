@@ -32,6 +32,7 @@ class EvalParamsInput(BaseModel):
     temperature: Optional[float] = None
     top_k: Optional[int] = None
     score_threshold: Optional[float] = None
+    max_tokens: Optional[int] = None
 
 class EvalRunRequest(BaseModel):
     dataset_id: str
@@ -214,6 +215,10 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
         if payload.params and payload.params.score_threshold is not None:
             score_threshold = payload.params.score_threshold
 
+        max_tokens = 8192
+        if payload.params and payload.params.max_tokens is not None:
+            max_tokens = payload.params.max_tokens
+
         for idx, item in enumerate(items_to_eval):
             # 發送進度狀態
             yield f"event: progress\ndata: {json.dumps({'index': idx + 1, 'question': item.question}, ensure_ascii=False)}\n\n"
@@ -261,7 +266,7 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
                 generated_answer = await LLMService.chat_completion(
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=1024,
+                    max_tokens=max_tokens,
                     stream=False
                 )
                 generated_answer = generated_answer.strip()
@@ -361,7 +366,8 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
             params=EvalParams(
                 temperature=payload.params.temperature if (payload.params and payload.params.temperature is not None) else 0.3,
                 top_k=top_k,
-                score_threshold=score_threshold
+                score_threshold=score_threshold,
+                max_tokens=max_tokens
             ),
             summary=summary_metrics,
             details=details,

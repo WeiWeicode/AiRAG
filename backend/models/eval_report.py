@@ -7,6 +7,7 @@ class EvalParams(BaseModel):
     temperature: float = 0.3
     top_k: int = 5
     score_threshold: float = 0.7
+    max_tokens: Optional[int] = 1024
 
 class EvalMetrics(BaseModel):
     faithfulness: float = 0.0

@@ -1,5 +1,16 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-24 支援評估任務中自訂生成最大 Token 數 (max_tokens) 參數
+
+### 修改內容
+1. `backend/models/eval_report.py`:
+   - 修改 `EvalParams` schema，新增 `max_tokens: Optional[int] = 1024` 欄位並提供預設值，確保資料庫儲存與舊資料庫欄位向前相容。
+2. `backend/routers/evaluation.py`:
+   - 在 `EvalParamsInput` Pydantic schema 中，新增 `max_tokens` 選填參數。
+   - 修改 `/run` 串流評估 API 邏輯：從 payload.params 中解析 `max_tokens` 參數（若無則預設為 `1024`）。
+   - 在呼叫對答生成服務 `LLMService.chat_completion(...)` 時，動態將該 `max_tokens` 設定傳入，取代原先寫死的 `1024`，讓使用者有能力控制超長答覆與思考流程。
+   - 在最終向 Beanie / MongoDB 儲存 `EvalReport` 報告實體時，將此參數保存進報告的 `params` 欄位中，以便留存日誌查閱。
+
 ## 2026-06-24 實作 Qdrant 向量 Points 批次刪除 API 支援
 
 ### 修改內容

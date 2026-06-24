@@ -1,5 +1,16 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-24 於準確度評估頁面新增生成最大 Token 數 (max_tokens) 調整拉桿
+
+### 修改內容
+1. `frontend/src/components/eval/TestSetManager.vue`:
+   - 新增 `maxTokens` ref，預設為 `2048`。
+   - 在測試集選擇下拉選單下方，新增一個具備質感玻璃磨砂底座的 Range Slider (橫條拉桿)，支援範圍從 512 到 8192（步進 256），並動態顯示目前選取的 Token 數。
+   - 修改「開始自動評估」的 click 觸發，向父元件 emit 包含 `datasetId` 與 `maxTokens` 的物件。
+2. `frontend/src/views/EvaluationView.vue`:
+   - 修改 `startEvaluation` 接收參數以相容解構傳入的 `maxTokens`。
+   - 將 `maxTokens` 夾帶於 API 呼叫的 `params.max_tokens` Payload 中，順利傳遞至後端以調整產出限制。
+
 ## 2026-06-24 於自訂資料向量化頁面整合「已向量化資料管理與刪除」分頁
 
 ### 修改內容
