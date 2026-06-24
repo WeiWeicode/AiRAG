@@ -167,9 +167,9 @@ async def rag_chat_stream(request: ChatRequest):
         error_msg = f"[系統連線錯誤] 無法從 vLLM 服務取得回覆：{str(llm_e)}"
         yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': error_msg}, ensure_ascii=False)}\n\n"
 
-    # 4. 傳送 done 事件與 sources 事件給前端
-    yield f"event: chunk\ndata: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+    # 4. 傳送 sources 事件與 done 事件給前端
     yield f"event: sources\ndata: {json.dumps({'sources': sources}, ensure_ascii=False)}\n\n"
+    yield f"event: chunk\ndata: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
 @router.post("/chat")
 async def chat_stub(request: ChatRequest):

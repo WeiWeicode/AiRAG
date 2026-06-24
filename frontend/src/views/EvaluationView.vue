@@ -139,18 +139,21 @@ const startEvaluation = async (data) => {
     const reader = response.body.getReader()
     const decoder = new TextDecoder('utf-8')
     let buffer = ''
+    let currentEvent = null
     
     while (true) {
       const { value, done } = await reader.read()
-      if (done) break
+      if (value) {
+        buffer += decoder.decode(value, { stream: true })
+      }
       
-      buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
+      if (!done) {
+        buffer = lines.pop()
+      } else {
+        buffer = ''
+      }
       
-      // 最後一行可能是不完整的，先暫存回 buffer
-      buffer = lines.pop()
-      
-      let currentEvent = null
       for (const line of lines) {
         const trimmedLine = line.trim()
         if (trimmedLine.startsWith('event:')) {
@@ -183,6 +186,7 @@ const startEvaluation = async (data) => {
           }
         }
       }
+      if (done) break
     }
   } catch (error) {
     console.error('Backend evaluation call failed:', error)

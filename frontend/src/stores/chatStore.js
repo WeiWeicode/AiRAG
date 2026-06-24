@@ -112,17 +112,20 @@ export const useChatStore = defineStore('chat', {
         let rawContentAccumulator = ''
         let reasoningAccumulator = ''
 
+        let currentEvent = null
+
         while (true) {
           const { value, done } = await reader.read()
-          if (done) break
+          if (value) {
+            buffer += decoder.decode(value, { stream: true })
+          }
 
-          buffer += decoder.decode(value, { stream: true })
           const lines = buffer.split('\n')
-          
-          // Save the last partial line back to buffer
-          buffer = lines.pop()
-
-          let currentEvent = null
+          if (!done) {
+            buffer = lines.pop()
+          } else {
+            buffer = ''
+          }
 
           for (const line of lines) {
             const trimmedLine = line.trim()
@@ -192,6 +195,8 @@ export const useChatStore = defineStore('chat', {
               }
             }
           }
+
+          if (done) break
         }
       } catch (error) {
         console.error('Error during streaming:', error)

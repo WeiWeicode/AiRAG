@@ -1,5 +1,13 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-24 提升 E2E 測試對話之 SSE Stream 串流與來源資料 Chunks 解析穩定度
+
+### 修改內容
+1. `frontend/src/stores/chatStore.js` 與 `frontend/src/views/EvaluationView.vue`:
+   - **重構 `currentEvent` 作用域**：將原本宣告在 `while (true)` 迴圈內部的 `let currentEvent = null` 移至迴圈**外部**。
+   - **原因分析**：當大封包（如 `sources` JSON）因網路延遲被切分在多個 `reader.read()` 區塊時，先前做法會在每一輪讀取開頭將 `currentEvent` 重置為 `null`，使得後續讀取到的 `data:` 行無法配對上一個區塊的 `event:` 狀態，導致來源資料被前端靜默忽略。移至迴圈外部宣告可使 event 狀態跨 TCP 封包邊界持久存在。
+   - **緩衝區處理強固**：重構串流讀取循環 `while(true)` 中的 buffer 截斷與分行解析邏輯。優化為在 `done` 狀態為 true 時，不再粗暴 break 迴圈，而是清空 `buffer` 前將其最後一行（即便沒有以 `\n` 結尾）也納入 complete lines 的處理中，並將 `if (done) break` 移至迴圈末尾，保證在任何網路分包或 Proxy (Nginx) 情境下，所有事件均被完整讀取。
+
 ## 2026-06-24 於準確度評估頁面新增生成最大 Token 數 (max_tokens) 調整拉桿
 
 ### 修改內容
