@@ -76,3 +76,28 @@
 - `backend/models/mongodb.py`
 - `backend/routers/prompt.py`
 - `frontend/src/views/PromptTestView.vue`
+
+## 2026-06-24 新增刪除向量資料的 Points 功能 (含檔案名稱過濾與批次刪除)
+
+### 功能描述
+於向量檢索測試頁面中新增 Qdrant 向量 Points 的管理與刪除功能，免去手動登入 Qdrant 後台的操作。功能包含：透過知識庫元資料（Metadata）動態取得唯一檔案清單並進行前端下拉式檔案名稱過濾篩選、檢索結果的單筆與 checkbox 多選核取，以及批次永久刪除 Qdrant 向量 Points 並連帶更新 MongoDB 知識庫的 chunk 總數。
+
+### 實作內容
+1. **後端 Qdrant 服務與 API 端點實作**：
+   - 修改 `backend/services/qdrant_service.py`：新增 `delete_points` 類別方法，封裝 `AsyncQdrantClient.delete` 並使用 `PointIdsList` 進行 Qdrant 點的刪除。
+   - 修改 `backend/schemas/retrieval.py`：新增 `BatchDeleteRequest` 結構，包含要刪除的點 ID 列表 (`point_ids: List[str]`)。
+   - 修改 `backend/routers/retrieval.py`：新增 `POST /api/retrieval/knowledge-bases/{knowledge_base_id}/points/batch-delete` 路由端點。刪除 Qdrant 對應 Point 後，自動將 MongoDB 中該知識庫紀錄的 `chunk_count` 扣除對應刪除數量並保存。
+2. **前端服務對接**：
+   - 修改 `frontend/src/services/retrievalService.js`：新增 `batchDeletePoints(knowledgeBaseId, pointIds)` 方法對接後端批次刪除 API。
+3. **前端 UI 與交互優化**：
+   - 修改 `frontend/src/views/RetrievalTestView.vue`：
+     - **檔案名稱過濾**：新增 `watch` 監聽知識庫 ID，當切換時自動向 `/api/knowledge-bases/{id}/metadata` 請求元資料，並提供 `檔案名稱過濾` 下拉選單供使用者限制檢索範圍。
+     - **單筆刪除與批次刪除**：在檢索結果列表的每一筆資料右上角放置紅色垃圾桶圖示，點擊可單獨刪除該點；列表左上方新增全選與「刪除所選」按鈕，配合每筆資料左側 Checkbox 供多選與批次刪除。
+     - **即時響應**：點擊刪除並確認後，直接在前端結果陣列中剔除已刪除的資料，不需重新發起搜尋即可即時更新。
+
+### 修改檔案
+- `backend/services/qdrant_service.py`
+- `backend/schemas/retrieval.py`
+- `backend/routers/retrieval.py`
+- `frontend/src/services/retrievalService.js`
+- `frontend/src/views/RetrievalTestView.vue`

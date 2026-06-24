@@ -43,3 +43,7 @@ class QueryTransformResponse(BaseModel):
     transformed_query: str
     strategy: str
     results: List[RetrievalResultItem] = Field(default_factory=list)
+
+class BatchDeleteRequest(BaseModel):
+    point_ids: List[str]
+

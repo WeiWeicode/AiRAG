@@ -1,6 +1,31 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-24 於自訂資料向量化頁面整合「已向量化資料管理與刪除」分頁
+
+### 修改內容
+1. `frontend/src/views/EmbeddingTestView.vue`:
+   - **新增分頁 (Tabs)**：在左側主編輯區頂部新增分頁切換器，支援「資料切分與向量化寫入 (indexing)」與「已向量化資料管理與刪除 (management)」兩個分頁。
+   - **資料加載與篩選**：在「已向量化資料管理與刪除」分頁中，新增動態檔案名稱下拉選單。選擇檔案後，可向後端發送空搜尋請求（藉此觸發 backend 進行 Qdrant Scroll 檢索），撈出該檔案於指定知識庫中的所有向量 Point 段落。
+   - **獨立刪除與批次刪除**：在此分頁中同步提供「全選」Checkbox 與「批次刪除選取 (N)」按鈕，並在每個向量段落卡片右上角放置單筆刪除按鈕，實現點對點的高效管理。
+   - **右側欄佈局優化**：當處於管理分頁時，自動隱藏無關的「切分預覽 (Chunks Preview)」面板，維持操作介面的專注度。
+
+## 2026-06-24 於向量搜尋測試頁面新增檔案過濾選單與多選刪除功能
+
+
+### 修改內容
+1. `frontend/src/services/retrievalService.js`:
+   - 新增 `batchDeletePoints(knowledgeBaseId, pointIds)` 方法，串接後端批次刪除 Points API。
+2. `frontend/src/views/RetrievalTestView.vue`:
+   - **狀態與資料加載**：導入 `watch` 與 `computed`。新增 `filenames`（唯一檔案清單）、`filterFilename`（目前選取的篩選檔案）以及 `selectedChunkIds`（目前勾選的 Points 列表）等 refs。監聽 `paramsStore.knowledgeBaseId` 以自動請求 `/api/knowledge-bases/{id}/metadata` 來更新當前知識庫的所有可用檔案。
+   - **檢索負載更新**：在 `/api/retrieval/search` 的 payload 參數中附加 `filter_filename`，配合下拉選單即時篩選特定檔案。
+   - **單筆與批次刪除 UI 整合**：
+     - 在檢索結果列表的每一張卡片右上角加上紅色垃圾桶按鈕，點擊觸發 `handleDeleteSingle(pointId)` 安全單筆刪除。
+     - 在卡片左側加入 checkbox 進行多選核取。
+     - 列表統計區域旁新增「全選」Checkbox 與動態顯示勾選數量的「刪除所選 (N)」按鈕，點擊觸發 `handleBatchDelete()` 完成 Qdrant 資料點之批次清理。
+     - 刪除成功後，即時從前端 local states 清除已刪除的數據以流暢響應 UI。
+
 ## 2026-06-23 於回饋歷史頁面新增單筆與批次刪除操作
+
 
 ### 修改內容
 1. `frontend/src/stores/feedbackStore.js`:

@@ -1,6 +1,18 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-24 實作 Qdrant 向量 Points 批次刪除 API 支援
+
+### 修改內容
+1. `backend/schemas/retrieval.py`:
+   - 新增 `BatchDeleteRequest` Pydantic Model，定義接收點 ID 列表 (`point_ids: List[str]`)。
+2. `backend/services/qdrant_service.py`:
+   - 新增 `delete_points(cls, collection_name: str, point_ids: List[str]) -> bool` 方法，透過 Qdrant 異步客戶端的 `delete` 方法與 `PointIdsList` 刪除指定的一組點。
+3. `backend/routers/retrieval.py`:
+   - 導入 `BatchDeleteRequest` 與 `datetime`。
+   - 新增 `POST /knowledge-bases/{knowledge_base_id}/points/batch-delete` 路由端點。此端點會驗證知識庫與其 Collection，呼叫 `QdrantService.delete_points` 進行批次刪除，並同步扣除 MongoDB 中的 `chunk_count` 以保持狀態一致。
+
 ## 2026-06-23 實作 Qdrant 雙路召回與 RRF 混合檢索 (Hybrid Search) 後端支援
+
 
 ### 修改內容
 1. `backend/requirements.txt`:

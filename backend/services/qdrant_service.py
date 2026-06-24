@@ -302,3 +302,23 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Failed to scroll unique metadata from Qdrant: {e}")
             return {"filenames": [], "tags": []}
+
+    @classmethod
+    async def delete_points(cls, collection_name: str, point_ids: List[str]) -> bool:
+        """
+        從指定 Collection 中批次刪除特定的 Points (向量節點)
+        """
+        client = cls.get_client()
+        try:
+            await client.delete(
+                collection_name=collection_name,
+                points_selector=models.PointIdsList(
+                    points=point_ids
+                )
+            )
+            logger.info(f"Successfully deleted {len(point_ids)} points from collection '{collection_name}'.")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete points from collection '{collection_name}': {e}")
+            return False
+

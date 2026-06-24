@@ -8,5 +8,12 @@ export default {
   async queryTransform(payload) {
     const response = await api.post('/api/retrieval/query-transform', payload)
     return response.data
+  },
+  async batchDeletePoints(knowledgeBaseId, pointIds) {
+    const response = await api.post(`/api/retrieval/knowledge-bases/${knowledgeBaseId}/points/batch-delete`, {
+      point_ids: pointIds
+    })
+    return response.data
   }
 }
+

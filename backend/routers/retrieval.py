@@ -3,9 +3,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from beanie import PydanticObjectId
 
+from datetime import datetime
 from schemas.retrieval import (
     RetrievalRequest, RetrievalResponse, RetrievalResultItem, RetrievalMetadata,
-    QueryTransformRequest, QueryTransformResponse
+    QueryTransformRequest, QueryTransformResponse, BatchDeleteRequest
 )
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
@@ -160,3 +161,48 @@ async def query_transform(request: QueryTransformRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"查詢轉換失敗: {str(e)}"
         )
+
+
+@router.post("/knowledge-bases/{knowledge_base_id}/points/batch-delete")
+async def batch_delete_points(knowledge_base_id: str, request: BatchDeleteRequest):
+    """
+    批次刪除指定知識庫中的多個 Points (向量節點)
+    """
+    try:
+        kb_id = PydanticObjectId(knowledge_base_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="無效的知識庫 ID 格式"
+        )
+        
+    kb = await KnowledgeBase.get(kb_id)
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定的知識庫不存在"
+        )
+        
+    if not request.point_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="請提供至少一個 Point ID 進行刪除"
+        )
+        
+    success = await QdrantService.delete_points(kb.qdrant_collection_name, request.point_ids)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="無法從向量資料庫中刪除指定的 Points"
+        )
+        
+    # 更新 MongoDB 中的 chunk_count
+    kb.chunk_count = max(0, kb.chunk_count - len(request.point_ids))
+    kb.updated_at = datetime.utcnow()
+    await kb.save()
+    
+    return {
+        "message": "批次刪除成功",
+        "deleted_count": len(request.point_ids)
+    }
+

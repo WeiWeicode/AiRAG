@@ -1,8 +1,9 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useParamsStore } from '../stores/paramsStore'
 import KnowledgeBaseSelector from '../components/common/KnowledgeBaseSelector.vue'
 import retrievalService from '../services/retrievalService'
+import api from '../services/api'
 
 const paramsStore = useParamsStore()
 
@@ -19,6 +20,43 @@ const originalQuery = ref('')
 const transformedQuery = ref('')
 const activeStrategy = ref('')
 
+// Filename and selection states
+const filenames = ref([])
+const filterFilename = ref('')
+const selectedChunkIds = ref([])
+
+const fetchMetadata = async () => {
+  if (!paramsStore.knowledgeBaseId) return
+  try {
+    const response = await api.get(`/api/knowledge-bases/${paramsStore.knowledgeBaseId}/metadata`)
+    filenames.value = response.data?.filenames || []
+    if (filterFilename.value && !filenames.value.includes(filterFilename.value)) {
+      filterFilename.value = ''
+    }
+  } catch (error) {
+    console.error('無法取得知識庫元資料，請檢查後端連線:', error)
+  }
+}
+
+watch(() => paramsStore.knowledgeBaseId, (newId) => {
+  if (newId) {
+    fetchMetadata()
+    selectedChunkIds.value = []
+  }
+}, { immediate: true })
+
+const isAllSelected = computed(() => {
+  return results.value.length > 0 && selectedChunkIds.value.length === results.value.length
+})
+
+const toggleSelectAll = () => {
+  if (isAllSelected.value) {
+    selectedChunkIds.value = []
+  } else {
+    selectedChunkIds.value = results.value.map(r => r.chunk_id)
+  }
+}
+
 const handleSearch = async () => {
   if (!queryText.value.trim()) return
   
@@ -26,6 +64,7 @@ const handleSearch = async () => {
   results.value = []
   originalQuery.value = ''
   transformedQuery.value = ''
+  selectedChunkIds.value = []
   
   try {
     const parsedFilterTags = paramsStore.filterTagsString.split(',')
@@ -40,7 +79,8 @@ const handleSearch = async () => {
         score_threshold: paramsStore.scoreThreshold,
         search_type: searchType.value,
         hnsw_ef_search: hnswEfSearch.value,
-        filter_tags: parsedFilterTags.length > 0 ? parsedFilterTags : undefined
+        filter_tags: parsedFilterTags.length > 0 ? parsedFilterTags : undefined,
+        filter_filename: filterFilename.value || undefined
       }
     }
     const response = await retrievalService.search(payload)
@@ -59,6 +99,7 @@ const handleTransform = async (strategy) => {
   
   isSearching.value = true
   results.value = []
+  selectedChunkIds.value = []
   
   try {
     const payload = {
@@ -77,6 +118,36 @@ const handleTransform = async (strategy) => {
     alert('Query 轉換測試失敗，請檢查後端服務')
   } finally {
     isSearching.value = false
+  }
+}
+
+const handleDeleteSingle = async (pointId) => {
+  if (!confirm('確定要永久刪除此向量段落資料嗎？')) return
+  
+  try {
+    await retrievalService.batchDeletePoints(paramsStore.knowledgeBaseId, [pointId])
+    results.value = results.value.filter(res => res.chunk_id !== pointId)
+    selectedChunkIds.value = selectedChunkIds.value.filter(id => id !== pointId)
+    fetchMetadata()
+  } catch (error) {
+    console.error('刪除向量資料失敗:', error)
+    alert('刪除失敗，請檢查後端連線或權限設定')
+  }
+}
+
+const handleBatchDelete = async () => {
+  if (selectedChunkIds.value.length === 0) return
+  if (!confirm(`確定要永久刪除選取的 ${selectedChunkIds.value.length} 筆向量資料段落嗎？`)) return
+  
+  try {
+    await retrievalService.batchDeletePoints(paramsStore.knowledgeBaseId, selectedChunkIds.value)
+    const deletedSet = new Set(selectedChunkIds.value)
+    results.value = results.value.filter(res => !deletedSet.has(res.chunk_id))
+    selectedChunkIds.value = []
+    fetchMetadata()
+  } catch (error) {
+    console.error('批次刪除向量資料失敗:', error)
+    alert('批次刪除失敗，請檢查後端連線或權限設定')
   }
 }
 </script>
@@ -131,9 +202,33 @@ const handleTransform = async (strategy) => {
 
       <!-- Search Results Area -->
       <div class="flex-grow bg-[#111827]/40 border border-white/8 rounded-2xl p-6 overflow-hidden flex flex-col">
-        <!-- Results stats -->
+        <!-- Results stats & Batch Actions -->
         <div class="flex justify-between items-center mb-4 flex-shrink-0">
-          <h3 class="font-semibold text-white text-sm">搜尋結果 ({{ results.length }} 筆)</h3>
+          <div class="flex items-center gap-4">
+            <h3 class="font-semibold text-white text-sm">搜尋結果 ({{ results.length }} 筆)</h3>
+            <div v-if="results.length > 0" class="flex items-center gap-3 border-l border-white/10 pl-4">
+              <label class="flex items-center gap-1.5 text-xs text-[#9ca3af] cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  :checked="isAllSelected" 
+                  @change="toggleSelectAll"
+                  class="rounded bg-white/5 border-white/10 text-[#8b5cf6] focus:ring-[#8b5cf6]/50 cursor-pointer"
+                />
+                全選
+              </label>
+              <button 
+                v-if="selectedChunkIds.length > 0"
+                @click="handleBatchDelete"
+                class="bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 px-2.5 py-1 rounded text-xs font-semibold flex items-center gap-1 transition-all"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                刪除所選 ({{ selectedChunkIds.length }})
+              </button>
+            </div>
+          </div>
           <span v-if="elapsedMs" class="text-xs text-[#6b7280]">查詢耗時: <strong class="text-white">{{ elapsedMs }}</strong> ms</span>
         </div>
 
@@ -168,14 +263,20 @@ const handleTransform = async (strategy) => {
           <div 
             v-else
             v-for="(res, idx) in results" 
-            :key="idx" 
+            :key="res.chunk_id || idx" 
             class="bg-white/2 border border-white/8 rounded-xl p-4 hover:border-white/16 hover:bg-white/4 transition-all"
           >
             <div class="flex justify-between items-center gap-4 mb-3 border-b border-white/5 pb-2">
-              <span class="text-xs font-semibold text-white truncate flex items-center gap-2">
-                <span>[{{ res.metadata?.filename || '未知檔案' }}] P.{{ res.metadata?.page || '?' }}</span>
-                <span class="text-[#6b7280]">段落索引: #{{ res.metadata?.chunk_index || idx }}</span>
-                <span v-if="res.metadata?.tags?.length" class="flex gap-1">
+              <span class="text-xs font-semibold text-white truncate flex items-center gap-2 flex-grow min-w-0">
+                <input 
+                  type="checkbox" 
+                  v-model="selectedChunkIds"
+                  :value="res.chunk_id"
+                  class="rounded bg-white/5 border-white/10 text-[#8b5cf6] focus:ring-[#8b5cf6]/50 cursor-pointer flex-shrink-0"
+                />
+                <span class="truncate">[{{ res.metadata?.filename || '未知檔案' }}] P.{{ res.metadata?.page || '?' }}</span>
+                <span class="text-[#6b7280] flex-shrink-0">段落索引: #{{ res.metadata?.chunk_index || idx }}</span>
+                <span v-if="res.metadata?.tags?.length" class="flex gap-1 flex-shrink-0">
                   <span 
                     v-for="t in res.metadata.tags" 
                     :key="t"
@@ -185,13 +286,25 @@ const handleTransform = async (strategy) => {
                   </span>
                 </span>
               </span>
-              <div class="flex gap-2">
+              <div class="flex gap-2 items-center flex-shrink-0">
                 <span class="bg-[#10b981]/15 text-[#10b981] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
                   Score: {{ (res.score || 0).toFixed(4) }}
                 </span>
                 <span v-if="res.distance" class="bg-[#3b82f6]/15 text-[#3b82f6] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
                   Distance: {{ (res.distance || 0).toFixed(4) }}
                 </span>
+                <button 
+                  @click="handleDeleteSingle(res.chunk_id)" 
+                  class="text-red-400 hover:text-red-300 hover:bg-red-500/10 p-1 rounded transition-all ml-1"
+                  title="刪除此向量段落"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    <line x1="10" y1="11" x2="10" y2="17"></line>
+                    <line x1="14" y1="11" x2="14" y2="17"></line>
+                  </svg>
+                </button>
               </div>
             </div>
             
@@ -241,6 +354,25 @@ const handleTransform = async (strategy) => {
             step="0.05" 
             class="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#8b5cf6]"
           />
+        </div>
+
+        <!-- Filename Filter -->
+        <div class="flex flex-col gap-2">
+          <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">檔案名稱過濾 (Filter Filename)</label>
+          <select 
+            v-model="filterFilename" 
+            class="bg-white/5 border border-white/8 rounded-lg text-white px-3.5 py-2.5 text-sm focus:outline-none focus:border-[#8b5cf6] transition-all"
+          >
+            <option value="" class="bg-[#111827] text-white">-- 全部檔案 --</option>
+            <option 
+              v-for="fn in filenames" 
+              :key="fn" 
+              :value="fn" 
+              class="bg-[#111827] text-white"
+            >
+              {{ fn }}
+            </option>
+          </select>
         </div>
 
         <!-- Tags Filter -->
