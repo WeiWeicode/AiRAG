@@ -13,7 +13,7 @@ class SparseEmbeddingService:
         if cls._model is None:
             logger.info("Initializing fastembed SparseTextEmbedding model...")
             # Loads SPLADE-PP-en-v1 by default, which is very fast and efficient
-            cls._model = SparseTextEmbedding()
+            cls._model = SparseTextEmbedding(model_name="prithivida/Splade_PP_en_v1", threads=2)
             logger.info("fastembed SparseTextEmbedding model initialized successfully.")
         return cls._model
 
@@ -43,7 +43,7 @@ class SparseEmbeddingService:
         """
         try:
             model = cls.get_model()
-            embeddings = list(model.embed(texts))
+            embeddings = list(model.embed(texts, batch_size=16))
             
             return [
                 models.SparseVector(

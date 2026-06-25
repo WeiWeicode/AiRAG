@@ -1,5 +1,12 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-25 於向量搜尋測試頁面優化混合檢索 Score 與 Distance 顯示
+
+### 修改內容
+1. `frontend/src/views/RetrievalTestView.vue`:
+   - 在檢索結果卡片中，針對 `searchType` 為 `hybrid` (混合搜尋) 的情境，將原本固定顯示的 `Score` 標題動態調整為 `RRF Score`。
+   - 隱藏混合搜尋下沒有實際物理意義的 `Distance`（距離）徽章（該數值在混合搜尋下是基於 RRF 排名分數計算的 `1 - score`，容易對使用者產生誤導），僅在純向量搜尋（`vector`）模式下顯示 `Distance` 徽章。
+
 ## 2026-06-24 於自訂資料向量化頁面新增「清空與重置」按鈕
 
 ### 修改內容

@@ -1,5 +1,13 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-25 修正 fastembed 稀疏向量參數缺失與大批次寫入導致記憶體溢出 (OOM) 崩潰
+
+### 修改內容
+1. `backend/services/sparse_embedding_service.py`:
+   - 在 `get_model` 初始化 `SparseTextEmbedding` 時，顯式傳入 `model_name="prithivida/Splade_PP_en_v1"`，解決未給予核心參數造成拋出 `TypeError` 且稀疏向量回傳空值的 Bug。
+   - 新增 `threads=2` 參數限制 ONNX Runtime 在計算稀疏向量時的 CPU 線程數，防範線程過多導致系統資源耗盡。
+   - 在 `get_sparse_vectors_batch` 方法中將 `model.embed` 加上 `batch_size=16`，使大批次（如 170 筆）文字在推理時分批進行，降低峰值記憶體開銷，防止 Docker 容器因記憶體不足被系統強制終止 (Exit Code 137, OOM Killed)。
+
 ## 2026-06-24 調整 RAG 對話串流 (SSE) 事件傳送順序解決引用來源丟失問題
 
 ### 修改內容

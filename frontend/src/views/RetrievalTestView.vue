@@ -288,9 +288,9 @@ const handleBatchDelete = async () => {
               </span>
               <div class="flex gap-2 items-center flex-shrink-0">
                 <span class="bg-[#10b981]/15 text-[#10b981] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
-                  Score: {{ (res.score || 0).toFixed(4) }}
+                  {{ searchType === 'hybrid' ? 'RRF Score' : 'Score' }}: {{ (res.score || 0).toFixed(4) }}
                 </span>
-                <span v-if="res.distance" class="bg-[#3b82f6]/15 text-[#3b82f6] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
+                <span v-if="searchType !== 'hybrid' && res.distance" class="bg-[#3b82f6]/15 text-[#3b82f6] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
                   Distance: {{ (res.distance || 0).toFixed(4) }}
                 </span>
                 <button 
