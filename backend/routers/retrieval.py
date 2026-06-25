@@ -70,7 +70,10 @@ async def search(request: RetrievalRequest):
                         page=meta.get("page"),
                         section=meta.get("section"),
                         chunk_index=meta.get("chunk_index"),
-                        tags=meta.get("tags", [])
+                        tags=meta.get("tags", []),
+                        parent_id=meta.get("parent_id"),
+                        function_name=meta.get("function_name"),
+                        type=meta.get("type")
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)
@@ -142,7 +145,10 @@ async def query_transform(request: QueryTransformRequest):
                         page=meta.get("page"),
                         section=meta.get("section"),
                         chunk_index=meta.get("chunk_index"),
-                        tags=meta.get("tags", [])
+                        tags=meta.get("tags", []),
+                        parent_id=meta.get("parent_id"),
+                        function_name=meta.get("function_name"),
+                        type=meta.get("type")
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)

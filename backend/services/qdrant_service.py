@@ -45,6 +45,22 @@ class QdrantService:
                     )
                 )
                 logger.info(f"Qdrant collection '{collection_name}' created successfully.")
+            
+            # 確保 'content' 欄位有建立全文檢索 Text Index，以支援 Exact keyword MatchText 查詢
+            try:
+                await client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="content",
+                    field_schema=models.TextIndexParams(
+                        type="text",
+                        tokenizer=models.TokenizerType.WORD,
+                        lowercase=True
+                    )
+                )
+                logger.info(f"Ensured payload text index on 'content' for collection '{collection_name}'.")
+            except Exception as e_idx:
+                logger.warning(f"Failed or skipped ensuring payload index: {e_idx}")
+                
             return True
         except Exception as e:
             logger.error(f"Failed to create Qdrant collection '{collection_name}': {e}")
@@ -195,17 +211,64 @@ class QdrantService:
                         filter=query_filter
                     )
                     
-                    # Qdrant 雙路召回與 RRF 融合
+                    # 針對程式碼識別碼/關鍵字進行 Exact keyword Match text 搜尋加速
+                    import re
+                    # 提取長度大於等於3個字元、且非純數字的英數底線詞彙 (例如: p_zz_q)
+                    keywords = [kw for kw in re.findall(r'[a-zA-Z0-9_]{3,}', query_text) if not kw.isdigit()]
+                    
+                    prefetch_list = [prefetch_dense, prefetch_sparse]
+                    
+                    if keywords:
+                        exact_should = []
+                        for kw in keywords:
+                            # 1. 內容包含該字詞
+                            exact_should.append(
+                                models.FieldCondition(
+                                    key="content",
+                                    match=models.MatchText(text=kw)
+                                )
+                            )
+                            # 2. 函數名稱精確匹配
+                            exact_should.append(
+                                models.FieldCondition(
+                                    key="function_name",
+                                    match=models.MatchValue(value=kw)
+                                )
+                            )
+                            # 3. 父節點 ID 精確匹配
+                            exact_should.append(
+                                models.FieldCondition(
+                                    key="parent_id",
+                                    match=models.MatchValue(value=kw)
+                                )
+                            )
+                        
+                        exact_filter = models.Filter(
+                            should=exact_should,
+                            must=must_conditions if must_conditions else None
+                        )
+                        
+                        # 第三路 prefetch：只針對包含 exact keywords 的區塊，進行稀疏向量排序
+                        prefetch_exact = models.Prefetch(
+                            query=query_sparse,
+                            using="sparse-text",
+                            limit=top_k * 2,
+                            filter=exact_filter
+                        )
+                        prefetch_list.append(prefetch_exact)
+                        logger.info(f"Hybrid search exact keyword boost active for keywords: {keywords}")
+                    
+                    # Qdrant 雙路或三路召回與 RRF 融合
                     response = await client.query_points(
                         collection_name=collection_name,
-                        prefetch=[prefetch_dense, prefetch_sparse],
+                        prefetch=prefetch_list,
                         query=models.FusionQuery(
                             fusion=models.Fusion.RRF
                         ),
                         limit=top_k
                     )
                     results = response.points
-                    logger.info("Hybrid search executed successfully via Qdrant RRF.")
+                    logger.info("Hybrid search executed successfully via Qdrant RRF (with exact keyword boost).")
                 except Exception as he:
                     logger.warning(f"Hybrid search failed, falling back to pure vector search: {he}")
                     # 安全降級：純密集向量檢索
@@ -251,7 +314,10 @@ class QdrantService:
                         "page": res.payload.get("page"),
                         "section": res.payload.get("section"),
                         "chunk_index": res.payload.get("chunk_index"),
-                        "tags": res.payload.get("tags", [])
+                        "tags": res.payload.get("tags", []),
+                        "parent_id": res.payload.get("parent_id"),
+                        "function_name": res.payload.get("function_name"),
+                        "type": res.payload.get("type")
                     },
                     "score": score,
                     "distance": 1.0 - score

@@ -12,9 +12,11 @@ class ChunkParams(BaseModel):
     chunk_size: int = 512
     chunk_overlap: int = 50
     separator: str = "\n\n"
+    chunk_mode: Optional[str] = "standard"  # "standard" or "parent_child"
 
 class ChunkRequest(BaseModel):
     file_id: Optional[str] = None
+    filename: Optional[str] = None
     content: str
     params: ChunkParams = Field(default_factory=ChunkParams)
 
@@ -25,6 +27,7 @@ class ChunkItem(BaseModel):
     char_count: int
     start_char: int
     end_char: int
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 class ChunkResponse(BaseModel):
     chunks: List[ChunkItem]

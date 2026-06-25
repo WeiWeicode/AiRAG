@@ -20,6 +20,9 @@ class RetrievalMetadata(BaseModel):
     section: Optional[str] = ""
     chunk_index: Optional[int] = None
     tags: Optional[List[str]] = Field(default_factory=list)
+    parent_id: Optional[str] = None
+    function_name: Optional[str] = None
+    type: Optional[str] = None
 
 class RetrievalResultItem(BaseModel):
     chunk_id: str

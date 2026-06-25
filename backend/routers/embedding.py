@@ -51,6 +51,41 @@ async def chunk_text(request: ChunkRequest):
     依據設定切分純文字。
     """
     try:
+        # 檢查是否啟用大小雙層 (Parent-Child) 語法切分或是 4GL 檔案
+        if request.params.chunk_mode == "parent_child" or (request.filename and request.filename.lower().endswith('.4gl')):
+            from services.parent_child_chunker import parse_4gl_to_parents, slice_to_children
+            fname = request.filename or "unknown.4gl"
+            parents = parse_4gl_to_parents(request.content, fname)
+            all_children = []
+            idx = 0
+            for parent in parents:
+                children = slice_to_children(
+                    content=parent["content"],
+                    parent_chunk=parent,
+                    source_file=fname,
+                    child_size=request.params.chunk_size,
+                    child_overlap=request.params.chunk_overlap
+                )
+                for child in children:
+                    all_children.append(ChunkItem(
+                        index=idx,
+                        content=child["child_content"],
+                        token_count=ChunkingService.estimate_tokens(child["child_content"]),
+                        char_count=len(child["child_content"]),
+                        start_char=0,
+                        end_char=len(child["child_content"]),
+                        metadata=child["metadata"]
+                    ))
+                    idx += 1
+            
+            avg_tokens = int(sum(c.token_count for c in all_children) / len(all_children)) if all_children else 0
+            return ChunkResponse(
+                chunks=all_children,
+                total_chunks=len(all_children),
+                avg_token_count=avg_tokens
+            )
+
+        # 否則使用標準切分
         chunks_data = ChunkingService.split_text(
             text=request.content,
             chunk_size=request.params.chunk_size,
@@ -115,7 +150,7 @@ async def vectorize_chunks(request: VectorizeRequest):
         # 準備寫入 Qdrant 的 Payload
         qdrant_chunks = []
         for chunk in request.chunks:
-            qdrant_chunks.append({
+            payload = {
                 "content": chunk.content,
                 "filename": chunk.metadata.get("filename", "unknown"),
                 "page": chunk.metadata.get("page", 1),
@@ -126,7 +161,12 @@ async def vectorize_chunks(request: VectorizeRequest):
                 "source": chunk.metadata.get("source", "upload"),
                 "tags": chunk.metadata.get("tags", []),
                 "created_at": datetime.utcnow().isoformat()
-            })
+            }
+            # 額外合併 metadata 中的其他自訂屬性 (例如 parent_id, function_name, type)
+            for k, v in chunk.metadata.items():
+                if k not in payload:
+                    payload[k] = v
+            qdrant_chunks.append(payload)
             
         # 寫入 Qdrant
         inserted = await QdrantService.upsert_chunks(

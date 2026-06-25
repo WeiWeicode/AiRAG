@@ -1,5 +1,15 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-25 修正 Docker 容器內無 scripts 模組導致的文本切分 500 錯誤
+
+### 修改內容
+1. **背景原因**：
+   - 後端 Docker 容器的建置 context 為 `./backend`，且在執行時將 `./backend` 掛載為容器的 `/app`。
+   - 原先在 `backend/routers/embedding.py` 中直接嘗試自 `scripts` 專案根目錄導入 `parent_child_chunker`，導致容器內因找不到 `scripts` 資料夾而拋出 `ModuleNotFoundError: No module named 'scripts'`。
+2. **解決方案**：
+   - 將 `scripts/parent_child_chunker.py` 複製為後端核心服務的一部分：`backend/services/parent_child_chunker.py`，使之包含在容器 context 中。
+   - 將 `backend/routers/embedding.py` 中的導入路徑從 `from scripts.parent_child_chunker ...` 修改為 `from services.parent_child_chunker ...`，順利解決 Docker 環境下的依賴導入問題。
+
 ## 2026-06-25 實作 Qdrant 依檔名刪除向量 API 與擴充 4GL 格式解析支援
 
 ### 修改內容

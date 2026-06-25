@@ -1,5 +1,32 @@
 <!-- 新增功能紀錄 -->
 
+## 2026-06-25 新增 Genero 4GL 大小雙層檢索 (Parent-Child Retriever) 語法切分與前端自動分批寫入整合
+
+### 功能描述
+為了改善傳統字元切分容易將 4GL 程式碼截斷、導致語意上下文丟失的問題，實作了專屬的 4GL 大小雙層檢索切分與處理腳本。並將此切分能力整合至「自動分批寫入 (Batch Indexing)」功能中，允許使用者在批次處理時選用大小雙層結構切分，自動於向量庫點資料中寫入父子區塊關聯元資料。
+
+### 實作內容
+1. **父區塊語法結構解析 (Parent Chunks)**：
+   - 提取 `MAIN ... END MAIN` 區塊。
+   - 提取 `FUNCTION 函數名(...) ... END FUNCTION` 區塊。
+   - 提取 `REPORT 報表名(...) ... END REPORT` 區塊。
+   - 收集所有在上述結構之外的全域宣告（如 `DATABASE`, `GLOBALS`, `DEFINE`），合併切分為一個名為 `Global_Declarations` 的父區塊。
+   - 透過正則與注釋過濾機制（排除 `#`, `--` 及 `{ ... }` 的偽關鍵字干擾），產出具備唯一 `parent_id`、`type`、`name` 與完整原始碼內容的 Parent Chunk 字典。
+2. **子區塊滑動窗口切分 (Child Chunks)**：
+   - 針對每個 Parent Chunk 的內容，使用固定的字元大小 `child_size`（預設 250 字元）進行切分。
+   - 配置 `child_overlap`（預設 20% 重疊區間，即 50 字元），以防關鍵語句或條件判斷在切分邊界被截斷。
+   - 自動將父節點元資料（`parent_id`, `source_file`, `type`, `function_name`）綁定至每個 Child Chunk 中，便於寫入向量資料庫。
+3. **前端與後端批次寫入整合**：
+   - **後端擴充**：在 `/api/embedding/chunk` 與 `/api/embedding/vectorize` 接口中，支援傳入 `chunk_mode` 與 `filename` 參數。若為 `parent_child` 模式或 `.4gl` 檔案，則自動調用 `parent_child_chunker` 產生帶有父區塊關聯 Metadata 的子區塊，並在寫入向量庫時將 `parent_id` 等欄位合併存入 Payload。
+   - **前端擴充**：於 `EmbeddingTestView.vue` 之「自動分批寫入設定」面板新增「切分模式」下拉選單（包含「標準字元切分」與「大小雙層結構切分」）。批次發送時自動將選定模式發送給後端，並將後端回傳的父區塊 Metadata 完美合併至向量化 Request 中。
+
+### 修改檔案
+- `scripts/parent_child_chunker.py` (新增)
+- `tests/test_parent_child_chunker.py` (新增)
+- `backend/schemas/embedding.py` (修改)
+- `backend/routers/embedding.py` (修改)
+- `frontend/src/views/EmbeddingTestView.vue` (修改)
+
 ## 2026-06-25 新增自動分批寫入之重複檔案處理設定 (覆蓋與略過選項)
 
 ### 功能描述

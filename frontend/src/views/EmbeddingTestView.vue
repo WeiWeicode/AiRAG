@@ -265,6 +265,7 @@ const handleBatchDeleteManagement = async () => {
 const batchFiles = ref([]) // array of { id, name, size, status, progress, chunksCount, elapsedTime, message, fileObject }
 const batchChunkSize = ref(20) // default chunk batch size when vectorizing
 const batchDuplicateMode = ref('overwrite') // overwrite | skip
+const batchChunkMode = ref('standard') // standard | parent_child
 const isBatchProcessing = ref(false)
 const batchProcessIndex = ref(-1) // index of file currently processing
 const batchTagsString = ref('') // tags for batch files
@@ -441,11 +442,13 @@ const startBatchProcessing = async () => {
       // 2. Chunk text
       const chunkPayload = {
         file_id: uploadData.file_id || null,
+        filename: fname,
         content: content,
         params: {
           chunk_size: paramsStore.chunkSize,
           chunk_overlap: paramsStore.chunkOverlap,
-          separator: paramsStore.separator.replace('\\n', '\n')
+          separator: paramsStore.separator.replace('\\n', '\n'),
+          chunk_mode: batchChunkMode.value
         }
       }
       const chunkData = await embeddingService.chunkText(chunkPayload)
@@ -511,7 +514,8 @@ const startBatchProcessing = async () => {
             metadata: {
               filename: fname,
               source: 'upload',
-              tags: parsedTags
+              tags: parsedTags,
+              ...(c.metadata || {})
             }
           })),
           knowledge_base_id: paramsStore.knowledgeBaseId,
@@ -771,6 +775,21 @@ const startBatchProcessing = async () => {
               >
                 <option value="overwrite" class="bg-[#111827] text-white">刪除重新上傳(覆蓋)</option>
                 <option value="skip" class="bg-[#111827] text-white">舊檔案略過不覆蓋</option>
+              </select>
+            </div>
+
+            <!-- Chunk Mode config -->
+            <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded-lg px-3 py-2 focus-within:border-[#8b5cf6] transition-all">
+              <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+              </svg>
+              <span class="text-xs text-[#9ca3af] select-none whitespace-nowrap">切分模式:</span>
+              <select 
+                v-model="batchChunkMode"
+                class="flex-grow bg-transparent text-white text-xs outline-none cursor-pointer"
+              >
+                <option value="standard" class="bg-[#111827] text-white">標準字元切分</option>
+                <option value="parent_child" class="bg-[#111827] text-white">大小雙層結構切分 (Parent-Child)</option>
               </select>
             </div>
 
@@ -1072,6 +1091,17 @@ const startBatchProcessing = async () => {
                   />
                   <span class="truncate">[{{ point.metadata?.filename || '未知檔案' }}] P.{{ point.metadata?.page || '?' }}</span>
                   <span class="text-[#6b7280] flex-shrink-0">段落索引: #{{ point.metadata?.chunk_index || idx }}</span>
+                  
+                  <!-- Parent-Child Chunks Badges -->
+                  <span v-if="point.metadata?.parent_id" class="flex gap-1 flex-shrink-0">
+                    <span class="bg-[#10b981]/10 border border-[#10b981]/20 text-[#34d399] px-1.5 py-0.5 rounded text-[9px]" :title="'父區塊 ID: ' + point.metadata.parent_id">
+                      父區塊: {{ point.metadata.parent_id }}
+                    </span>
+                    <span v-if="point.metadata?.function_name" class="bg-[#3b82f6]/10 border border-[#3b82f6]/20 text-[#60a5fa] px-1.5 py-0.5 rounded text-[9px]">
+                      類型: {{ point.metadata.type }} | 函數: {{ point.metadata.function_name }}
+                    </span>
+                  </span>
+
                   <span v-if="point.metadata?.tags?.length" class="flex gap-1 flex-shrink-0">
                     <span 
                       v-for="t in point.metadata.tags" 
