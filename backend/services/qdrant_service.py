@@ -322,3 +322,40 @@ class QdrantService:
             logger.error(f"Failed to delete points from collection '{collection_name}': {e}")
             return False
 
+    @classmethod
+    async def delete_by_filename(cls, collection_name: str, filename: str) -> int:
+        """
+        從指定 Collection 中刪除所有匹配該檔案名稱的 Points (向量節點)，並回傳刪除的數量。
+        """
+        client = cls.get_client()
+        try:
+            # 1. 先 Scroll 獲取該 filename 的所有點以計算數量，並取得 ID 進行刪除
+            scroll_result = await client.scroll(
+                collection_name=collection_name,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="filename",
+                            match=models.MatchValue(value=filename)
+                        )
+                    ]
+                ),
+                limit=10000,  # 預期單個檔案的 Chunks 不會超過 10000
+                with_payload=False,
+                with_vectors=False
+            )
+            points = scroll_result[0]
+            count = len(points)
+            
+            if count > 0:
+                point_ids = [p.id for p in points]
+                await client.delete(
+                    collection_name=collection_name,
+                    points_selector=models.PointIdsList(points=point_ids)
+                )
+                logger.info(f"Successfully deleted {count} points for filename '{filename}' from collection '{collection_name}'.")
+            return count
+        except Exception as e:
+            logger.error(f"Failed to delete points by filename '{filename}' from collection '{collection_name}': {e}")
+            raise e
+

@@ -47,3 +47,6 @@ class QueryTransformResponse(BaseModel):
 class BatchDeleteRequest(BaseModel):
     point_ids: List[str]
 
+class DeleteByFilenameRequest(BaseModel):
+    filename: str
+

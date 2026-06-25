@@ -72,9 +72,9 @@ class DocumentParser:
             text, pages = cls.parse_pdf(file_bytes)
         elif ext in ["docx", "doc"]:
             text, pages = cls.parse_docx(file_bytes)
-        elif ext in ["txt", "md", "markdown"]:
+        elif ext in ["txt", "md", "markdown", "4gl"]:
             text, pages = cls.parse_text(file_bytes)
         else:
-            raise ValueError(f"目前不支援 .{ext} 的檔案格式。支援的格式有 PDF, DOCX, TXT, MD")
+            raise ValueError(f"目前不支援 .{ext} 的檔案格式。支援的格式有 PDF, DOCX, TXT, MD, 4GL")
         
         return text, pages, len(text)

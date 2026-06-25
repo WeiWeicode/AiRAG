@@ -1,5 +1,34 @@
 <!-- 新增功能紀錄 -->
 
+## 2026-06-25 新增自訂資料分批寫入功能 (含批次上傳、4GL 格式支援與自動重複清理)
+
+### 功能描述
+於自訂資料向量化 (Embedding & Indexing) 頁面中，新增一個分頁「自動分批寫入」。使用者可一次性拖放或選取多個檔案（包含 `.4gl` 原始碼檔案）進行批次處理，系統將自動分批切分並將 Chunks 批次寫入 Qdrant 與 MongoDB 資料庫。若檢測到與資料庫內檔案名稱重複，則會先自動刪除該檔案先前之所有向量資料再重新寫入，並在前端提供直觀的整體進度條與檔案佇列詳細狀態指示。
+
+### 實作內容
+1. **後端支援與檔案相容性擴充**：
+   - 修改 `backend/services/document_parser.py`：在 `parse_file` 中將 `.4gl` 副檔名加入文字解析分流中，使其能以純文字格式進行解碼與提取。
+   - 修改 `backend/services/qdrant_service.py`：新增 `delete_by_filename` 類別方法，使用 Qdrant Scroll API 查找指定檔名的所有點 ID，並呼叫 `AsyncQdrantClient.delete` 進行刪除，回傳刪除的點數量。
+   - 修改 `backend/schemas/retrieval.py`：新增 `DeleteByFilenameRequest` 結構體。
+   - 修改 `backend/routers/retrieval.py`：新增 `POST /api/retrieval/knowledge-bases/{knowledge_base_id}/files/delete-by-filename` 端點。呼叫 `delete_by_filename` 刪除同名資料，並更新 MongoDB 知識庫的 `chunk_count` 總數。
+2. **前端服務對接**：
+   - 修改 `frontend/src/services/retrievalService.js`：新增 `deleteFileByFilename` API 方法。
+3. **前端 UI 與批次佇列引擎開發**：
+   - 修改 `frontend/src/views/EmbeddingTestView.vue`：
+     - **新分頁整合**：新增 `activeTab = 'batch_indexing'` 分頁。
+     - **批次檔案管理**：設計支援拖拽與多檔案選取的 Dropzone 介面，可載入多個檔案至佇列。
+     - **分批配置設定**：提供分類標籤 (Tags) 輸入，以及「向量寫入批次大小」配置 (Chunk/Batch)，預設為每次 20 段，用以降低連線或 Payload 過大之錯誤率。
+     - **全域與個別進度條**：使用 computed 計算總體進度百分比，並透過 `Parsing`, `Chunking`, `Deleting`, `Vectorizing (Batch X/Y)`, `Success`, `Failed` 等狀態更新各檔案微型進度條與狀態訊息。
+     - **依序非同步佇列處理**：以迴圈依序執行各檔案之：上傳解析、文本切分、庫內重複資料刪除、分批向量化寫入 Qdrant 與 Beanie 流程。
+
+### 修改檔案
+- `backend/services/document_parser.py`
+- `backend/services/qdrant_service.py`
+- `backend/schemas/retrieval.py`
+- `backend/routers/retrieval.py`
+- `frontend/src/services/retrievalService.js`
+- `frontend/src/views/EmbeddingTestView.vue`
+
 ## 2026-06-24 新增自訂資料向量化文字結構化 (Structured Chunks) 功能
 
 ### 功能描述

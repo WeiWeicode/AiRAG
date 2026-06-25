@@ -1,5 +1,20 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-25 實作 Qdrant 依檔名刪除向量 API 與擴充 4GL 格式解析支援
+
+### 修改內容
+1. `backend/services/document_parser.py`:
+   - 修改 `parse_file` 中副檔名分流邏輯。將 `4gl` 納入與 `txt`, `md` 等文字檔案相同的文字讀取與解碼分流（`parse_text`），實現對 `.4gl` 程式碼文件的正確文字提取。
+2. `backend/services/qdrant_service.py`:
+   - 新增 `delete_by_filename(collection_name, filename)` 非同步類別方法。使用 `AsyncQdrantClient.scroll` 加上 filename 過濾條件拉取所有符合該檔案名稱的 points 列表。
+   - 提取 point id，並呼叫 `AsyncQdrantClient.delete` 進行刪除，最終返回刪除的 point 總數。
+3. `backend/schemas/retrieval.py`:
+   - 新增 `DeleteByFilenameRequest` Pydantic Schema，封裝 `filename: str` 欄位。
+4. `backend/routers/retrieval.py`:
+   - 新增 `POST /api/retrieval/knowledge-bases/{knowledge_base_id}/files/delete-by-filename` 路由端點。
+   - 透過 Beanie 異步獲取指定的 `KnowledgeBase`，調用 `QdrantService.delete_by_filename` 刪除該檔案之向量。
+   - 連帶更新 MongoDB 中的知識庫屬性，將 `chunk_count` 扣減已刪除之數量，並保存更新狀態回傳。
+
 ## 2026-06-25 於評估模組新增向量/混合查詢檢索模式支援並修復 fastembed OOM
 
 ### 修改內容

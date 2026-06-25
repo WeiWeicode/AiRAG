@@ -6,7 +6,7 @@ from beanie import PydanticObjectId
 from datetime import datetime
 from schemas.retrieval import (
     RetrievalRequest, RetrievalResponse, RetrievalResultItem, RetrievalMetadata,
-    QueryTransformRequest, QueryTransformResponse, BatchDeleteRequest
+    QueryTransformRequest, QueryTransformResponse, BatchDeleteRequest, DeleteByFilenameRequest
 )
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
@@ -205,4 +205,50 @@ async def batch_delete_points(knowledge_base_id: str, request: BatchDeleteReques
         "message": "批次刪除成功",
         "deleted_count": len(request.point_ids)
     }
+
+
+@router.post("/knowledge-bases/{knowledge_base_id}/files/delete-by-filename")
+async def delete_file_by_filename(knowledge_base_id: str, request: DeleteByFilenameRequest):
+    """
+    刪除指定知識庫中特定檔案名稱的所有向量段落 (Points)
+    """
+    try:
+        kb_id = PydanticObjectId(knowledge_base_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="無效的知識庫 ID 格式"
+        )
+        
+    kb = await KnowledgeBase.get(kb_id)
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定的知識庫不存在"
+        )
+        
+    if not request.filename.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="請提供檔案名稱"
+        )
+        
+    try:
+        deleted_count = await QdrantService.delete_by_filename(kb.qdrant_collection_name, request.filename)
+        
+        # 更新 MongoDB 中的 chunk_count
+        kb.chunk_count = max(0, kb.chunk_count - deleted_count)
+        kb.updated_at = datetime.utcnow()
+        await kb.save()
+        
+        return {
+            "message": f"成功刪除檔案 '{request.filename}'",
+            "deleted_count": deleted_count
+        }
+    except Exception as e:
+        logger.error(f"Delete file by filename failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"無法從向量資料庫中刪除檔案: {str(e)}"
+        )
 

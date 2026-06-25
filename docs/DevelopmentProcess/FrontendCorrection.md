@@ -1,5 +1,20 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-25 於自訂資料向量化頁面實作自動分批寫入 Tab 與非同步佇列管理
+
+### 修改內容
+1. `frontend/src/services/retrievalService.js`:
+   - 新增2. `frontend/src/views/EmbeddingTestView.vue`:
+   - **新增 Tab 分頁**：整合新增 `batch_indexing` 分頁，提供專屬的批次文件寫入功能。
+   - **佇列管理狀態與函數**：新增 `batchFiles`（檔案佇列陣列）、`batchChunkSize`（向量寫入批次大小）、`batchTagsString`（佇列標籤）等狀態。實作 `addFilesToQueue`, `removeBatchFile`, `clearCompletedBatchFiles` 與 `clearAllBatchFiles` 方法，支援流暢的佇列編輯與進度清除操作。
+   - **拖曳上傳 Dropzone**：於批次分頁實現拖拽上傳區塊，可動態獲取拖放之多檔案並加入佇列。
+   - **進度指示器與狀態徽章**：開發了基於 computed 的 global 佇列進度百分比條。在 table 列表中針對每個檔案渲染微型進度條，並設計旋轉 loader 以及綠色 check/紅色 warning 圖示用以呈現非同步階段狀態。
+   - **非同步非阻塞執行引擎**：設計並實作 `startBatchProcessing`。使用 async/await 依序將檔案執行：API 上傳與文字提取、前端文本切分、重複檔名向量清理、多 Chunks 分批次向後端傳送向量化寫入（提供批次分流限制 Payload 大小以提高成功率）並響應式更新 UI。
+   - **精確執行耗時統計**：新增 `batchTotalElapsedTime` (全域累積時間) 與 `currentFileStartTime` (當前檔案開始時間) 狀態。實作 `startBatchTimer` 與 `stopBatchTimer`。使用 `setInterval` 每 100ms 動態更新目前正在處理檔案的耗時與總體累積耗時。
+   - **耗時資料視覺化呈現**：於整體進度卡片上新增「累積耗時」指示，在佇列列表 Table 中加入「耗時」欄位，以動態顯示每份檔案解析及寫入時所用秒數，並在右側摘要邊欄顯示累積總耗時，顯著優化人機互動體驗。�頁實現拖拽上傳區塊，可動態獲取拖放之多檔案並加入佇列。
+   - **進度指示器與狀態徽章**：開發了基於 computed 的 global 佇列進度百分比條。在 table 列表中針對每個檔案渲染微型進度條，並設計旋轉 loader 以及綠色 check/紅色 warning 圖示用以呈現非同步階段狀態。
+   - **非同步非阻塞執行引擎**：設計並實作 `startBatchProcessing`。使用 async/await 依序將檔案執行：API 上傳與文字提取、前端文本切分、重複檔名向量清理、多 Chunks 分批次向後端傳送向量化寫入（提供批次分流限制 Payload 大小以提高成功率）並響應式更新 UI。
+
 ## 2026-06-25 於 RAG 對話視窗與自動化評估頁面整合向量與混合查詢選項並優化顯示
 
 ### 修改內容

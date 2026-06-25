@@ -14,6 +14,12 @@ export default {
       point_ids: pointIds
     })
     return response.data
+  },
+  async deleteFileByFilename(knowledgeBaseId, filename) {
+    const response = await api.post(`/api/retrieval/knowledge-bases/${knowledgeBaseId}/files/delete-by-filename`, {
+      filename: filename
+    })
+    return response.data
   }
 }
 
