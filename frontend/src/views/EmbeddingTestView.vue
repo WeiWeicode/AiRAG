@@ -264,6 +264,7 @@ const handleBatchDeleteManagement = async () => {
 // Batch indexing state
 const batchFiles = ref([]) // array of { id, name, size, status, progress, chunksCount, elapsedTime, message, fileObject }
 const batchChunkSize = ref(20) // default chunk batch size when vectorizing
+const batchDuplicateMode = ref('overwrite') // overwrite | skip
 const isBatchProcessing = ref(false)
 const batchProcessIndex = ref(-1) // index of file currently processing
 const batchTagsString = ref('') // tags for batch files
@@ -393,6 +394,15 @@ const startBatchProcessing = async () => {
   isBatchProcessing.value = true
   startBatchTimer()
   
+  // 取得當前知識庫中已存在的檔案名稱列表
+  let existingFilenames = []
+  try {
+    const response = await api.get(`/api/knowledge-bases/${paramsStore.knowledgeBaseId}/metadata`)
+    existingFilenames = response.data?.filenames || []
+  } catch (error) {
+    console.error('無法取得最新知識庫元資料:', error)
+  }
+  
   for (let i = 0; i < batchFiles.value.length; i++) {
     // If the process was cancelled/stopped mid-way
     if (!isBatchProcessing.value) break
@@ -404,6 +414,16 @@ const startBatchProcessing = async () => {
     
     batchProcessIndex.value = i
     currentFileStartTime.value = Date.now()
+    
+    // 若重複模式設定為略過，且該檔案名稱已存在於向量資料庫中，則不覆蓋直接略過
+    if (batchDuplicateMode.value === 'skip' && existingFilenames.includes(fileItem.name)) {
+      fileItem.status = 'success'
+      fileItem.progress = 100
+      fileItem.message = '檔案已存在於向量庫中，已自動略過不覆蓋。'
+      fileItem.elapsedTime = '0.0s'
+      continue
+    }
+    
     fileItem.status = 'parsing'
     fileItem.progress = 10
     fileItem.message = '正在上傳並解析檔案...'
@@ -510,6 +530,11 @@ const startBatchProcessing = async () => {
         fileItem.status = 'success'
         fileItem.progress = 100
         fileItem.message = `完成！清理舊資料 ${deletedCount} 筆，寫入新向量 ${insertedTotal} 筆`
+        
+        // 成功寫入後，將該檔案名稱加入 existingFilenames 清單中，以防同批次重複處理衝突
+        if (!existingFilenames.includes(fname)) {
+          existingFilenames.push(fname)
+        }
       }
       
     } catch (error) {
@@ -717,7 +742,7 @@ const startBatchProcessing = async () => {
         <div class="bg-[#111827]/70 border border-white/8 rounded-2xl p-5 backdrop-blur-md flex flex-col gap-3">
           <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">批次寫入設定</label>
           
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="flex flex-col gap-3">
             <!-- Tags Input -->
             <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded-lg px-3 py-2 focus-within:border-[#8b5cf6] transition-all">
               <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -733,6 +758,22 @@ const startBatchProcessing = async () => {
               />
             </div>
 
+            <!-- Duplicate Action config -->
+            <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded-lg px-3 py-2 focus-within:border-[#8b5cf6] transition-all">
+              <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              <span class="text-xs text-[#9ca3af] select-none whitespace-nowrap">重複檔案處理:</span>
+              <select 
+                v-model="batchDuplicateMode"
+                class="flex-grow bg-transparent text-white text-xs outline-none cursor-pointer"
+              >
+                <option value="overwrite" class="bg-[#111827] text-white">刪除重新上傳(覆蓋)</option>
+                <option value="skip" class="bg-[#111827] text-white">舊檔案略過不覆蓋</option>
+              </select>
+            </div>
+
             <!-- Batch size config -->
             <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded-lg px-3 py-2 focus-within:border-[#8b5cf6] transition-all">
               <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -741,7 +782,7 @@ const startBatchProcessing = async () => {
                 <rect x="14" y="12" width="7" height="9" rx="1"></rect>
                 <rect x="3" y="16" width="7" height="5" rx="1"></rect>
               </svg>
-              <span class="text-xs text-[#9ca3af] select-none whitespace-nowrap">向量寫入批次大小 (Chunk/Batch):</span>
+              <span class="text-xs text-[#9ca3af] select-none whitespace-nowrap">向量寫入批次大小:</span>
               <input 
                 v-model.number="batchChunkSize"
                 type="number"
