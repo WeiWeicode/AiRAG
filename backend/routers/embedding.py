@@ -66,7 +66,17 @@ async def chunk_text(request: ChunkRequest):
                     child_size=request.params.chunk_size,
                     child_overlap=request.params.chunk_overlap
                 )
+                
+                # 計算該 Parent Block 切出來的 Child Chunks 索引範圍
+                start_idx = idx
+                end_idx = idx + len(children) - 1
+                parent_range = f"{start_idx}~{end_idx}" if len(children) > 1 else str(start_idx)
+                
                 for child in children:
+                    # 注入 Parent Chunk 索引範圍到 metadata 中，以利後續檢索還原
+                    child_metadata = dict(child["metadata"])
+                    child_metadata["parent_chunk_index_range"] = parent_range
+                    
                     all_children.append(ChunkItem(
                         index=idx,
                         content=child["child_content"],
@@ -74,7 +84,7 @@ async def chunk_text(request: ChunkRequest):
                         char_count=len(child["child_content"]),
                         start_char=0,
                         end_char=len(child["child_content"]),
-                        metadata=child["metadata"]
+                        metadata=child_metadata
                     ))
                     idx += 1
             

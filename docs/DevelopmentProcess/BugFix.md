@@ -1,5 +1,47 @@
 <!-- BUG修正 -->
 
+## 2026-06-25 修正批次寫入大型檔案時 Request Entity Too Large 413 錯誤 (優化 Qdrant 資料量與 Nginx 設定)
+
+### 問題描述
+在自動分批寫入大型 `.4gl` 檔案（如 `p_zta.4gl`，約 938.5 KB，包含 2110 個 chunks）時，調用 `/api/embedding/vectorize` 接口返回 `413 Request Entity Too Large` 錯誤。原因如下：
+1. **Nginx 預設限制**：前端採用 Nginx 作為反向代理，預設 `client_max_body_size` 限制為 `1M`。
+2. **向量 Payload 資料膨脹**：原先為了還原 Parent Chunk 內容，我們在每個 Child Chunk 的 metadata 中重複注入了整個 `parent_content`（整個函數程式碼）。若單個函數區塊較大，2110 個 chunks 中重複存儲相同的數百 KB 程式碼，會導致傳遞給後端的 JSON 體積與寫入 Qdrant 的 Payload 呈千倍爆炸式增長，不僅觸發 413 限制，更存在硬碟與記憶體耗盡的風險。
+
+### 解決方案
+1. **移除 `parent_content` 寫入（杜絕資料膨脹）**：
+   - 修改 `backend/routers/embedding.py`，在分切時不再向 child chunk metadata 中注入龐大的 `parent_content`，僅保留輕量級的索引範圍 `parent_chunk_index_range`（如 `"4~16"`）。這使每個向量寫入請求的體積恢復至正常大小（數 KB）。
+   - 檢索端完全切換至「動態拼接還原（原情況 A）」，依 `parent_id` 即時自 Qdrant 撈取兄弟節點並去重合併，達成 100% 準確的還原效果，且無任何資料庫膨脹與傳輸限制。
+2. **調整 Nginx 上傳限制**：
+   - 修改專案根目錄的 `nginx.conf`，在 `server` 區塊下新增 `client_max_body_size 100m;` 設定，以支持大型檔案解析上傳及大批次向量寫入。
+   - 執行非同步指令 `docker exec airag-frontend nginx -s reload` 動態重載前端 Nginx 服務，使配置立即生效。
+
+### 修改檔案
+- `backend/routers/embedding.py`
+- `nginx.conf`
+
+## 2026-06-25 修正 Parent-Child 切分檢索無法還原完整函數程式碼 (段落索引範圍合併) 之問題
+
+### 問題描述
+在 Parent-Child (大小雙層) 切分模式下，`.4gl` 的程式碼函數（如 `p_qry_cs()`）會被切分為數個子片段 (Child Chunks，如段落編號 `#4~16`)。
+在搜尋 `FUNCTION p_qry_cs` 時，只有帶有函數簽名的子片段（如 `#4`）會因為語意或關鍵字匹配被檢索出來。其餘子片段（`#5~16`）因缺少關鍵特徵而未被召回，導致使用者在檢索結果或 RAG 對話中無法獲得完整的程式碼。
+
+### 解決方案
+1. **注入預存 Parent Metadata (優化寫入)**：
+   - 修改 `backend/routers/embedding.py`，在 Parent-Child 或 `.4gl` 切分時，將完整的 `parent_content`（整個父節點程式碼內容）與 `parent_chunk_index_range`（如 `"4~16"` 的索引字串範圍）寫入每個 Child Chunk 的 `metadata` 中，並保存至 Qdrant Payload。
+2. **改變 Pydantic Schema 型態限制**：
+   - 修改 `backend/schemas/retrieval.py` 中的 `RetrievalMetadata`，將 `chunk_index` 的類型由 `Optional[int]` 修改為 `Optional[Any]`，以支援像 `"4~16"` 的範圍字串。
+3. **Qdrant 檢索自動去重與還原合併**：
+   - 修改 `backend/services/qdrant_service.py` 中的 `search_similar` 方法。
+   - **兄弟去重**：針對同一個 `parent_id` 的子片段檢索結果，在 list 中進行去重，僅保留分數最高的那一個，防止重複顯示相同的 parent 區塊。
+   - **內容還原與相容舊資料**：
+     - 情況 A：如果 Payload 中有預存的 `parent_content`，則直接讀取它；若是結構化文字（`[檔案名稱]` 開頭），則自動拼裝出包含新索引範圍（如 `第 4~16 段`）的結構化標頭並覆寫內容。
+     - 情況 B：如果是舊索引資料（無預存 `parent_content`），則透過新實作的 `get_siblings_and_merge` 方法，依 `parent_id` 非同步自 Qdrant 撈取該 parent 下的所有兄弟 child chunks，依 `chunk_index` 排序後以去重拼接（`merge_two_strings_with_overlap`，排除 overlapping 邊界重複文字）自動拼接還原為完整程式碼與索引範圍。
+
+### 修改檔案
+- `backend/routers/embedding.py`
+- `backend/schemas/retrieval.py`
+- `backend/services/qdrant_service.py`
+
 ## 2026-06-23 修正回饋歷史篩選錯誤分類下拉選單白字底看不清問題
 
 ### 問題描述

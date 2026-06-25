@@ -301,28 +301,82 @@ class QdrantService:
                 )
                 results = response.points
             
-            search_results = []
+            # 1. 轉換並提取資訊
+            temp_results = []
             for res in results:
                 score = getattr(res, "score", 0.0)
                 if score is None:
                     score = 0.0
-                search_results.append({
+                payload = res.payload or {}
+                temp_results.append({
                     "chunk_id": str(res.id),
-                    "content": res.payload.get("content", ""),
+                    "content": payload.get("content", ""),
                     "metadata": {
-                        "filename": res.payload.get("filename"),
-                        "page": res.payload.get("page"),
-                        "section": res.payload.get("section"),
-                        "chunk_index": res.payload.get("chunk_index"),
-                        "tags": res.payload.get("tags", []),
-                        "parent_id": res.payload.get("parent_id"),
-                        "function_name": res.payload.get("function_name"),
-                        "type": res.payload.get("type")
+                        "filename": payload.get("filename"),
+                        "page": payload.get("page"),
+                        "section": payload.get("section"),
+                        "chunk_index": payload.get("chunk_index"),
+                        "tags": payload.get("tags", []),
+                        "parent_id": payload.get("parent_id"),
+                        "parent_content": payload.get("parent_content"),
+                        "parent_chunk_index_range": payload.get("parent_chunk_index_range"),
+                        "function_name": payload.get("function_name"),
+                        "type": payload.get("type")
                     },
                     "score": score,
                     "distance": 1.0 - score
                 })
-            return search_results
+            
+            # 2. 根據 parent_id 進行去重 (保留分數高者)
+            seen_parents = set()
+            deduped_results = []
+            for item in temp_results:
+                parent_id = item["metadata"].get("parent_id")
+                if parent_id:
+                    if parent_id in seen_parents:
+                        continue
+                    seen_parents.add(parent_id)
+                deduped_results.append(item)
+            
+            # 3. 處理 Parent-Child 的還原與合併
+            final_results = []
+            for item in deduped_results:
+                meta = item["metadata"]
+                parent_id = meta.get("parent_id")
+                
+                if parent_id:
+                    parent_content = meta.get("parent_content")
+                    parent_range = meta.get("parent_chunk_index_range")
+                    
+                    # 情況 A：若元資料中沒有預存的 parent_content，則從資料庫中撈取所有兄弟節點進行合併 (相容舊資料)
+                    if not parent_content:
+                        parent_content, parent_range = await cls.get_siblings_and_merge(
+                            collection_name=collection_name,
+                            parent_id=parent_id,
+                            orig_content=item["content"],
+                            metadata=meta
+                        )
+                    else:
+                        # 情況 B：若元資料中已有 parent_content，若原內容是結構化的，需重新包裝成結構化樣式
+                        if item["content"].startswith("[檔案名稱]"):
+                            filename = meta.get("filename") or "unknown"
+                            tags = ", ".join(meta.get("tags", [])) or "一般"
+                            parent_content = (
+                                f"[檔案名稱] {filename}\n"
+                                f"[段落編號] 第 {parent_range} 段\n"
+                                f"[分類標籤] {tags}\n"
+                                f"[主要內容]\n"
+                                f"{parent_content}"
+                            )
+                    
+                    if parent_content:
+                        item["content"] = parent_content
+                    if parent_range:
+                        item["metadata"]["chunk_index"] = parent_range
+                        
+                final_results.append(item)
+                
+            return final_results
         except Exception as e:
             logger.error(f"Failed to search similarity in Qdrant collection '{collection_name}': {e}")
             return []
@@ -424,4 +478,110 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Failed to delete points by filename '{filename}' from collection '{collection_name}': {e}")
             raise e
+
+    @classmethod
+    async def get_by_parent_id(cls, collection_name: str, parent_id: str) -> List[Dict[str, Any]]:
+        """
+        透過 parent_id 獲取同一 Parent Block 下的所有 Child Chunks。
+        """
+        client = cls.get_client()
+        try:
+            scroll_result = await client.scroll(
+                collection_name=collection_name,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="parent_id",
+                            match=models.MatchValue(value=parent_id)
+                        )
+                    ]
+                ),
+                limit=1000,
+                with_payload=True,
+                with_vectors=False
+            )
+            points = scroll_result[0]
+            
+            results = []
+            for p in points:
+                payload = p.payload or {}
+                results.append({
+                    "chunk_id": str(p.id),
+                    "content": payload.get("content", ""),
+                    "metadata": {
+                        "filename": payload.get("filename"),
+                        "page": payload.get("page"),
+                        "section": payload.get("section"),
+                        "chunk_index": payload.get("chunk_index"),
+                        "tags": payload.get("tags", []),
+                        "parent_id": payload.get("parent_id"),
+                        "parent_content": payload.get("parent_content"),
+                        "parent_chunk_index_range": payload.get("parent_chunk_index_range"),
+                        "function_name": payload.get("function_name"),
+                        "type": payload.get("type")
+                    }
+                })
+            
+            # 依據 chunk_index 排序
+            results.sort(key=lambda x: x["metadata"].get("chunk_index") or 0)
+            return results
+        except Exception as e:
+            logger.error(f"Failed to get points by parent_id '{parent_id}': {e}")
+            return []
+
+    @classmethod
+    async def get_siblings_and_merge(cls, collection_name: str, parent_id: str, orig_content: str, metadata: dict) -> tuple:
+        """
+        撈取 parent_id 的所有兄弟節點並去重合併，還原完整的 Parent Content。
+        """
+        siblings = await cls.get_by_parent_id(collection_name, parent_id)
+        if not siblings:
+            return orig_content, str(metadata.get("chunk_index") or "")
+        
+        indices = [sib["metadata"].get("chunk_index") for sib in siblings if sib["metadata"].get("chunk_index") is not None]
+        if indices:
+            min_idx = min(indices)
+            max_idx = max(indices)
+            parent_range = f"{min_idx}~{max_idx}" if min_idx != max_idx else str(min_idx)
+        else:
+            parent_range = str(metadata.get("chunk_index") or "")
+            
+        def clean_and_extract_content(content: str) -> str:
+            for marker in ["[主要內容]\n", "[主要內容]\r\n"]:
+                idx = content.find(marker)
+                if idx != -1:
+                    return content[idx + len(marker):]
+            return content
+        
+        raw_contents = [clean_and_extract_content(sib["content"]) for sib in siblings]
+        if not raw_contents:
+            return orig_content, parent_range
+        
+        # 進行去重拼接 (解決 overlap 造成的重複文字問題)
+        def merge_two_strings_with_overlap(s1: str, s2: str) -> str:
+            max_overlap = min(len(s1), len(s2), 200)
+            for i in range(max_overlap, 4, -1):
+                if s1[-i:] == s2[:i]:
+                    return s1 + s2[i:]
+            return s1 + "\n" + s2
+            
+        merged_raw = raw_contents[0]
+        for next_content in raw_contents[1:]:
+            merged_raw = merge_two_strings_with_overlap(merged_raw, next_content)
+            
+        # 若原內容是結構化輸出，則重新拼裝結構化 Header
+        if orig_content.startswith("[檔案名稱]"):
+            filename = metadata.get("filename") or "unknown"
+            tags = ", ".join(metadata.get("tags", [])) or "一般"
+            display_content = (
+                f"[檔案名稱] {filename}\n"
+                f"[段落編號] 第 {parent_range} 段\n"
+                f"[分類標籤] {tags}\n"
+                f"[主要內容]\n"
+                f"{merged_raw}"
+            )
+        else:
+            display_content = merged_raw
+            
+        return display_content, parent_range
 

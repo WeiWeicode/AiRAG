@@ -1,5 +1,28 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-25 移除向量化預存 parent_content 以優化 Qdrant 資料量，並調整 Nginx 上傳限制
+
+### 修改內容
+1. `backend/routers/embedding.py`:
+   - 移除向量化切分時注入 metadata 的 `parent_content`。此優化阻斷了每個 Child Chunk 重複儲存數百 KB 父程式碼內容的問題，避免大檔案批次寫入時 payload 因千倍膨脹引發 `413 Request Entity Too Large` 錯誤與 Qdrant 儲存空間浪費。
+2. `nginx.conf`:
+   - 於 `server` 區段中新增 `client_max_body_size 100m;`，放寬 Nginx 反向代理的上傳檔案與寫入請求 Body 大小限制，以完美支援大檔案分切上傳及批次處理。
+3. `運行指令實施配置`:
+   - 執行 `docker exec airag-frontend nginx -s reload` 指令動態重載前端 Nginx 服務，令新設定生效。
+
+## 2026-06-25 實作 Parent-Child 檢索去重與兄弟節點自動拼接合併還原
+
+### 修改內容
+1. `backend/routers/embedding.py`:
+   - 於 Parent-Child 分切或 `.4gl` 程式碼分切時，主動計算每一個父區塊 (Parent Block) 所分切出的子片段 (Child Chunks) 索引範圍 `parent_chunk_index_range`（如 `"4~16"`）。
+   - 將完整的 `parent_content` 內容及該範圍字串注入至每個子片段的 `metadata` 中，並隨向量化保存至 Qdrant 中。
+2. `backend/schemas/retrieval.py`:
+   - 修改 `RetrievalMetadata` schema，將 `chunk_index` 的資料類型改為 `Optional[Any] = None`，以容許接收並回傳包含連接符號的區間範圍字串。
+3. `backend/services/qdrant_service.py`:
+   - **兄弟去重機制**：於 `search_similar` 召回結果後，遍歷所有 results，依據 `parent_id` 進行唯一性去重，僅保留相似度分數最高的子片段，避免重複傳送相同的父區塊上下文。
+   - **元資料還原 (情況 A)**：若檢索點的 Qdrant Payload 中已帶有 `parent_content` 與範圍欄位，則對其結構化樣式（若以 `[檔案名稱]` 開頭）進行重建拼接，替換為完整的父區塊程式碼。
+   - **動態拼接還原 (情況 B，相容舊資料)**：若檢索點中無預存 Parent 內容（相容先前已建索引之舊有資料），則新增非同步輔助方法 `get_by_parent_id(collection_name, parent_id)` 以拉取所有同屬該 parent 的 child points。排序後呼叫 `get_siblings_and_merge` 進行邊界重疊區間的字元級去重拼接，動態還原出完整的程式碼與 `chunk_index` 範圍。
+
 ## 2026-06-25 修正 Docker 容器內無 scripts 模組導致的文本切分 500 錯誤
 
 ### 修改內容
