@@ -1,9 +1,20 @@
 <!-- 前端修正紀錄 -->
 
-## 2026-06-25 於向量搜尋測試頁面優化混合檢索 Score 與 Distance 顯示
+## 2026-06-25 於 RAG 對話視窗與自動化評估頁面整合向量與混合查詢選項並優化顯示
 
 ### 修改內容
-1. `frontend/src/views/RetrievalTestView.vue`:
+1. `frontend/src/stores/chatStore.js`:
+   - 在 `sendQuestion` API 請求參數中，將 `paramsStore.searchMode` 作為 `search_type` 夾帶於 payload 中發送給後端，實現對話檢索與檢索模式設定的串接。
+2. `frontend/src/components/chat/ChatWindow.vue`:
+   - 於對話視窗頂部 Header 整合磨砂玻璃風格的切換按鈕群組，供使用者一鍵切換「向量查詢」與「混合查詢」，並即時同步至 `paramsStore.searchMode` 全域狀態中。
+3. `frontend/src/components/params/RagParamsPanel.vue`:
+   - 在右側 RAG 檢索參數設定邊欄中，新增「檢索模式 (Search Mode)」下拉選單，與頂部 Header 欄位保持雙向同步，提供靈活的參數調整管道。
+4. `frontend/src/components/eval/TestSetManager.vue`:
+   - 新增 `searchType` 狀態，並在面板中新增「檢索模式 (Search Type)」下拉選單。
+   - 更新開始評估按鈕的點擊發送事件，將選取之 `searchType` 傳送予父頁面。
+5. `frontend/src/views/EvaluationView.vue`:
+   - 接收 `start-eval` 事件傳送來的 `searchType` 參數，並將其填入 payload.params.search_type 發送給後端自動化評估 API。
+6. `frontend/src/views/RetrievalTestView.vue`:
    - 在檢索結果卡片中，針對 `searchType` 為 `hybrid` (混合搜尋) 的情境，將原本固定顯示的 `Score` 標題動態調整為 `RRF Score`。
    - 隱藏混合搜尋下沒有實際物理意義的 `Distance`（距離）徽章（該數值在混合搜尋下是基於 RRF 排名分數計算的 `1 - score`，容易對使用者產生誤導），僅在純向量搜尋（`vector`）模式下顯示 `Distance` 徽章。
 

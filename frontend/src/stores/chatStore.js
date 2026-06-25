@@ -89,7 +89,8 @@ export const useChatStore = defineStore('chat', {
             max_tokens: paramsStore.maxTokens,
             top_k: paramsStore.topK,
             score_threshold: paramsStore.scoreThreshold,
-            filter_tags: parsedFilterTags.length > 0 ? parsedFilterTags : undefined
+            filter_tags: parsedFilterTags.length > 0 ? parsedFilterTags : undefined,
+            search_type: paramsStore.searchMode
           }
         }
 

@@ -81,6 +81,7 @@ const saveDatasetChanges = async () => {
 const startEvaluation = async (data) => {
   const datasetId = typeof data === 'object' ? data.datasetId : data
   const maxTokensVal = typeof data === 'object' ? data.maxTokens : 16384
+  const searchTypeVal = typeof data === 'object' ? data.searchType : 'vector'
 
   // 自動在評估前保存修改
   if (datasetDetails.value && datasetDetails.value.dataset_id === datasetId) {
@@ -119,7 +120,8 @@ const startEvaluation = async (data) => {
         model: 'Qwen3.6-35B-A3B-FP8',
         temperature: 0.3,
         top_k: 5,
-        max_tokens: maxTokensVal
+        max_tokens: maxTokensVal,
+        search_type: searchTypeVal
       }
     }
     

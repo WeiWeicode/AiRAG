@@ -15,6 +15,7 @@ const selectedDatasetId = ref('')
 const datasets = ref([])
 const activeDataset = ref(null)
 const maxTokens = ref(8192)
+const searchType = ref('vector')
 
 // Import Dataset modal state
 const showImportModal = ref(false)
@@ -152,7 +153,7 @@ onMounted(() => {
           </select>
         </div>
         <button 
-          @click="emit('start-eval', { datasetId: selectedDatasetId, maxTokens })"
+          @click="emit('start-eval', { datasetId: selectedDatasetId, maxTokens, searchType })"
           :disabled="isLoading"
           class="bg-[#8b5cf6] hover:bg-[#a78bfa] disabled:bg-purple-900/50 disabled:text-purple-300/50 hover:shadow-[0_4px_12px_rgba(139,92,246,0.3)] text-white font-semibold px-5 py-3 rounded-lg text-sm flex items-center justify-center gap-2 transition-all w-full sm:w-auto h-[42px] flex-shrink-0"
         >
@@ -163,28 +164,44 @@ onMounted(() => {
         </button>
       </div>
 
-      <!-- Max Tokens Slider -->
-      <div class="mt-4 flex flex-col gap-2 bg-white/3 border border-white/5 rounded-xl p-4">
-        <div class="flex justify-between items-center text-xs font-semibold">
-          <span class="text-[#9ca3af]">單筆生成最大 Token 數 (MAX TOKENS)</span>
-          <span class="text-white font-mono bg-[#8b5cf6]/20 border border-[#8b5cf6]/30 px-2 py-0.5 rounded text-[10px]">{{ maxTokens }}</span>
-        </div>
-        <div class="flex items-center gap-3 mt-1">
-          <span class="text-[10px] text-[#6b7280]">512</span>
-          <input 
-            v-model.number="maxTokens"
-            type="range" 
-            min="512" 
-            max="16384" 
-            step="256"
+      <!-- Max Tokens & Search Type Parameters -->
+      <div class="mt-4 flex flex-col gap-4 bg-white/3 border border-white/5 rounded-xl p-4">
+        <!-- Search Type Selector -->
+        <div class="flex flex-col gap-2">
+          <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">檢索模式 (Search Type)</label>
+          <select 
+            v-model="searchType" 
             :disabled="isLoading"
-            class="flex-grow h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#8b5cf6] focus:outline-none"
-          />
-          <span class="text-[10px] text-[#6b7280]">8192</span>
+            class="bg-white/5 border border-white/8 rounded-lg text-white px-3 py-2 text-xs focus:outline-none focus:border-[#8b5cf6] transition-all w-full"
+          >
+            <option value="vector" class="bg-[#111827] text-white">向量搜尋 (Vector Search)</option>
+            <option value="hybrid" class="bg-[#111827] text-white">混合搜尋 (Hybrid Search)</option>
+          </select>
         </div>
-        <p class="text-[10px] text-[#6b7280] leading-relaxed">
-          較高的限制可避免長文答覆或 Reasoning 模型思考過程 (Thinking) 被截斷，但會增加評估產生的耗時。
-        </p>
+
+        <!-- Max Tokens Slider -->
+        <div class="flex flex-col gap-2 border-t border-white/5 pt-3">
+          <div class="flex justify-between items-center text-xs font-semibold">
+            <span class="text-[#9ca3af]">單筆生成最大 Token 數 (MAX TOKENS)</span>
+            <span class="text-white font-mono bg-[#8b5cf6]/20 border border-[#8b5cf6]/30 px-2 py-0.5 rounded text-[10px]">{{ maxTokens }}</span>
+          </div>
+          <div class="flex items-center gap-3 mt-1">
+            <span class="text-[10px] text-[#6b7280]">512</span>
+            <input 
+              v-model.number="maxTokens"
+              type="range" 
+              min="512" 
+              max="16384" 
+              step="256"
+              :disabled="isLoading"
+              class="flex-grow h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#8b5cf6] focus:outline-none"
+            />
+            <span class="text-[10px] text-[#6b7280]">8192</span>
+          </div>
+          <p class="text-[10px] text-[#6b7280] leading-relaxed">
+            較高的限制可避免長文答覆或 Reasoning 模型思考過程 (Thinking) 被截斷，但會增加評估產生的耗時。
+          </p>
+        </div>
       </div>
 
       <!-- 效能與斷線警告提示 -->

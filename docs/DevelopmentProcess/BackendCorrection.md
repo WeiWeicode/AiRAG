@@ -1,9 +1,15 @@
 <!-- 後端修正紀錄 -->
 
-## 2026-06-25 修正 fastembed 稀疏向量參數缺失與大批次寫入導致記憶體溢出 (OOM) 崩潰
+## 2026-06-25 於評估模組新增向量/混合查詢檢索模式支援並修復 fastembed OOM
 
 ### 修改內容
-1. `backend/services/sparse_embedding_service.py`:
+1. `backend/models/eval_report.py`:
+   - 在 `EvalParams` schema 中加入 `search_type: Optional[str] = "vector"`，供測試報告持久化儲存時紀錄該次評估採用的檢索模式。
+2. `backend/routers/evaluation.py`:
+   - 在 `EvalParamsInput` 中新增 `search_type` 參數，以便接收前端發起的評估請求檢索模式。
+   - 於評估進度產生器 `event_generator` 提取並傳遞 `search_type` 給相似度檢索方法 `QdrantService.search_similar`，實踐混合檢索評估。
+   - 修復因取代區塊造成的 `max_tokens` 變數遺失 Bug。
+3. `backend/services/sparse_embedding_service.py`:
    - 在 `get_model` 初始化 `SparseTextEmbedding` 時，顯式傳入 `model_name="prithivida/Splade_PP_en_v1"`，解決未給予核心參數造成拋出 `TypeError` 且稀疏向量回傳空值的 Bug。
    - 新增 `threads=2` 參數限制 ONNX Runtime 在計算稀疏向量時的 CPU 線程數，防範線程過多導致系統資源耗盡。
    - 在 `get_sparse_vectors_batch` 方法中將 `model.embed` 加上 `batch_size=16`，使大批次（如 170 筆）文字在推理時分批進行，降低峰值記憶體開銷，防止 Docker 容器因記憶體不足被系統強制終止 (Exit Code 137, OOM Killed)。

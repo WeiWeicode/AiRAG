@@ -8,6 +8,7 @@ class EvalParams(BaseModel):
     top_k: int = 5
     score_threshold: float = 0.7
     max_tokens: Optional[int] = 1024
+    search_type: Optional[str] = "vector"
 
 class EvalMetrics(BaseModel):
     faithfulness: float = 0.0

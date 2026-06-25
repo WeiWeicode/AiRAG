@@ -1,10 +1,12 @@
 <script setup>
 import { ref, watch, nextTick, onMounted } from 'vue'
 import { useChatStore } from '../../stores/chatStore'
+import { useParamsStore } from '../../stores/paramsStore'
 import MessageBubble from './MessageBubble.vue'
 import FeedbackPanel from './FeedbackPanel.vue'
 
 const chatStore = useChatStore()
+const paramsStore = useParamsStore()
 
 const inputMessage = ref('')
 const messageContainer = ref(null)
@@ -71,10 +73,39 @@ const handleNewChat = () => {
   <div class="flex-grow flex flex-col bg-[#111827]/40 border border-white/8 rounded-2xl overflow-hidden relative">
     <!-- Chat Header -->
     <div class="px-6 py-4 border-b border-white/8 bg-[#111827]/60 flex items-center justify-between flex-shrink-0">
-      <div class="flex items-center gap-2">
-        <span class="w-2.5 h-2.5 rounded-full bg-[#8b5cf6] animate-pulse"></span>
-        <span class="text-sm font-medium text-white/80">對話視窗</span>
+      <div class="flex items-center gap-4">
+        <div class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-[#8b5cf6] animate-pulse"></span>
+          <span class="text-sm font-medium text-white/80">對話視窗</span>
+        </div>
+
+        <!-- Search Mode Toggle -->
+        <div class="flex items-center bg-white/5 border border-white/8 rounded-lg p-0.5 ml-2">
+          <button 
+            @click="paramsStore.searchMode = 'vector'"
+            :class="[
+              'px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all',
+              paramsStore.searchMode === 'vector' 
+                ? 'bg-[#8b5cf6] text-white shadow-[0_2px_8px_rgba(139,92,246,0.3)]' 
+                : 'text-[#9ca3af] hover:text-white hover:bg-white/5'
+            ]"
+          >
+            向量查詢
+          </button>
+          <button 
+            @click="paramsStore.searchMode = 'hybrid'"
+            :class="[
+              'px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all',
+              paramsStore.searchMode === 'hybrid' 
+                ? 'bg-[#8b5cf6] text-white shadow-[0_2px_8px_rgba(139,92,246,0.3)]' 
+                : 'text-[#9ca3af] hover:text-white hover:bg-white/5'
+            ]"
+          >
+            混合查詢
+          </button>
+        </div>
       </div>
+
       <button 
         @click="handleNewChat"
         :disabled="chatStore.isLoading"
