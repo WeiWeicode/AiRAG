@@ -5,15 +5,18 @@ from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
 from beanie import PydanticObjectId
 
+from typing import List
 from schemas.embedding import (
     UploadResponse, ChunkRequest, ChunkResponse, ChunkItem,
-    VectorizeRequest, VectorizeResponse
+    VectorizeRequest, VectorizeResponse, TagCreate, ClassOptionCreate
 )
 from services.document_parser import DocumentParser
 from services.chunking_service import ChunkingService
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from models.knowledge_base import KnowledgeBase
+from models.tag import Tag
+from models.class_option import ClassOption
 from utils.security import get_current_user
 
 logger = logging.getLogger("airag.embedding_router")
@@ -160,6 +163,10 @@ async def vectorize_chunks(request: VectorizeRequest):
         # 準備寫入 Qdrant 的 Payload
         qdrant_chunks = []
         for chunk in request.chunks:
+            classes = chunk.metadata.get("classes", chunk.metadata.get("class", []))
+            if isinstance(classes, str):
+                classes = [classes] if classes else []
+                
             payload = {
                 "content": chunk.content,
                 "filename": chunk.metadata.get("filename", "unknown"),
@@ -170,11 +177,12 @@ async def vectorize_chunks(request: VectorizeRequest):
                 "char_count": len(chunk.content),
                 "source": chunk.metadata.get("source", "upload"),
                 "tags": chunk.metadata.get("tags", []),
+                "class": classes,
                 "created_at": datetime.utcnow().isoformat()
             }
             # 額外合併 metadata 中的其他自訂屬性 (例如 parent_id, function_name, type)
             for k, v in chunk.metadata.items():
-                if k not in payload:
+                if k not in payload and k not in ["class", "classes"]:
                     payload[k] = v
             qdrant_chunks.append(payload)
             
@@ -203,3 +211,83 @@ async def vectorize_chunks(request: VectorizeRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"向量化寫入失敗: {str(e)}"
         )
+
+@router.get("/tags", response_model=List[str])
+async def get_tags():
+    """
+    取得所有分類標籤清單。
+    """
+    try:
+        tags = await Tag.find_all().to_list()
+        return [t.name for t in tags]
+    except Exception as e:
+        logger.error(f"Failed to get tags: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"取得標籤清單失敗: {str(e)}"
+        )
+
+@router.post("/tags", response_model=str)
+async def create_tag(request: TagCreate):
+    """
+    建立新的分類標籤。
+    """
+    try:
+        # Check if tag already exists
+        existing = await Tag.find_one(Tag.name == request.name)
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"標籤 '{request.name}' 已存在"
+            )
+        new_tag = Tag(name=request.name)
+        await new_tag.insert()
+        return new_tag.name
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create tag: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"建立標籤失敗: {str(e)}"
+        )
+
+@router.get("/classes", response_model=List[str])
+async def get_classes():
+    """
+    取得所有類別選項清單。
+    """
+    try:
+        classes = await ClassOption.find_all().to_list()
+        return [c.name for c in classes]
+    except Exception as e:
+        logger.error(f"Failed to get class options: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"取得類別選項失敗: {str(e)}"
+        )
+
+@router.post("/classes", response_model=str)
+async def create_class(request: ClassOptionCreate):
+    """
+    建立新的類別選項。
+    """
+    try:
+        existing = await ClassOption.find_one(ClassOption.name == request.name)
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"類別 '{request.name}' 已存在"
+            )
+        new_class = ClassOption(name=request.name)
+        await new_class.insert()
+        return new_class.name
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create class: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"建立類別失敗: {str(e)}"
+        )
+

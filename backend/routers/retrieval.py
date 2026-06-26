@@ -71,6 +71,7 @@ async def search(request: RetrievalRequest):
                         section=meta.get("section"),
                         chunk_index=meta.get("chunk_index"),
                         tags=meta.get("tags", []),
+                        class_list=meta.get("class", []),
                         parent_id=meta.get("parent_id"),
                         function_name=meta.get("function_name"),
                         type=meta.get("type")
@@ -146,6 +147,7 @@ async def query_transform(request: QueryTransformRequest):
                         section=meta.get("section"),
                         chunk_index=meta.get("chunk_index"),
                         tags=meta.get("tags", []),
+                        class_list=meta.get("class", []),
                         parent_id=meta.get("parent_id"),
                         function_name=meta.get("function_name"),
                         type=meta.get("type")

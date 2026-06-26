@@ -1,5 +1,38 @@
 <!-- 新增功能紀錄 -->
 
+## 2026-06-26 新增客製化副檔名批次上傳限制、MongoDB 分類標籤與自訂類別選項管理
+
+### 功能描述
+優化自訂資料向量化 (Embedding & Indexing) 中的批次文件上傳流程：
+1. **限制單一副檔名上傳與客製化切分**：限制批次上傳檔案必須符合選定的單一副檔名格式，並依選取的副檔名載入預設的客製化切分設定 (如切分大小、重疊大小、分隔符號與切分模式)。
+2. **MongoDB 分類標籤管理**：分類標籤改為從 MongoDB 動態載入，使用者可一鍵勾選或在介面即時建立新標籤存入資料庫。
+3. **自訂類別選項 (Class Array) 持久化與 Qdrant 寫入**：新增「類別選項 (Class)」管理，使用者可自行建立類別選項（儲存於 MongoDB），並在資料向量化時將選取之類別陣列寫入 Qdrant 向量點資料的 `"class"` 欄位中，且支援於 RAG 與向量搜尋結果中解析並回傳。
+
+### 實作內容
+1. **單一副檔名上傳限制**：
+   - 於 `EmbeddingTestView.vue` 新增 `selectedExtension` 下拉式選單與預設切分參數對照表。
+   - 修改 `addFilesToQueue` 邏輯，非指定副檔名檔案拒絕加入佇列。
+   - 調整 Dropzone 的 `:accept` 屬性動態綁定 `selectedExtension`。
+2. **分類標籤 (Tags) 與類別選項 (Classes) 管理**：
+   - 實作 MongoDB / Beanie `Tag` 與 `ClassOption` 資料模型，並新增 API 端點提供查詢與建立功能。
+   - 於前端 `embeddingService` 整合 `getTags()`, `createTag(name)`, `getClasses()`, `createClass(name)` API 方法。
+   - 於 `EmbeddingTestView.vue` 中重構單筆編輯 (Tab 1) 與批次編輯 (Tab 2) 的 UI，移除原自由文字輸入框，替換為動態載入的 Checkbox 標籤/類別氣泡按鈕及即時建立新標籤/類別之輸入框。
+3. **Qdrant `"class"` 欄位寫入與檢索回傳**：
+   - 在後端向量化 API `/api/embedding/vectorize` 中，提取 `classes` 欄位並以 `"class"` 鍵值存入 Qdrant Metadata payload。
+   - 修改後端 `RetrievalMetadata` 結構，加入 `class_list` 欄位並將其 alias 設為 `"class"`，實現對 Qdrant payload `"class"` 欄位的自動解析。
+   - 於後端檢索與 RAG 端點中將 `"class"` 屬性對照回傳給前端。
+
+### 修改檔案
+- `backend/models/tag.py` (新增)
+- `backend/models/class_option.py` (新增)
+- `backend/models/mongodb.py` (修改)
+- `backend/schemas/embedding.py` (修改)
+- `backend/schemas/retrieval.py` (修改)
+- `backend/routers/embedding.py` (修改)
+- `backend/routers/retrieval.py` (修改)
+- `frontend/src/services/embeddingService.js` (修改)
+- `frontend/src/views/EmbeddingTestView.vue` (修改)
+
 ## 2026-06-25 新增 Genero 4GL 大小雙層檢索 (Parent-Child Retriever) 語法切分與前端自動分批寫入整合
 
 ### 功能描述

@@ -1,5 +1,21 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-06-26 配合批次副檔名上傳過濾與 MongoDB 分類標籤、自訂類別更新前端 UI 與服務
+
+### 修改內容
+1. `frontend/src/services/embeddingService.js`:
+   - 新增 `getTags()`, `createTag(name)`, `getClasses()`, `createClass(name)`，對接後端 MongoDB 資料庫之標籤與類別選項讀寫。
+2. `frontend/src/views/EmbeddingTestView.vue`:
+   - **新增副檔名客製化切分設定與過濾**：
+     - 新增 `selectedExtension` (限制上傳副檔名) 雙向綁定 ref，並監聽其變化，自動為選定的副檔名載入預設的 chunk size、overlap 與 separator，同時在副檔名改變時自動清空上傳佇列。
+     - 修改 `addFilesToQueue` 方法，在上傳前比對副檔名，不符合 `selectedExtension` 的檔案將跳過並彈出警告提示。
+     - 於「批次寫入設定」面板中加入副檔名限制選擇下拉選單。
+     - 於 Dropzone 卡片動態綁定 `:accept="selectedExtension"`，並更新說明文字。
+   - **引入 MongoDB 標籤與類別選項選擇面板**：
+     - 新增 `allTags`、`allClasses` 狀態，在 `onMounted` 生命週期中從後端載入。
+     - 於單筆編輯 (Tab 1) 中，移除原有 `tagsString` 純文字輸入框，改為渲染「分類標籤 (Tags)」與「類別選項 (Class)」動態選擇氣泡群組，並提供即時新增之微型輸入欄位與 `+` 按鈕。
+     - 於自動分批寫入 (Tab 2) 的「批次寫入設定」面板中，同步引入「分類標籤」與「類別選項」的動態 Checkbox 核取氣泡，方便在批次上傳多個檔案時一鍵附加對應標籤與類別，並隨 Chunks metadata 發送至後端向量化 API。
+
 ## 2026-06-25 調整自動分批寫入之設定版面為單行單功能佈局
 
 ### 修改內容

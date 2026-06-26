@@ -1,5 +1,23 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-26 新增 MongoDB 標籤與類別路由、擴充 Qdrant "class" 欄位讀寫支援
+
+### 修改內容
+1. `backend/models/tag.py` & `backend/models/class_option.py` (新增):
+   - 實作 Beanie MongoDB Document models：`Tag` 與 `ClassOption`，用於儲存與查詢自訂的標籤與類別選項。
+2. `backend/models/mongodb.py`:
+   - 於 Beanie 初始化註冊列表 `document_models` 中導入並加入 `Tag` 與 `ClassOption`。
+3. `backend/schemas/embedding.py`:
+   - 新增 `TagCreate` 與 `ClassOptionCreate` Pydantic schemas。
+4. `backend/schemas/retrieval.py`:
+   - 修改 `RetrievalMetadata` schema，新增 `class_list` (別名為 `"class"`)，以允許將從 Qdrant 查詢回傳的 `"class"` 陣列欄位自動對照與映射為 `class_list`。
+5. `backend/routers/embedding.py`:
+   - 新增 `GET /api/embedding/tags`, `POST /api/embedding/tags` 路由，提供分類標籤之獲取與新建。
+   - 新增 `GET /api/embedding/classes`, `POST /api/embedding/classes` 路由，提供類別選項之獲取與新建。
+   - 於向量化端點 `/vectorize` 中，提取 chunk metadata 中的 `classes` (或 `class`)，並以 `"class"` 鍵值存入 Qdrant payload。
+6. `backend/routers/retrieval.py`:
+   - 於檢索端點中，將從 Qdrant 取得之 `"class"` metadata 欄位對照還原回傳，確保檢索出的 Points 均能正確攜帶 `"class"` 欄位返給前端。
+
 ## 2026-06-25 移除向量化預存 parent_content 以優化 Qdrant 資料量，並調整 Nginx 上傳限制
 
 ### 修改內容

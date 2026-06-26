@@ -49,3 +49,10 @@ class VectorizeResponse(BaseModel):
     inserted_count: int
     embedding_model: str
     elapsed_ms: int
+
+class TagCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+
+class ClassOptionCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+

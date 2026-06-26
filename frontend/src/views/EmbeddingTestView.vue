@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, onMounted } from 'vue'
 import FileUploader from '../components/embedding/FileUploader.vue'
 import ChunkPreview from '../components/embedding/ChunkPreview.vue'
 import TokenCounter from '../components/embedding/TokenCounter.vue'
@@ -14,8 +14,54 @@ const paramsStore = useParamsStore()
 // State
 const uploadedFileId = ref('')
 const filename = ref('unknown')
-const tagsString = ref('')
 const rawTextContent = ref('')
+
+// Tags & Classes Management
+const allTags = ref([])
+const allClasses = ref([])
+const selectedTags = ref([])
+const selectedClasses = ref([])
+const batchSelectedTags = ref([])
+const batchSelectedClasses = ref([])
+const newTagName = ref('')
+const newClassName = ref('')
+
+const fetchTagsAndClasses = async () => {
+  try {
+    allTags.value = await embeddingService.getTags()
+    allClasses.value = await embeddingService.getClasses()
+  } catch (error) {
+    console.error('無法載入標籤或類別名單:', error)
+  }
+}
+
+const handleCreateTag = async () => {
+  const val = newTagName.value.trim()
+  if (!val) return
+  try {
+    await embeddingService.createTag(val)
+    newTagName.value = ''
+    await fetchTagsAndClasses()
+  } catch (error) {
+    alert(error.response?.data?.detail || '建立標籤失敗')
+  }
+}
+
+const handleCreateClass = async () => {
+  const val = newClassName.value.trim()
+  if (!val) return
+  try {
+    await embeddingService.createClass(val)
+    newClassName.value = ''
+    await fetchTagsAndClasses()
+  } catch (error) {
+    alert(error.response?.data?.detail || '建立類別失敗')
+  }
+}
+
+onMounted(() => {
+  fetchTagsAndClasses()
+})
 const isChunking = ref(false)
 const chunksList = ref([])
 
@@ -71,10 +117,7 @@ const triggerChunking = async () => {
     let chunks = response.chunks || []
     
     if (paramsStore.enableStructuring) {
-      const parsedTags = tagsString.value.split(',')
-        .map(t => t.trim())
-        .filter(t => t.length > 0)
-      const tags = parsedTags.join(', ') || '一般'
+      const tags = selectedTags.value.join(', ') || '一般'
       const fname = filename.value || 'unknown'
       
       chunks = chunks.map(c => {
@@ -100,7 +143,8 @@ const triggerChunking = async () => {
 const resetFields = () => {
   uploadedFileId.value = ''
   filename.value = 'unknown'
-  tagsString.value = ''
+  selectedTags.value = []
+  selectedClasses.value = []
   rawTextContent.value = ''
   chunksList.value = []
   vectorizationStats.value = null
@@ -116,10 +160,6 @@ const triggerVectorization = async () => {
   vectorizationStats.value = null
   
   try {
-    const parsedTags = tagsString.value.split(',')
-      .map(t => t.trim())
-      .filter(t => t.length > 0)
-
     const payload = {
       chunks: chunksList.value.map(c => ({ 
         index: c.index, 
@@ -127,7 +167,8 @@ const triggerVectorization = async () => {
         metadata: { 
           filename: filename.value || 'unknown',
           source: uploadedFileId.value ? 'upload' : 'manual',
-          tags: parsedTags
+          tags: selectedTags.value,
+          classes: selectedClasses.value
         } 
       })),
       knowledge_base_id: paramsStore.knowledgeBaseId,
@@ -265,12 +306,37 @@ const handleBatchDeleteManagement = async () => {
 const batchFiles = ref([]) // array of { id, name, size, status, progress, chunksCount, elapsedTime, message, fileObject }
 const batchChunkSize = ref(20) // default chunk batch size when vectorizing
 const batchDuplicateMode = ref('overwrite') // overwrite | skip
-const batchChunkMode = ref('standard') // standard | parent_child
 const isBatchProcessing = ref(false)
 const batchProcessIndex = ref(-1) // index of file currently processing
-const batchTagsString = ref('') // tags for batch files
 const isBatchDragActive = ref(false)
 const batchFileInput = ref(null)
+
+const selectedExtension = ref('.pdf')
+const batchChunkSizeExt = ref(512)
+const batchChunkOverlapExt = ref(50)
+const batchSeparatorExt = ref('\\n\\n')
+const batchChunkModeExt = ref('standard')
+
+watch(selectedExtension, (newExt) => {
+  if (newExt === '.4gl') {
+    batchChunkModeExt.value = 'parent_child'
+    batchSeparatorExt.value = '\\n\\n'
+    batchChunkSizeExt.value = 512
+    batchChunkOverlapExt.value = 50
+  } else if (newExt === '.pdf' || newExt === '.docx') {
+    batchChunkModeExt.value = 'standard'
+    batchSeparatorExt.value = '\\n'
+    batchChunkSizeExt.value = 512
+    batchChunkOverlapExt.value = 50
+  } else {
+    batchChunkModeExt.value = 'standard'
+    batchSeparatorExt.value = '\\n\\n'
+    batchChunkSizeExt.value = 512
+    batchChunkOverlapExt.value = 50
+  }
+  // Clear the queue when extension changes
+  batchFiles.value = []
+}, { immediate: true })
 
 // Timer states
 const batchTotalElapsedTime = ref(0) // milliseconds
@@ -317,6 +383,14 @@ const triggerBatchFileInput = () => {
 const addFilesToQueue = (filesList) => {
   for (let i = 0; i < filesList.length; i++) {
     const file = filesList[i]
+    
+    // Check file extension
+    const ext = '.' + file.name.split('.').pop().toLowerCase()
+    if (ext !== selectedExtension.value) {
+      alert(`僅限上傳符合副檔名「${selectedExtension.value}」的檔案！\n不符檔案：${file.name}`)
+      continue
+    }
+
     if (batchFiles.value.some(f => f.name === file.name)) {
       continue
     }
@@ -445,10 +519,10 @@ const startBatchProcessing = async () => {
         filename: fname,
         content: content,
         params: {
-          chunk_size: paramsStore.chunkSize,
-          chunk_overlap: paramsStore.chunkOverlap,
-          separator: paramsStore.separator.replace('\\n', '\n'),
-          chunk_mode: batchChunkMode.value
+          chunk_size: batchChunkSizeExt.value,
+          chunk_overlap: batchChunkOverlapExt.value,
+          separator: batchSeparatorExt.value.replace('\\n', '\n'),
+          chunk_mode: batchChunkModeExt.value
         }
       }
       const chunkData = await embeddingService.chunkText(chunkPayload)
@@ -456,10 +530,7 @@ const startBatchProcessing = async () => {
       
       // Handle structuring if enabled
       if (paramsStore.enableStructuring) {
-        const parsedTags = batchTagsString.value.split(',')
-          .map(t => t.trim())
-          .filter(t => t.length > 0)
-        const tags = parsedTags.join(', ') || '一般'
+        const tags = batchSelectedTags.value.join(', ') || '一般'
         
         chunks = chunks.map(c => {
           const structuredContent = `[檔案名稱] ${fname}\n[段落編號] 第 ${c.index + 1} 段\n[分類標籤] ${tags}\n[主要內容]\n${c.content}`
@@ -493,11 +564,7 @@ const startBatchProcessing = async () => {
       const batchSize = batchChunkSize.value || 20
       const totalBatches = Math.ceil(chunks.length / batchSize)
       let insertedTotal = 0
-      
-      const parsedTags = batchTagsString.value.split(',')
-        .map(t => t.trim())
-        .filter(t => t.length > 0)
-        
+         
       for (let b = 0; b < totalBatches; b++) {
         if (!isBatchProcessing.value) break
 
@@ -514,7 +581,8 @@ const startBatchProcessing = async () => {
             metadata: {
               filename: fname,
               source: 'upload',
-              tags: parsedTags,
+              tags: batchSelectedTags.value,
+              classes: batchSelectedClasses.value,
               ...(c.metadata || {})
             }
           })),
@@ -621,19 +689,93 @@ const startBatchProcessing = async () => {
             />
           </div>
 
-          <!-- Tags Input -->
-          <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded-lg px-3 py-1.5 focus-within:border-[#8b5cf6] transition-all">
-            <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path>
-              <line x1="7" y1="7" x2="7.01" y2="7"></line>
-            </svg>
-            <span class="text-xs text-[#9ca3af] select-none whitespace-nowrap">分類標籤:</span>
-            <input 
-              v-model="tagsString"
-              type="text" 
-              class="flex-grow bg-transparent text-white text-xs outline-none"
-              placeholder="請輸入標籤，以英文逗號分隔 (例如: HR, 請假規定, 2026)"
-            />
+          <!-- Classification tags (Tab 1) -->
+          <div class="flex flex-col gap-2 bg-white/3 border border-white/8 rounded-lg p-3">
+            <div class="flex items-center justify-between border-b border-white/5 pb-2">
+              <div class="flex items-center gap-2">
+                <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path>
+                  <line x1="7" y1="7" x2="7.01" y2="7"></line>
+                </svg>
+                <span class="text-xs font-semibold text-[#f3f4f6]">分類標籤 (Tags)</span>
+              </div>
+              <div class="flex items-center gap-1">
+                <input 
+                  v-model="newTagName" 
+                  type="text"
+                  placeholder="建立新標籤..."
+                  class="bg-white/5 border border-white/10 rounded px-2 py-0.5 text-[10px] text-white focus:outline-none focus:border-[#8b5cf6] w-28"
+                  @keyup.enter="handleCreateTag"
+                />
+                <button 
+                  @click="handleCreateTag"
+                  class="bg-[#8b5cf6] hover:bg-[#a78bfa] text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-2 max-h-24 overflow-y-auto pt-1">
+              <span v-if="allTags.length === 0" class="text-[10px] text-[#6b7280]">尚無標籤，請於右側建立</span>
+              <label 
+                v-for="tag in allTags" 
+                :key="tag"
+                class="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/8 text-[11px] text-[#d1d5db] cursor-pointer transition-all select-none"
+                :class="{ 'border-[#8b5cf6] bg-[#8b5cf6]/10 text-white': selectedTags.includes(tag) }"
+              >
+                <input 
+                  type="checkbox" 
+                  v-model="selectedTags" 
+                  :value="tag" 
+                  class="hidden"
+                />
+                <span>{{ tag }}</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Class Options (Tab 1) -->
+          <div class="flex flex-col gap-2 bg-white/3 border border-white/8 rounded-lg p-3">
+            <div class="flex items-center justify-between border-b border-white/5 pb-2">
+              <div class="flex items-center gap-2">
+                <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                </svg>
+                <span class="text-xs font-semibold text-[#f3f4f6]">類別選項 (Class 屬性)</span>
+              </div>
+              <div class="flex items-center gap-1">
+                <input 
+                  v-model="newClassName" 
+                  type="text"
+                  placeholder="建立新類別..."
+                  class="bg-white/5 border border-white/10 rounded px-2 py-0.5 text-[10px] text-white focus:outline-none focus:border-[#8b5cf6] w-28"
+                  @keyup.enter="handleCreateClass"
+                />
+                <button 
+                  @click="handleCreateClass"
+                  class="bg-[#8b5cf6] hover:bg-[#a78bfa] text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-2 max-h-24 overflow-y-auto pt-1">
+              <span v-if="allClasses.length === 0" class="text-[10px] text-[#6b7280]">尚無類別，請於右側建立</span>
+              <label 
+                v-for="c in allClasses" 
+                :key="c"
+                class="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/8 text-[11px] text-[#d1d5db] cursor-pointer transition-all select-none"
+                :class="{ 'border-[#8b5cf6] bg-[#8b5cf6]/10 text-white': selectedClasses.includes(c) }"
+              >
+                <input 
+                  type="checkbox" 
+                  v-model="selectedClasses" 
+                  :value="c" 
+                  class="hidden"
+                />
+                <span>{{ c }}</span>
+              </label>
+            </div>
           </div>
 
           <textarea 
@@ -703,10 +845,10 @@ const startBatchProcessing = async () => {
               type="file" 
               class="hidden" 
               multiple
-              accept=".pdf,.docx,.txt,.md,.4gl"
+              :accept="selectedExtension"
               @change="handleBatchFileSelect"
             />
-
+ 
             <!-- Dropzone -->
             <div 
               @click="triggerBatchFileInput"
@@ -737,29 +879,33 @@ const startBatchProcessing = async () => {
               <div class="text-xs font-semibold">
                 {{ isBatchProcessing ? '佇列處理中，請稍候...' : '拖曳多個檔案至此或點擊上傳' }}
               </div>
-              <div class="text-[10px] text-[#6b7280] mt-1">支援 PDF, DOCX, TXT, MD, 4GL 格式 (可一次選取多個檔案)</div>
+              <div class="text-[10px] text-[#6b7280] mt-1">目前僅限制上傳 {{ selectedExtension }} 格式之檔案</div>
             </div>
           </div>
         </div>
 
         <!-- Configurations Card -->
-        <div class="bg-[#111827]/70 border border-white/8 rounded-2xl p-5 backdrop-blur-md flex flex-col gap-3">
+        <div class="bg-[#111827]/70 border border-white/8 rounded-2xl p-5 backdrop-blur-md flex flex-col gap-3.5">
           <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">批次寫入設定</label>
           
           <div class="flex flex-col gap-3">
-            <!-- Tags Input -->
+            <!-- Extension restriction dropdown -->
             <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded-lg px-3 py-2 focus-within:border-[#8b5cf6] transition-all">
               <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path>
-                <line x1="7" y1="7" x2="7.01" y2="7"></line>
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
               </svg>
-              <span class="text-xs text-[#9ca3af] select-none whitespace-nowrap">分類標籤:</span>
-              <input 
-                v-model="batchTagsString"
-                type="text" 
-                class="flex-grow bg-transparent text-white text-xs outline-none"
-                placeholder="選填標籤，以英文逗號分隔"
-              />
+              <span class="text-xs text-[#9ca3af] select-none whitespace-nowrap">限制上傳副檔名:</span>
+              <select 
+                v-model="selectedExtension"
+                class="flex-grow bg-transparent text-white text-xs outline-none cursor-pointer"
+              >
+                <option value=".pdf" class="bg-[#111827] text-white">PDF (.pdf)</option>
+                <option value=".docx" class="bg-[#111827] text-white">DOCX (.docx)</option>
+                <option value=".txt" class="bg-[#111827] text-white">TXT (.txt)</option>
+                <option value=".md" class="bg-[#111827] text-white">Markdown (.md)</option>
+                <option value=".4gl" class="bg-[#111827] text-white">Genero 4GL (.4gl)</option>
+              </select>
             </div>
 
             <!-- Duplicate Action config -->
@@ -775,21 +921,6 @@ const startBatchProcessing = async () => {
               >
                 <option value="overwrite" class="bg-[#111827] text-white">刪除重新上傳(覆蓋)</option>
                 <option value="skip" class="bg-[#111827] text-white">舊檔案略過不覆蓋</option>
-              </select>
-            </div>
-
-            <!-- Chunk Mode config -->
-            <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded-lg px-3 py-2 focus-within:border-[#8b5cf6] transition-all">
-              <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-              </svg>
-              <span class="text-xs text-[#9ca3af] select-none whitespace-nowrap">切分模式:</span>
-              <select 
-                v-model="batchChunkMode"
-                class="flex-grow bg-transparent text-white text-xs outline-none cursor-pointer"
-              >
-                <option value="standard" class="bg-[#111827] text-white">標準字元切分</option>
-                <option value="parent_child" class="bg-[#111827] text-white">大小雙層結構切分 (Parent-Child)</option>
               </select>
             </div>
 
@@ -810,6 +941,157 @@ const startBatchProcessing = async () => {
                 class="flex-grow bg-transparent text-white text-xs outline-none font-mono"
                 placeholder="預設 20"
               />
+            </div>
+
+            <!-- Customized chunk parameters for selected extension -->
+            <div class="border border-white/5 bg-white/1 p-3 rounded-lg flex flex-col gap-3">
+              <div class="text-[11px] font-bold text-[#a78bfa] select-none border-b border-white/5 pb-1">
+                依 {{ selectedExtension }} 客製化切分設定
+              </div>
+              
+              <!-- Chunk Size -->
+              <div class="flex flex-col gap-1">
+                <div class="flex justify-between items-center text-[10px]">
+                  <span class="text-[#9ca3af]">切分大小 (Chunk Size):</span>
+                  <span class="text-[#a78bfa] font-bold font-mono">{{ batchChunkSizeExt }}</span>
+                </div>
+                <input 
+                  v-model.number="batchChunkSizeExt" 
+                  type="range" 
+                  min="128" 
+                  max="1024" 
+                  step="64"
+                  class="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#8b5cf6]"
+                />
+              </div>
+
+              <!-- Chunk Overlap -->
+              <div class="flex flex-col gap-1">
+                <div class="flex justify-between items-center text-[10px]">
+                  <span class="text-[#9ca3af]">重疊大小 (Overlap Size):</span>
+                  <span class="text-[#a78bfa] font-bold font-mono">{{ batchChunkOverlapExt }}</span>
+                </div>
+                <input 
+                  v-model.number="batchChunkOverlapExt" 
+                  type="range" 
+                  min="0" 
+                  max="200" 
+                  step="10"
+                  class="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#8b5cf6]"
+                />
+              </div>
+
+              <!-- Separator -->
+              <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded px-2 py-1 focus-within:border-[#8b5cf6] transition-all">
+                <span class="text-[10px] text-[#9ca3af] select-none whitespace-nowrap">切分符號:</span>
+                <input 
+                  v-model="batchSeparatorExt"
+                  type="text" 
+                  class="flex-grow bg-transparent text-white text-[10px] outline-none font-mono"
+                  placeholder="例如: \n\n"
+                />
+              </div>
+
+              <!-- Chunk Mode -->
+              <div class="flex items-center gap-2.5 bg-white/3 border border-white/8 rounded px-2 py-1 focus-within:border-[#8b5cf6] transition-all">
+                <span class="text-[10px] text-[#9ca3af] select-none whitespace-nowrap">切分模式:</span>
+                <select 
+                  v-model="batchChunkModeExt"
+                  class="flex-grow bg-transparent text-white text-[10px] outline-none cursor-pointer"
+                >
+                  <option value="standard" class="bg-[#111827] text-white">標準字元切分</option>
+                  <option value="parent_child" class="bg-[#111827] text-white">大小雙層結構 (Parent-Child)</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Classification tags (Tab 2) -->
+            <div class="flex flex-col gap-2 bg-white/3 border border-white/8 rounded-lg p-3">
+              <div class="flex items-center justify-between border-b border-white/5 pb-2">
+                <div class="flex items-center gap-2">
+                  <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path>
+                    <line x1="7" y1="7" x2="7.01" y2="7"></line>
+                  </svg>
+                  <span class="text-xs font-semibold text-[#f3f4f6]">分類標籤 (Tags)</span>
+                </div>
+                <div class="flex items-center gap-1">
+                  <input 
+                    v-model="newTagName" 
+                    type="text"
+                    placeholder="建立新標籤..."
+                    class="bg-white/5 border border-white/10 rounded px-2 py-0.5 text-[10px] text-white focus:outline-none focus:border-[#8b5cf6] w-28"
+                    @keyup.enter="handleCreateTag"
+                  />
+                  <button 
+                    @click="handleCreateTag"
+                    class="bg-[#8b5cf6] hover:bg-[#a78bfa] text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-2 max-h-24 overflow-y-auto pt-1">
+                <span v-if="allTags.length === 0" class="text-[10px] text-[#6b7280]">尚無標籤，請於上方建立</span>
+                <label 
+                  v-for="tag in allTags" 
+                  :key="tag"
+                  class="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/8 text-[11px] text-[#d1d5db] cursor-pointer transition-all select-none"
+                  :class="{ 'border-[#8b5cf6] bg-[#8b5cf6]/10 text-white': batchSelectedTags.includes(tag) }"
+                >
+                  <input 
+                    type="checkbox" 
+                    v-model="batchSelectedTags" 
+                    :value="tag" 
+                    class="hidden"
+                  />
+                  <span>{{ tag }}</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Class Options (Tab 2) -->
+            <div class="flex flex-col gap-2 bg-white/3 border border-white/8 rounded-lg p-3">
+              <div class="flex items-center justify-between border-b border-white/5 pb-2">
+                <div class="flex items-center gap-2">
+                  <svg class="w-3.5 h-3.5 text-[#9ca3af] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                  </svg>
+                  <span class="text-xs font-semibold text-[#f3f4f6]">類別選項 (Class 屬性)</span>
+                </div>
+                <div class="flex items-center gap-1">
+                  <input 
+                    v-model="newClassName" 
+                    type="text"
+                    placeholder="建立新類別..."
+                    class="bg-white/5 border border-white/10 rounded px-2 py-0.5 text-[10px] text-white focus:outline-none focus:border-[#8b5cf6] w-28"
+                    @keyup.enter="handleCreateClass"
+                  />
+                  <button 
+                    @click="handleCreateClass"
+                    class="bg-[#8b5cf6] hover:bg-[#a78bfa] text-white px-1.5 py-0.5 rounded text-[10px] font-bold"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-2 max-h-24 overflow-y-auto pt-1">
+                <span v-if="allClasses.length === 0" class="text-[10px] text-[#6b7280]">尚無類別，請於上方建立</span>
+                <label 
+                  v-for="c in allClasses" 
+                  :key="c"
+                  class="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/8 text-[11px] text-[#d1d5db] cursor-pointer transition-all select-none"
+                  :class="{ 'border-[#8b5cf6] bg-[#8b5cf6]/10 text-white': batchSelectedClasses.includes(c) }"
+                >
+                  <input 
+                    type="checkbox" 
+                    v-model="batchSelectedClasses" 
+                    :value="c" 
+                    class="hidden"
+                  />
+                  <span>{{ c }}</span>
+                </label>
+              </div>
             </div>
           </div>
           <div class="text-[10px] text-[#6b7280] leading-normal mt-0.5">

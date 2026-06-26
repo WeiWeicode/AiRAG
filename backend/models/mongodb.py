@@ -23,6 +23,8 @@ from models.chat_message import ChatMessage
 from models.feedback import Feedback
 from models.test_dataset import TestDataset
 from models.eval_report import EvalReport
+from models.tag import Tag
+from models.class_option import ClassOption
 
 logger = logging.getLogger("airag.mongodb")
 
@@ -189,7 +191,9 @@ async def init_mongodb():
                 ChatMessage,
                 Feedback,
                 TestDataset,
-                EvalReport
+                EvalReport,
+                Tag,
+                ClassOption
             ]
         )
         logger.info("MongoDB and Beanie ODM initialized successfully.")
