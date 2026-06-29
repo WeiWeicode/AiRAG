@@ -1,4 +1,11 @@
 前端修正
+## 2026-06-29 新增 Genero .4fd 畫面定義檔批次選取與切分參數綁定
+
+### 修改內容
+1. `frontend/src/components/embedding/BatchIndexingTab.vue`:
+   - **新增 .4fd 下拉選單選項**：在限制上傳副檔名 `<select>` 下拉選單中加入 `Genero Form (.4fd)`，以支援使用者批次上傳與寫入 `.4fd` XML 畫面定義檔。
+   - **自動配置大小雙層切分參數**：擴充 `watch(selectedExtension)`，當偵測到選取為 `.4gl` 或 `.4fd` 時，自動將切分模式 `batchChunkModeExt` 設為大小雙層切分 `'parent_child'`，並重置相關重疊大小與切分大小。
+
 ## 2026-06-29 優化資料庫匯入自然語言轉換與預覽格式
 
 ### 修改內容

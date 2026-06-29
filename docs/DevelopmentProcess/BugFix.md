@@ -1,5 +1,52 @@
 <!-- BUG修正 -->
 
+## 2026-06-29 修正 .4fd 畫面定義檔缺乏標準 Layout 標籤時切分後無 Chunks 產生之問題
+
+### 問題描述
+某些簡化或舊版 Genero .4fd 畫面定義檔（例如 `q_smy.4fd`）並未包含 `<Layout>`、`<FormItems>`、`<BindFiles>` 或 `<ScreenRecords>` 等外層包裹元素，而是將 `<Grid>` 與 `<RecordView>` 直接配置於根節點 `<Form>` 下。這導致大小雙層解析器因查無任何預設的父級目標節點，回傳空 Parent Chunks 列表，進而引發「切分後未生成任何 Chunks」的錯誤。
+
+### 解決方案
+1. **加入 root 根節點 Fallback 機制**：
+   修改 `backend/services/parent_child_chunker.py`（與 CLI 腳本 `scripts/parent_child_chunker.py`）中的 `parse_4fd_to_parents` 方法。若經遍歷後未尋得任何標準的四大父標籤，則自動將根節點（通常為 `<Form>`）封裝為單一 Parent Chunk 回傳。
+2. **依直屬子節點進行 Slicing**：
+   當 parent_type 為 `Form` 時，`slice_4fd_to_children` 會自動套用 `else` 分支，將其直屬的 `<Grid>` 及 `<RecordView>` 等子項目成功拆分為獨立的 Child Chunks，保留完整結構的同時，確保 100% 的 `.4fd` 檔案均能成功切分與索引。
+
+### 修改檔案
+- `backend/services/parent_child_chunker.py`
+- `scripts/parent_child_chunker.py`
+
+## 2026-06-29 修正大小雙層切分不支援大寫或混用大小寫 XML 標籤導致切分失敗
+
+### 問題描述
+當使用者上傳含大寫 XML 標籤（例如 `<LAYOUT>`、`</LAYOUT>`）的 `.4fd` 畫面定義檔時，切分過程會提示 `切分後未生成任何 Chunks`。這是因為原本的 `.4fd` XML 切分與解析邏輯在過濾 `Layout`、`FormItems` 等關鍵 Parent Chunks 以及 `FormItem`、`Grid`、`Table` 等 Child Chunks 時，採用了區分大小寫的字串比對，導致大寫或非標準 PascalCase 的標籤無法被正確識別與抓取。
+
+### 解決方案
+1. **大小寫無感匹配**：
+   修改 `backend/services/parent_child_chunker.py`（與 CLI 腳本 `scripts/parent_child_chunker.py`），在 `parse_4fd_to_parents` 中將目標標籤對應轉換為小寫後進行比對，並統一映射回標準的 PascalCase 作為 Parent 類別與 ID 以利下游定位。
+2. **子區塊無感比對**：
+   在 `slice_4fd_to_children` 方法中，將子節點標籤比對（如 `FormItem`、`Grid`、`Table`）改為小寫無感比對（`.lower()`），確保任何大小寫風格的節點都能精確切割為 Child Chunks。
+3. **新增測試案例**：
+   在 `tests/test_parent_child_chunker_4fd.py` 中新增 `test_xml_chunker_4fd_case_insensitive` 測試，模擬全大寫標籤之 `.4fd` 檔案切分以維持持續驗證。
+
+### 修改檔案
+- `backend/services/parent_child_chunker.py`
+- `scripts/parent_child_chunker.py`
+- `tests/test_parent_child_chunker_4fd.py`
+
+## 2026-06-29 修正上傳 .4fd 畫面定義檔時拋出 400 Bad Request 錯誤
+
+### 問題描述
+當使用者在批次上傳/寫入分頁上傳 `.4fd` 畫面定義檔時，後端 `/api/embedding/upload` 接口返回 `400 Bad Request` 錯誤，提示：「目前不支援 .4fd 的檔案格式。支援的格式有 PDF, DOCX, TXT, MD, 4GL」。這是因為後端解析引擎中的 `DocumentParser.parse_file` 方法未將 `.4fd` 加入合法文字檔案格式清單。
+
+### 解決方案
+1. **新增 .4fd 至 DocumentParser 支援副檔名**：
+   修改 `backend/services/document_parser.py` 中的 `parse_file` 方法，在文字解碼分流（`cls.parse_text`）中加入 `"4fd"` 副檔名。
+2. **更新錯誤提示訊息**：
+   同步更新不支援檔案格式時所引發的 ValueError 提示訊息，將其追加為支援 `4FD` 格式。
+
+### 修改檔案
+- `backend/services/document_parser.py`
+
 ## 2026-06-29 修正資料庫匯入向量化調用不存在方法 delete_by_filter 造成 500 錯誤
 
 ### 問題描述

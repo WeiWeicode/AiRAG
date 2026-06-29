@@ -54,42 +54,73 @@ async def chunk_text(request: ChunkRequest):
     依據設定切分純文字。
     """
     try:
-        # 檢查是否啟用大小雙層 (Parent-Child) 語法切分或是 4GL 檔案
-        if request.params.chunk_mode == "parent_child" or (request.filename and request.filename.lower().endswith('.4gl')):
-            from services.parent_child_chunker import parse_4gl_to_parents, slice_to_children
-            fname = request.filename or "unknown.4gl"
-            parents = parse_4gl_to_parents(request.content, fname)
+        # 檢查是否啟用大小雙層 (Parent-Child) 語法切分或是 4GL/4FD 檔案
+        is_4fd = request.filename and request.filename.lower().endswith('.4fd')
+        is_4gl = request.filename and request.filename.lower().endswith('.4gl')
+        if request.params.chunk_mode == "parent_child" or is_4gl or is_4fd:
             all_children = []
             idx = 0
-            for parent in parents:
-                children = slice_to_children(
-                    content=parent["content"],
-                    parent_chunk=parent,
-                    source_file=fname,
-                    child_size=request.params.chunk_size,
-                    child_overlap=request.params.chunk_overlap
-                )
-                
-                # 計算該 Parent Block 切出來的 Child Chunks 索引範圍
-                start_idx = idx
-                end_idx = idx + len(children) - 1
-                parent_range = f"{start_idx}~{end_idx}" if len(children) > 1 else str(start_idx)
-                
-                for child in children:
-                    # 注入 Parent Chunk 索引範圍到 metadata 中，以利後續檢索還原
-                    child_metadata = dict(child["metadata"])
-                    child_metadata["parent_chunk_index_range"] = parent_range
+            
+            if is_4fd:
+                from services.parent_child_chunker import parse_4fd_to_parents, slice_4fd_to_children
+                fname = request.filename or "unknown.4fd"
+                parents = parse_4fd_to_parents(request.content, fname)
+                for parent in parents:
+                    children = slice_4fd_to_children(parent_chunk=parent, source_file=fname)
                     
-                    all_children.append(ChunkItem(
-                        index=idx,
-                        content=child["child_content"],
-                        token_count=ChunkingService.estimate_tokens(child["child_content"]),
-                        char_count=len(child["child_content"]),
-                        start_char=0,
-                        end_char=len(child["child_content"]),
-                        metadata=child_metadata
-                    ))
-                    idx += 1
+                    # 計算該 Parent Block 切出來的 Child Chunks 索引範圍
+                    start_idx = idx
+                    end_idx = idx + len(children) - 1
+                    parent_range = f"{start_idx}~{end_idx}" if len(children) > 1 else str(start_idx)
+                    
+                    for child in children:
+                        # 注入 Parent Chunk 索引範圍到 metadata 中，以利後續檢索還原
+                        child_metadata = dict(child["metadata"])
+                        child_metadata["parent_chunk_index_range"] = parent_range
+                        
+                        all_children.append(ChunkItem(
+                            index=idx,
+                            content=child["child_content"],
+                            token_count=ChunkingService.estimate_tokens(child["child_content"]),
+                            char_count=len(child["child_content"]),
+                            start_char=0,
+                            end_char=len(child["child_content"]),
+                            metadata=child_metadata
+                        ))
+                        idx += 1
+            else:
+                from services.parent_child_chunker import parse_4gl_to_parents, slice_to_children
+                fname = request.filename or "unknown.4gl"
+                parents = parse_4gl_to_parents(request.content, fname)
+                for parent in parents:
+                    children = slice_to_children(
+                        content=parent["content"],
+                        parent_chunk=parent,
+                        source_file=fname,
+                        child_size=request.params.chunk_size,
+                        child_overlap=request.params.chunk_overlap
+                    )
+                    
+                    # 計算該 Parent Block 切出來的 Child Chunks 索引範圍
+                    start_idx = idx
+                    end_idx = idx + len(children) - 1
+                    parent_range = f"{start_idx}~{end_idx}" if len(children) > 1 else str(start_idx)
+                    
+                    for child in children:
+                        # 注入 Parent Chunk 索引範圍到 metadata 中，以利後續檢索還原
+                        child_metadata = dict(child["metadata"])
+                        child_metadata["parent_chunk_index_range"] = parent_range
+                        
+                        all_children.append(ChunkItem(
+                            index=idx,
+                            content=child["child_content"],
+                            token_count=ChunkingService.estimate_tokens(child["child_content"]),
+                            char_count=len(child["child_content"]),
+                            start_char=0,
+                            end_char=len(child["child_content"]),
+                            metadata=child_metadata
+                        ))
+                        idx += 1
             
             avg_tokens = int(sum(c.token_count for c in all_children) / len(all_children)) if all_children else 0
             return ChunkResponse(

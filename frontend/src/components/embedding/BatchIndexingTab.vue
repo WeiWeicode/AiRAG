@@ -64,7 +64,7 @@ const batchSeparatorExt = ref('\\n\\n')
 const batchChunkModeExt = ref('standard')
 
 watch(selectedExtension, (newExt) => {
-  if (newExt === '.4gl') {
+  if (newExt === '.4gl' || newExt === '.4fd') {
     batchChunkModeExt.value = 'parent_child'
     batchSeparatorExt.value = '\\n\\n'
     batchChunkSizeExt.value = 512
@@ -458,6 +458,7 @@ onUnmounted(() => {
             <option value=".txt" class="bg-[#111827] text-white">TXT (.txt)</option>
             <option value=".md" class="bg-[#111827] text-white">Markdown (.md)</option>
             <option value=".4gl" class="bg-[#111827] text-white">Genero 4GL (.4gl)</option>
+            <option value=".4fd" class="bg-[#111827] text-white">Genero Form (.4fd)</option>
           </select>
         </div>
 

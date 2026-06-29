@@ -1,5 +1,17 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-29 支援 Genero .4fd 畫面定義檔大小雙層切分與 API 分流
+
+### 修改內容
+1. `backend/services/parent_child_chunker.py` (修改):
+   - **實作 .4fd XML 大小雙層解析器**：新增 `parse_4fd_to_parents` 解析 `.4fd` XML 結構，提取 `Layout`、`FormItems`、`BindFiles` 及 `ScreenRecords` 節點做為 Parent Chunks，轉為完整 XML 字串。
+   - **實作 .4fd XML 子片段切分器**：新增 `slice_4fd_to_children` 依區塊類別遍歷內部的 `FormItem`、`Grid`、`Table` 節點或直接子節點（例如 `BindRow`、`RecordField`）作為 Child Chunks。
+   - **實作屬性提取與識別字標準化**：新增 `extract_4fd_metadata` 提取子節點的所有屬性（如 `id`、`name` 等），並將關鍵識別欄位標準化注入 rich metadata。
+2. `backend/routers/embedding.py` (修改):
+   - **分流路由支援**：在 `/chunk` 路由中新增 `.4fd` 檔案類型之 parent-child 分流與切分調用。
+3. `scripts/parent_child_chunker.py` (修改):
+   - **CLI 與通用入口整合**：同步新增 `.4fd` 切分函數，並重構 `process_file` 與主程式引數解析，使其支援對 `.4fd` 檔案之切分。
+
 ## 2026-06-29 修正資料庫匯入向量化之舊點清理邏輯與知識庫計數方式
 
 ### 修改內容

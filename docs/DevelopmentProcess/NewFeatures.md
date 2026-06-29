@@ -1,5 +1,32 @@
 <!-- 新增功能紀錄 -->
 
+## 2026-06-29 新增 Genero .4fd 畫面定義檔大小雙層檢索 (Parent-Child Retriever) 解析與批次寫入支援
+
+### 功能描述
+為 Genero Studio 的 `.4fd` 畫面定義檔實作專屬的大小雙層切分（Parent-Child Retriever）檢索策略。利用 Python 內建的 `ElementTree` 函式庫以無感命名空間（Namespace-Insensitive）方式精準解析 XML 樹狀結構，將核心區塊（Layout、FormItems、BindFiles、ScreenRecords）切分為 Parent Chunks，並將其內部的元件或欄位切分為 Child Chunks，保留完整的 XML 片段與 rich metadata，並將此能力整合至前端與後端批次寫入流程中。
+
+### 實作內容
+1. **後端大小雙層切分服務擴展**：
+   - 於 `backend/services/parent_child_chunker.py` 實作 `parse_4fd_to_parents` 解析 `.4fd` XML 結構，提取 `Layout`、`FormItems`、`BindFiles` 及 `ScreenRecords` 節點做為 Parent Chunks。
+   - 實作 `slice_4fd_to_children` 依區塊類別遍歷內部的 `FormItem`、`Grid`、`Table` 節點或直接子節點（例如 `BindRow`、`RecordField`）作為 Child Chunks。
+   - 實作 `extract_4fd_metadata` 提取子節點的所有屬性（如 `id`、`name` 等）並標準化主要識別欄位注入 rich metadata 中。
+2. **API 路由相容與副檔名分流**：
+   - 於 `backend/routers/embedding.py` 的 `/chunk` 路由中，將原先大小雙層判斷擴充為支援 `.4fd` 及 `.4gl` 檔案，並在執行時根據副檔名進行解析分流。
+3. **CLI 單機測試腳本同步更新**：
+   - 於 `scripts/parent_child_chunker.py` 整合上述 `.4fd` 切分與解析邏輯，並更新 CLI 命令列引數解析與 `process_file` 統一入口，支援直接於命令行切分 `.4fd` 檔案並導出 JSON。
+4. **前端批次寫入介面支援**：
+   - 於 `frontend/src/components/embedding/BatchIndexingTab.vue` 的批次寫入副檔名限制下拉選單中加入 `Genero Form (.4fd)` 選項。
+   - 配置 watch 監聽，當選取 `.4fd` 時自動關聯 `parent_child` 切分模式，並代入推薦的切分參數。
+5. **單元測試建立與驗證**：
+   - 新增 `tests/test_parent_child_chunker_4fd.py` 單元測試檔，模擬標準 `.4fd` XML 資料，驗證 Parent Chunks 與 Child Chunks 切分之正確性、命名空間無感解析及豐富 metadata 的提取，並執行測試通過。
+
+### 修改檔案
+- `backend/services/parent_child_chunker.py` (修改)
+- `backend/routers/embedding.py` (修改)
+- `scripts/parent_child_chunker.py` (修改)
+- `frontend/src/components/embedding/BatchIndexingTab.vue` (修改)
+- `tests/test_parent_child_chunker_4fd.py` (新增)
+
 ## 2026-06-29 新增資料庫自訂資料向量化 (Embedding & Indexing) 匯入功能
 
 ### 功能描述
