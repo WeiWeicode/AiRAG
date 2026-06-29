@@ -1,5 +1,19 @@
 <!-- BUG修正 -->
 
+## 2026-06-29 修正資料庫匯入向量化調用不存在方法 delete_by_filter 造成 500 錯誤
+
+### 問題描述
+在「資料庫匯入向量化」頁面進行匯入時，後端 `/api/database-indexing/ingest` 端點拋出 `500 Internal Server Error`，錯誤訊息為 `type object 'QdrantService' has no attribute 'delete_by_filter'`。這是因為後端在寫入前嘗試清理舊的同名資料庫備份點時，誤呼叫了不存在的 `delete_by_filter` 方法。
+
+### 解決方案
+1. **替換為 delete_by_filename**：
+   修改 `backend/routers/database_indexing.py`，將誤呼叫的 `QdrantService.delete_by_filter` 修正為既有的 `QdrantService.delete_by_filename`，傳入參數為 `import_filename`（即 `DB_IMPORT_{table_name}`）。
+2. **精準計數更新**：
+   在刪除舊資料庫備份點時取得被刪除的點數量 `deleted_count`，隨後更新 MongoDB 中的 `kb.chunk_count` 時，使用 `max(0, kb.chunk_count - deleted_count + inserted_total)` 進行精確加減，避免重複計數，維持知識庫向量數量之一致性。
+
+### 修改檔案
+- `backend/routers/database_indexing.py`
+
 ## 2026-06-25 修正批次寫入大型檔案時 Request Entity Too Large 413 錯誤 (優化 Qdrant 資料量與 Nginx 設定)
 
 ### 問題描述

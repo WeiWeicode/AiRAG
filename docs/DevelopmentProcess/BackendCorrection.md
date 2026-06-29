@@ -1,5 +1,28 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-29 修正資料庫匯入向量化之舊點清理邏輯與知識庫計數方式
+
+### 修改內容
+1. `backend/routers/database_indexing.py`：
+   - 將在寫入 Qdrant 之前刪除重複匯入的資料庫備份點所誤呼叫的 `QdrantService.delete_by_filter` 方法替換為 `QdrantService.delete_by_filename`，解決 `delete_by_filter` 方法不存在引發的 500 錯誤。
+   - 接收從 `QdrantService.delete_by_filename` 回傳的已刪除向量點計數 `deleted_count`。
+   - 更新 MongoDB 中的 `kb.chunk_count` 時，使用 `max(0, kb.chunk_count - deleted_count + inserted_total)` 代替原先直接累加的方式，以確保當存在重複匯入更新時，知識庫的點數量計數依然維持準確無誤。
+
+## 2026-06-29 支援 Oracle 11g 資料庫連線與修正 SQL 查詢 Date 型態解析錯誤
+
+### 修改內容
+1. **Dockerfile 擴充**：
+   - 於 `backend/Dockerfile` 中，針對 Debian Trixie (Debian 13) 系統安裝 `libaio1t64` 依賴。
+   - 由於 Oracle Instant Client 需要 `libaio.so.1` 軟連結，在 Dockerfile 中建立符號連結：`ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1`。
+   - 下載、解壓並配置 Oracle Instant Client 19c (Linux x64)，寫入系統 `ldconfig`，並設定環境變數 `ORACLE_HOME` 與 `LD_LIBRARY_PATH`，藉此完成容器內的 Oracle 用戶端底層環境布署。
+2. **啟用 Oracle Thick Mode**：
+   - 在 `backend/routers/database_indexing.py` 模組載入時，加入 `oracledb.init_oracle_client()` 呼叫，使 `python-oracledb` 進入 Thick Mode，進而支援對舊版 Oracle 資料庫（如 11g 版本）的向下相容連線。
+   - 移除了先前引起報錯的 `request_timeout` 參數。
+3. **修復 isinstance() 型態檢查錯誤**：
+   - 修正了 `backend/routers/database_indexing.py` 中 `fetch_metadata` 與 `ingest_database` 的欄位資料型態過濾邏輯。
+   - 原先程式碼中使用 `isinstance(val, (datetime, datetime.date))`，但由於頂部已宣告了 `from datetime import datetime`，此處 `datetime` 指向類別而 `datetime.date` 成了該類別的 `date()` 方法（非型態/類別），導致 isinstance 拋出 `isinstance() arg 2 must be a type, a tuple of types, or a union` 錯誤。
+   - **修正方法**：修改導入為 `from datetime import datetime, date`，並將檢查式更正為 `isinstance(val, (datetime, date))`。
+
 ## 2026-06-26 新增 MongoDB 標籤與類別路由、擴充 Qdrant "class" 欄位讀寫支援
 
 ### 修改內容

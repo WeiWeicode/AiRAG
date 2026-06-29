@@ -25,6 +25,8 @@ from models.test_dataset import TestDataset
 from models.eval_report import EvalReport
 from models.tag import Tag
 from models.class_option import ClassOption
+from models.database_config import DatabaseConfig
+
 
 logger = logging.getLogger("airag.mongodb")
 
@@ -193,7 +195,8 @@ async def init_mongodb():
                 TestDataset,
                 EvalReport,
                 Tag,
-                ClassOption
+                ClassOption,
+                DatabaseConfig
             ]
         )
         logger.info("MongoDB and Beanie ODM initialized successfully.")

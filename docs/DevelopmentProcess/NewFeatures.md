@@ -1,5 +1,41 @@
 <!-- 新增功能紀錄 -->
 
+## 2026-06-29 新增資料庫自訂資料向量化 (Embedding & Indexing) 匯入功能
+
+### 功能描述
+實作了自訂資料向量化 (Embedding & Indexing) 的「資料庫匯入向量化」Tab 與對應介面，支援：
+1. **連線設定 & 快速選取**：可自行輸入 IP、Port、資料庫、帳號、密碼進行連線測試，並可將連線設定檔儲存至 MongoDB 中以便後續快速選取使用。
+2. **安全過濾機制**：提供前後端 SQL 查詢語句驗證，強制限制僅執行 `SELECT` 或 `WITH` 開頭的唯讀語句，防止 SQL 注入與資料修改 (INSERT/UPDATE/DELETE/DROP 等)。
+3. **三階段配置流程**：
+   - 第一階段：查詢與取得欄位/樣品資料。
+   - 第二階段：自訂欄意轉換，並可隨時變更為自然語言敘述或 Structured JSON 轉換模式。
+   - 第三階段：即時樣品轉換成果預覽。
+4. **批次向量化匯入**：支援一筆資料獨立為一向量段落，自動分批 (每批 20 筆) 進行向量化計算，並以 `DB_IMPORT_{tableName}` 檔名覆蓋寫入 Qdrant 向量資料庫與更新知識庫計數。
+
+### 實作內容
+1. **資料庫模型與 Schema**：
+   - 新增 `backend/models/database_config.py`，定義 `DatabaseConfig` Beanie 集合，存儲 DB 設定。
+   - 於 `backend/models/mongodb.py` 中註冊 `DatabaseConfig` 文件模型。
+   - 新增 `backend/schemas/database_indexing.py`，包含設定 CRUD、連線測試、中介資料與向量化寫入之 Pydantic 傳輸 Schema。
+2. **後端 Router 與驅動配置**：
+   - 在 `backend/requirements.txt` 中追加 `oracledb>=2.0.0` 依賴。
+   - 新增 `backend/routers/database_indexing.py`，內部實作 SQL 安全語法過濾器 `validate_sql_query`、SQL Server 的 `pyodbc` 多驅動程式自適應解析、Oracle Database 的 `oracledb` Thin 模式無驅動連線與資料提取、段落文字轉換公式、Qdrant 向量批次寫入與自動覆蓋刪除同名資料功能。
+   - 在 `backend/main.py` 中註冊 `database_indexing` router。
+3. **前端 API 與 UI 整合**：
+   - 新增 `frontend/src/services/databaseIndexingService.js` 封裝所有資料庫 API 方法。
+   - 於 `frontend/src/views/EmbeddingTestView.vue` 引入該服務，並在 script 中加入相關的狀態、連線測試、SQL 檢驗、中介資料取得、即時計算預覽文字 `dbPreviewText` 及匯入 API 呼叫。
+   - 在 template 中新增「資料庫匯入向量化」按鈕，並編寫精美流暢的 Glassmorphic 連線設定表單、SQL 編輯器、欄位配置表格、樣品轉換預覽區與匯入執行按鈕與狀態回報。
+
+### 修改檔案
+- `backend/requirements.txt` (修改)
+- `backend/models/database_config.py` (新增)
+- `backend/models/mongodb.py` (修改)
+- `backend/schemas/database_indexing.py` (新增)
+- `backend/routers/database_indexing.py` (新增)
+- `backend/main.py` (修改)
+- `frontend/src/services/databaseIndexingService.js` (新增)
+- `frontend/src/views/EmbeddingTestView.vue` (修改)
+
 ## 2026-06-26 新增客製化副檔名批次上傳限制、MongoDB 分類標籤與自訂類別選項管理
 
 ### 功能描述

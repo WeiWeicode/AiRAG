@@ -16,7 +16,8 @@ from routers import (
     evaluation,
     prompt,
     feedback,
-    sqlserver
+    sqlserver,
+    database_indexing
 )
 
 # 設定日誌
@@ -63,6 +64,7 @@ app.include_router(evaluation.router, prefix="/api")
 app.include_router(prompt.router, prefix="/api")
 app.include_router(feedback.router, prefix="/api")
 app.include_router(sqlserver.router, prefix="/api")
+app.include_router(database_indexing.router, prefix="/api")
 
 @app.get("/health")
 async def health_check():
