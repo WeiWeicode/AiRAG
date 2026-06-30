@@ -232,11 +232,22 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
             # A. 向量檢索
             if kb:
                 try:
-                    query_vector = await EmbeddingService.get_embedding(item.question)
+                    if search_type == "semantic_hybrid":
+                        # 語義混合查詢流程
+                        semantic_json = await EmbeddingService.query_to_semantic_json(item.question)
+                        embeddings_input = semantic_json.get("embeddings_input", item.question)
+                        sparse_keywords = semantic_json.get("sparse_keywords", [])
+                        
+                        query_vector = await EmbeddingService.get_semantic_embedding(embeddings_input)
+                        search_query_text = " ".join(sparse_keywords) if sparse_keywords else item.question
+                    else:
+                        query_vector = await EmbeddingService.get_embedding(item.question)
+                        search_query_text = item.question
+
                     search_results = await QdrantService.search_similar(
                         collection_name=kb.qdrant_collection_name,
                         query_vector=query_vector,
-                        query_text=item.question,
+                        query_text=search_query_text,
                         search_type=search_type,
                         top_k=top_k,
                         score_threshold=score_threshold

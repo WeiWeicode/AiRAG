@@ -14,7 +14,7 @@ const emit = defineEmits(['start-eval', 'select-dataset'])
 const selectedDatasetId = ref('')
 const datasets = ref([])
 const activeDataset = ref(null)
-const maxTokens = ref(8192)
+const maxTokens = ref(16384)
 const searchType = ref('vector')
 
 // Import Dataset modal state
@@ -176,6 +176,7 @@ onMounted(() => {
           >
             <option value="vector" class="bg-[#111827] text-white">向量搜尋 (Vector Search)</option>
             <option value="hybrid" class="bg-[#111827] text-white">混合搜尋 (Hybrid Search)</option>
+            <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合查詢 (Semantic Hybrid Search)</option>
           </select>
         </div>
 

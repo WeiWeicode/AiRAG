@@ -1,5 +1,11 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-30 自動化評估端點 `/run` 支援語義混合查詢（Semantic Hybrid Search）
+
+### 修改內容
+1. `backend/routers/evaluation.py` (修改):
+   - **調整評估內嵌之檢索邏輯**：於 `run_evaluation` 評估任務迴圈中，檢查傳入之 `search_type`。若為 `semantic_hybrid`，則先調用 Instruct AI 進行提問重寫與關鍵字提取，取得密集與稀疏特徵後對 `embeddings_input` 進行向量化，並將 `sparse_keywords` 拼接成稀疏文本提供給 Qdrant 進行混合檢索跑分，確保評估時使用的背景上下文檢索機制與實際對話、搜尋一致。
+
 ## 2026-06-30 擴充向量檢索端點 `/semantic-hybrid-search` 語義化分析與回傳資料
 
 ### 修改內容

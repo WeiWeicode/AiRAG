@@ -1,5 +1,11 @@
 <!-- 前端修正 -->
 
+## 2026-06-30 自動化評估模組新增語義混合查詢（Semantic Hybrid Search）選項
+
+### 修改內容
+1. `frontend/src/components/eval/TestSetManager.vue` (修改):
+   - 於「檢索模式 (Search Type)」下拉選單中，新增 `語義混合查詢 (Semantic Hybrid Search)` 選項（`value="semantic_hybrid"`），使評估任務在執行測試集跑分時，能調用語義混合查詢檢索進行關聯段落比對。
+
 ## 2026-06-30 移除向量檢索測試頁面之批次與個別向量段落刪除 UI 元素
 
 ### 修改內容
