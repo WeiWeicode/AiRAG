@@ -1,6 +1,9 @@
 # docker-compose up --build -d
 # docker-compose up --build -d backend
 
+# ubuntu
+# docker compose build backend --no-cache
+# docker compose up -d backend
 
 version: "3.8"
 

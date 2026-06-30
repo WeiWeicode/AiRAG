@@ -10,6 +10,7 @@ from typing import List, Optional
 
 import pyodbc
 import oracledb
+import os
 
 from models.database_config import DatabaseConfig
 from models.knowledge_base import KnowledgeBase
@@ -24,11 +25,17 @@ from utils.security import get_current_user
 
 logger = logging.getLogger("airag.database_indexing")
 
+oracle_init_error = None
 # Initialize Oracle Instant Client to enable Thick Mode for compatibility with older DB versions (e.g. 11g)
 try:
-    oracledb.init_oracle_client()
+    lib_dir = os.environ.get("ORACLE_CLIENT_LIB_DIR")
+    if lib_dir:
+        oracledb.init_oracle_client(lib_dir=lib_dir)
+    else:
+        oracledb.init_oracle_client()
     logger.info("Oracle Instant Client initialized successfully (Thick Mode enabled).")
 except Exception as e:
+    oracle_init_error = e
     logger.warning(f"Failed to initialize Oracle Instant Client: {e}. Falling back to Thin Mode.")
 
 router = APIRouter(prefix="/database-indexing", tags=["Database Indexing"], dependencies=[Depends(get_current_user)])
@@ -84,26 +91,31 @@ def get_db_connection(db_type: str, host: str, port: int, database: str, usernam
         return pyodbc.connect(conn_str, timeout=10)
         
     elif db_type == "oracle":
-        logger.info(f"Connecting to Oracle thin mode: {host}:{port}/{database} user={username}")
+        logger.info(f"Connecting to Oracle: {host}:{port}/{database} user={username}")
         try:
-            return oracledb.connect(
-                user=username,
-                password=password,
-                host=host,
-                port=port,
-                service_name=database
-            )
-        except Exception as e:
             try:
                 return oracledb.connect(
                     user=username,
                     password=password,
                     host=host,
                     port=port,
-                    sid=database
+                    service_name=database
                 )
-            except Exception:
-                raise e
+            except Exception as e:
+                try:
+                    return oracledb.connect(
+                        user=username,
+                        password=password,
+                        host=host,
+                        port=port,
+                        sid=database
+                    )
+                except Exception:
+                    raise e
+        except Exception as e:
+            if oracle_init_error:
+                raise RuntimeError(f"{e} (Oracle Thick Mode failed to initialize: {oracle_init_error})")
+            raise e
     else:
         raise ValueError(f"不支援的資料庫類型: {db_type}")
 

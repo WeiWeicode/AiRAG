@@ -64,3 +64,4 @@ lerna-debug.log*
 *.key
 
 tests/
+*.zip

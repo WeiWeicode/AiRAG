@@ -1,6 +1,19 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-30 調整 Dockerfile 的 Oracle Instant Client 目錄結構與 ORACLE_HOME
+
+### 修改內容
+1. `backend/Dockerfile` (修改):
+   - **重構 Instant Client 目錄**：將 Oracle Instant Client 解壓後的目錄由 `/opt/oracle/instantclient` 調整為符合標準結構的 `/opt/oracle/lib`，並將環境變數 `ORACLE_HOME` 設定為 `/opt/oracle`，`LD_LIBRARY_PATH` 與 `PATH` 指向 `/opt/oracle/lib`。此舉可解決 python-oracledb 當載入 `ORACLE_HOME` 時自動在子目錄 `lib/` 尋找 `libclntsh.so` 卻找不到的連線問題。
+
+## 2026-06-30 新增 Oracle Thick Mode 初始化錯誤詳細捕獲與回傳
+
+### 修改內容
+1. `backend/routers/database_indexing.py` (修改):
+   - **新增初始化錯誤記錄與回傳**：引入 `oracle_init_error` 全域變數以捕獲 `oracledb.init_oracle_client()` 的異常。當 Oracle 連線測試或連線操作失敗時，若有初始化錯誤，將其拼接入連線錯誤訊息中，使前端與用戶可直接得知 Instant Client 的底層載入失敗原因（例如缺失 `libaio` 或是環境變數載入不正確）。
+
 ## 2026-06-30 自動化評估端點 `/run` 支援語義混合查詢（Semantic Hybrid Search）
+
 
 ### 修改內容
 1. `backend/routers/evaluation.py` (修改):
