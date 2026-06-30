@@ -1,5 +1,22 @@
 <!-- BUG修正 -->
 
+## 2026-06-30 修正 SQL Server/FreeTDS 伺服器 IP/主機名含有尾隨空格導致連線失敗之問題
+
+### 問題描述
+當使用者在資料庫連線設定中輸入或貼上含有尾隨空格的伺服器 IP (例如 `10.10.130.220 `) 時，後端在呼叫 pyodbc 使用 FreeTDS 驅動程式進行連線時，會因為 FreeTDS 對主機名解析極為嚴格，從而拋出 `[FreeTDS][SQL Server]Unable to connect to data source (0) (SQLDriverConnect)` 的連線失敗錯誤（錯誤代碼 `08001`）。
+
+### 解決方案
+1. **後端連線端點參數修剪 (Trim)**：
+   修改 `backend/routers/database_indexing.py` 的 `get_db_connection` 函數，在構建連線字串前，主動對傳入的 `host`、`database` 及 `username` 進行 `.strip()` 修剪，去除任何意外夾帶的前後空格與換行字元。
+2. **後端資料庫設定儲存修剪**：
+   在 `create_config` 與 `update_config` 端點中，同樣對寫入/更新 MongoDB 的 `name`、`db_type`、`host`、`database` 與 `username` 執行 `.strip()`，確保儲存於資料庫中的設定檔乾淨無空格。
+3. **前端輸入欄位發送修剪**：
+   修改 `frontend/src/components/embedding/DatabaseIndexingTab.vue`，在儲存設定檔 `handleSaveDbConfig` 與測試連線 `handleTestDbConnection` 發送 API 請求前，先對 `host`、`database` 與 `username` 執行 `.trim()`。
+
+### 修改檔案
+- `backend/routers/database_indexing.py`
+- `frontend/src/components/embedding/DatabaseIndexingTab.vue`
+
 ## 2026-06-29 修正 .4fd 畫面定義檔缺乏標準 Layout 標籤時切分後無 Chunks 產生之問題
 
 ### 問題描述

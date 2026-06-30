@@ -1,5 +1,12 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-30 修正 SQL Server (FreeTDS) 與資料庫設定參數之空白修剪
+
+### 修改內容
+1. `backend/routers/database_indexing.py` (修改):
+   - **`get_db_connection` 函數**：在與資料庫建立連線前，對 `host`、`database` 及 `username` 進行 `.strip()` 修剪，防止尾隨空格導致 FreeTDS 解析失敗。
+   - **`/configs` 儲存與修改端點**：於 `create_config` 與 `update_config` 端點中，將 `name`、`db_type`、`host`、`database` 與 `username` 進行 `.strip()`，以維持 MongoDB 中設定資料的潔淨度。
+
 ## 2026-06-29 支援 Genero .4fd 畫面定義檔大小雙層切分與 API 分流
 
 ### 修改內容

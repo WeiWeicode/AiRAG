@@ -35,6 +35,14 @@ router = APIRouter(prefix="/database-indexing", tags=["Database Indexing"], depe
 
 # Helper function to get dynamic DB connection
 def get_db_connection(db_type: str, host: str, port: int, database: str, username: str, password: str):
+    # Trim leading/trailing whitespaces to avoid connection failures (e.g. strict FreeTDS host parsing)
+    if host:
+        host = host.strip()
+    if database:
+        database = database.strip()
+    if username:
+        username = username.strip()
+        
     if db_type == "sqlserver":
         try:
             installed_drivers = pyodbc.drivers()
@@ -149,12 +157,12 @@ async def list_configs():
 @router.post("/configs", response_model=DBConfigResponse)
 async def create_config(request: DBConfigCreate):
     config = DatabaseConfig(
-        name=request.name,
-        db_type=request.db_type,
-        host=request.host,
+        name=request.name.strip() if request.name else "",
+        db_type=request.db_type.strip() if request.db_type else "",
+        host=request.host.strip() if request.host else "",
         port=request.port,
-        database=request.database,
-        username=request.username,
+        database=request.database.strip() if request.database else "",
+        username=request.username.strip() if request.username else "",
         password=request.password,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow()
@@ -182,12 +190,12 @@ async def update_config(config_id: str, request: DBConfigCreate):
     if not config:
         raise HTTPException(status_code=404, detail="找不到指定的資料庫設定檔")
         
-    config.name = request.name
-    config.db_type = request.db_type
-    config.host = request.host
+    config.name = request.name.strip() if request.name else ""
+    config.db_type = request.db_type.strip() if request.db_type else ""
+    config.host = request.host.strip() if request.host else ""
     config.port = request.port
-    config.database = request.database
-    config.username = request.username
+    config.database = request.database.strip() if request.database else ""
+    config.username = request.username.strip() if request.username else ""
     config.password = request.password
     config.updated_at = datetime.utcnow()
     await config.save()

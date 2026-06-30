@@ -86,10 +86,10 @@ const handleSaveDbConfig = async () => {
       id: selectedConfigId.value || undefined,
       name: nameVal,
       db_type: dbType.value,
-      host: dbHost.value,
+      host: dbHost.value ? dbHost.value.trim() : '',
       port: Number(dbPort.value),
-      database: dbDatabase.value,
-      username: dbUsername.value,
+      database: dbDatabase.value ? dbDatabase.value.trim() : '',
+      username: dbUsername.value ? dbUsername.value.trim() : '',
       password: dbPassword.value
     }
     const saved = await databaseIndexingService.saveConfig(payload)
@@ -120,10 +120,10 @@ const handleTestDbConnection = async () => {
   try {
     const payload = {
       db_type: dbType.value,
-      host: dbHost.value,
+      host: dbHost.value ? dbHost.value.trim() : '',
       port: Number(dbPort.value),
-      database: dbDatabase.value,
-      username: dbUsername.value,
+      database: dbDatabase.value ? dbDatabase.value.trim() : '',
+      username: dbUsername.value ? dbUsername.value.trim() : '',
       password: dbPassword.value
     }
     await databaseIndexingService.testConnection(payload)

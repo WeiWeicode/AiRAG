@@ -1,4 +1,12 @@
 前端修正
+
+## 2026-06-30 修正資料庫連線與測試連線發送參數之空白修剪
+
+### 修改內容
+1. `frontend/src/components/embedding/DatabaseIndexingTab.vue` (修改):
+   - **`handleSaveDbConfig` 函數**：在呼叫 API 儲存資料庫設定檔前，對主機 IP/Port 以及帳號進行 `.trim()`，防止儲存帶有尾隨空格的資料。
+   - **`handleTestDbConnection` 函數**：在進行連線測試前，同樣對 `host`、`database`、`username` 進行 `.trim()` 處理，確保發送乾淨無空格的參數。
+
 ## 2026-06-29 新增 Genero .4fd 畫面定義檔批次選取與切分參數綁定
 
 ### 修改內容
