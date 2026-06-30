@@ -1,80 +1,223 @@
-# API 測試與故障排除指引 (API Testing & Troubleshooting Guide)
+# API 測試指南 (API Testing Guide)
 
-本文件說明如何對架設於遠端主機 `10.10.130.45:53020` 的 AiRAG 後端 API 進行整合測試，以及解決部署時常見的密碼認證故障問題。
-
----
-
-## 1. 發現的關鍵故障：Docker Compose 雜湊值擴充 Bug
-
-### 異常現象
-使用預設的 `admin` / `admin` 帳密登入時，遠端伺服器持續回傳 `401 Unauthorized` 錯誤。
-
-### 根本原因
-在 `.env` 檔案中，密碼哈希為標準的 Bcrypt 格式：
-`AUTH_PASSWORD_HASH=$2b$12$XOLoLbldxgU3vdmkYsTEteZqF02GKcAw6zIWXNy6Q7yJwi9kziqsm`
-
-當 Docker Compose 載入 `.env` 並啟動容器時，**`$` 符號會被自動視為「環境變數擴充 (Variable Expansion)」語法**。
-Docker Compose 嘗試尋找名為 `$2b`、`$12` 與 `$XOLo` 的變數，由於主機中不存在這些變數，它們會被替換為空字串。這導致傳入容器內部的哈希字串被截斷損毀。
-
-### 解決方案
-在 Docker 部署環境中，若要將帶有 `$` 符號的字串作為字面量傳入，必須使用 **雙金錢符號 `$$`** 進行轉義。
-
-我們已更新 `docker-compose.yml` 中的 `environment` 段落：
-```yaml
-    environment:
-      - MONGODB_URL=mongodb://mongodb:27017
-      - QDRANT_HOST=qdrant
-      - VLLM_BASE_URL=http://host.docker.internal:8080/v1
-      - LLAMACPP_BASE_URL=http://host.docker.internal:8081
-      - AUTH_PASSWORD_HASH=$$2b$$12$$XOLoLbldxgU3vdmkYsTEteZqF02GKcAw6zIWXNy6Q7yJwi9kziqsm
-```
-
-*(註：已移除 `SQLSERVER_CONNECTION_STRING` 的 Docker Compose 覆寫，改為直接由 `backend/.env` 讀取實體 IP `10.10.130.220` 的標準 ODBC 連線。)*
+## 1. 文件資訊
+* **專案名稱**：AiRAG 內部測試平台
+* **文件版本**：V 1.1 (最新更新)
+* **建立日期**：2026-06-18
+* **更新日期**：2026-06-30
+* **說明**：本指南為開發人員及 QA 測試工程師提供實用的 API 測試腳本與 cURL 指令，用以獨立驗證系統新舊端點。
+* **基本設定**：
+  * API Base URL: `http://localhost:8000/api`
+  * 請預先呼叫登入 API 取得 Bearer Token，並在後續的 API Header 中帶入 `Authorization: Bearer <your_token>`。
 
 ---
 
-## 2. 測試腳本架構與執行
+## 2. 認證與準備工作
 
-我們在 `tests/test_api.py` 中撰寫了無套件相依（僅使用 Python 內建 `urllib`）的輕量級 API 測試套件。該腳本可自動執行以下完整的測試鏈：
+### 2.1 使用者登入取得 Token
+```bash
+curl -X POST "http://localhost:8000/api/auth/login" \
+     -H "Content-Type: application/json" \
+     -d "{\"username\": \"admin\", \"password\": \"your_password_hash_matching_env\"}"
+```
+*預期回傳*：
+```json
+{
+  "access_token": "eyJhbG...",
+  "token_type": "bearer",
+  "expires_in": 86400
+}
+```
+*備註*：將取得的 `access_token` 值導出為環境變數 `TOKEN`：
+`export TOKEN="eyJhbG..."` (Linux/macOS) 或 `$TOKEN="eyJhbG..."` (PowerShell)。
 
-### 測試流程與端點
+---
 
-```mermaid
-graph TD
-    A[GET /health] -->|健康檢查| B[POST /api/auth/login]
-    B -->|錯誤密碼攔截| C[POST /api/auth/login]
-    C -->|正確密碼登入取得 JWT| D[GET /api/knowledge-bases]
-    D -->|阻擋未授權存取測試| E[POST /api/knowledge-bases]
-    E -->|建立測試知識庫| F[GET /api/knowledge-bases]
-    F -->|驗證知識庫列表存在| S1[GET /api/sqlserver/articles]
-    S1 -->|6a: 讀取 SQL Server 文章列表| S2[POST /api/sqlserver/import]
-    S2 -->|6b: 解析切分/向量化/寫入 Qdrant| G[POST /api/embedding/upload]
-    G -->|上傳文件並解析文字| H[POST /api/embedding/chunk]
-    H -->|以自訂參數切分文字| I[POST /api/embedding/vectorize]
-    I -->|向量化並寫入 Qdrant 與 MongoDB| J[POST /api/rag/chat]
-    J -->|測試對話 Stub| K[POST /api/retrieval/search]
-    K -->|測試檢索與轉換 Stub| L[DELETE /api/knowledge-bases/:id]
-    L -->|清理測試知識庫| M[產出 Markdown 測試報告]
+## 3. §4.1 RAG 與 語義混合檢索測試
+
+### 3.1 測試語義混合查詢 RAG 對話 (Stream SSE)
+* **API 端點**：`POST /api/rag/chat`
+```bash
+curl -N -X POST "http://localhost:8000/api/rag/chat" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "question": "公司特休天數如何計算？",
+       "knowledge_base_id": "649c12e4f5b9d3118c8bcf2f",
+       "chat_history": [],
+       "params": {
+         "search_type": "semantic_hybrid",
+         "temperature": 0.2,
+         "top_k": 5
+       }
+     }'
+```
+*預期串流內容*：
+* 會先回傳 `event: step` 帶有 `semantic_analysis`（地端語義化 AI 解析提問出的 JSON）與 `retrieval` 召回來源。
+* 隨後以 `event: chunk` 串流輸出對答字元。
+
+### 3.2 測試獨立語義混合檢索 (Semantic Hybrid Search)
+* **API 端點**：`POST /api/retrieval/semantic-hybrid-search`
+```bash
+curl -X POST "http://localhost:8000/api/retrieval/semantic-hybrid-search" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "query": "請假福利",
+       "knowledge_base_id": "649c12e4f5b9d3118c8bcf2f",
+       "params": {
+         "top_k": 3,
+         "score_threshold": 0.3
+       }
+     }'
 ```
 
-### SQL Server 既有知識庫端點說明
+---
 
-我們新增了以下兩個專屬的 SQL Server 連線端點，可用於串接企業既有知識庫（如 `articles` 表）：
+## 4. §4.2 Qdrant Points 管理與過濾
 
-1. **`GET /api/sqlserver/articles` — 分頁查詢 SQL Server 文章**
-   * **功能**：查詢 SQL Server 中的文章清單，支援分頁 (`page`, `page_size`) 及關鍵字搜尋 (`search`)。
-   * **權限**：需 Bearer JWT 認證。
-   
-2. **`POST /api/sqlserver/import` — 一鍵向量化匯入 Qdrant**
-   * **功能**：由指定的 `article_id` 提取 Markdown 內容與 Metadata，在記憶體中完成 Recursive 切分與地端 Qwen 向量化，直接注入指定的 Qdrant 知識庫中，並累加該知識庫的 MongoDB Chunk 計數。
-   * **權限**：需 Bearer JWT 認證。
+### 4.1 取得特定知識庫已上傳檔案清單 (元資料)
+* **API 端點**：`GET /api/knowledge-bases/{id}/metadata`
+```bash
+curl -X GET "http://localhost:8000/api/knowledge-bases/649c12e4f5b9d3118c8bcf2f/metadata" \
+     -H "Authorization: Bearer $TOKEN"
+```
+*回傳範例*：`{"files": ["規則說明書.docx", "DB_IMPORT_articles"]}`
 
-### 執行測試指令
-在您同步更新遠端的程式碼並重啟後，請在本地終端機執行：
-```powershell
-python tests/test_api.py
+### 4.2 依據檔案名稱刪除向量點
+* **API 端點**：`POST /api/retrieval/knowledge-bases/{kb_id}/files/delete-by-filename`
+```bash
+curl -X POST "http://localhost:8000/api/retrieval/knowledge-bases/649c12e4f5b9d3118c8bcf2f/files/delete-by-filename" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"filename": "規則說明書.docx"}'
 ```
 
-### 測試報告輸出路徑
-測試完成後，會自動在 [tests/test_report.md](file:///d:/檔案分享/程式碼/AiRAG/tests/test_report.md) 寫入完整的執行結果與每個 API 端點的詳細 JSON 響應。
+### 4.3 批次指定 Point ID 永久刪除
+* **API 端點**：`POST /api/retrieval/knowledge-bases/{kb_id}/points/batch-delete`
+```bash
+curl -X POST "http://localhost:8000/api/retrieval/knowledge-bases/649c12e4f5b9d3118c8bcf2f/points/batch-delete" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"point_ids": ["c0a80101-0000-0000-0000-000000000001", "c0a80101-0000-0000-0000-000000000002"]}'
+```
 
+---
+
+## 5. §4.5 資料庫自訂匯入與向量化 (Database Indexing)
+
+### 5.1 測試資料庫連線
+* **API 端點**：`POST /api/database-indexing/test-connection`
+```bash
+curl -X POST "http://localhost:8000/api/database-indexing/test-connection" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "db_type": "sqlserver",
+       "host": "10.10.130.220",
+       "port": 1433,
+       "database": "ERP_DB",
+       "username": "sa",
+       "password": "your_db_password"
+     }'
+```
+
+### 5.2 讀取資料庫 SQL 查詢預覽與安全限制
+* **API 端點**：`POST /api/database-indexing/fetch-metadata`
+```bash
+curl -X POST "http://localhost:8000/api/database-indexing/fetch-metadata" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "connection": {
+         "db_type": "sqlserver",
+         "host": "10.10.130.220",
+         "port": 1433,
+         "database": "ERP_DB",
+         "username": "sa",
+         "password": "your_db_password"
+       },
+       "sql_query": "SELECT TOP 1 ITEM_ID, ITEM_NAME, SPEC FROM dbo.products"
+     }'
+```
+*備註：若查詢語句中包含 `INSERT` 或 `DROP` 等寫入指令，系統將拋出 `400 Bad Request` 唯讀安全攔截錯誤。*
+
+### 5.3 執行一鍵資料庫匯入向量化 (DB Ingest)
+* **API 端點**：`POST /api/database-indexing/ingest`
+```bash
+curl -X POST "http://localhost:8000/api/database-indexing/ingest" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "knowledge_base_id": "649c12e4f5b9d3118c8bcf2f",
+       "connection": {
+         "db_type": "sqlserver",
+         "host": "10.10.130.220",
+         "port": 1433,
+         "database": "ERP_DB",
+         "username": "sa",
+         "password": "your_db_password"
+       },
+       "sql_query": "SELECT ITEM_ID, ITEM_NAME, SPEC FROM dbo.products",
+       "ingestion_mode": "text",
+       "one_chunk_per_row": true,
+       "table_meaning": "ERP 品號規格對照表",
+       "columns_config": {
+         "ITEM_ID": { "enabled": true, "meaning": "品號" },
+         "ITEM_NAME": { "enabled": true, "meaning": "品名" },
+         "SPEC": { "enabled": true, "meaning": "規格描述" }
+       }
+     }'
+```
+
+---
+
+## 6. §4.4 Prompt 範本與 A/B 測試歷史管理
+
+### 6.1 獲取所有 Prompt 範本 (包含系統預設)
+* **API 端點**：`GET /api/prompt/templates`
+```bash
+curl -X GET "http://localhost:8000/api/prompt/templates" \
+     -H "Authorization: Bearer $TOKEN"
+```
+
+### 6.2 儲存 A/B 測試歷史紀錄
+* **API 端點**：`POST /api/prompt/records`
+```bash
+curl -X POST "http://localhost:8000/api/prompt/records" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "請假規則 A/B 測試 - 2026-06-30",
+       "system_prompt": "你是一個專業助手...",
+       "user_prompt_template": "根據：\n{context}\n回答問題：{question}",
+       "context": "說明書內容...",
+       "question": "事假怎麼請？",
+       "results": [
+         {
+           "label": "A組 - 低溫",
+           "answer": "回答內容...",
+           "params": { "temperature": 0.1 },
+           "elapsed_ms": 1200
+         }
+       ]
+     }'
+```
+
+---
+
+## 7. §4.5 標籤與類別選項動態配置
+
+### 7.1 建立與查詢分類標籤 (Tags)
+* **建立** (`POST /api/embedding/tags`)：
+  ```bash
+  curl -X POST "http://localhost:8000/api/embedding/tags" \
+       -H "Authorization: Bearer $TOKEN" \
+       -H "Content-Type: application/json" \
+       -d '{"name": "機密等級A"}'
+  ```
+* **查詢** (`GET /api/embedding/tags`)：
+  ```bash
+  curl -X GET "http://localhost:8000/api/embedding/tags" \
+       -H "Authorization: Bearer $TOKEN"
+  ```

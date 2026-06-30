@@ -2,12 +2,13 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.1
+* **文件版本**：V 1.2 (最新更新)
 * **建立日期**：2026-06-18
+* **更新日期**：2026-06-30
 * **資料庫類型**：
-  * **應用資料庫**：MongoDB（對話紀錄、設定、測試集、評估報告、回饋標註）
-  * **既有知識庫**：SQL Server（唯讀連線，存取既有的 md 檔、附件等知識庫資料）
-  * **向量資料庫**：Qdrant（文件 Chunks 向量儲存）
+  * **應用資料庫**：MongoDB（對話紀錄、設定、測試集、評估報告、回饋標註、資料庫連線設定、標籤與類別選項、Prompt 測試歷史紀錄）
+  * **既有知識庫 / 自訂 DB**：SQL Server & Oracle Database（唯讀連線，存取既有的 md 檔、表單欄位等資料）
+  * **向量資料庫**：Qdrant（密集與稀疏雙向量混合儲存）
 
 ---
 
@@ -23,15 +24,18 @@
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
 │  │test_datasets │  │ eval_reports │  │prompt_templates│ │
 │  └──────────────┘  └──────────────┘  └──────────────┘  │
-│  ┌──────────────┐  ┌──────────────┐                    │
-│  │knowledge_bases│ │  app_configs │                    │
-│  └──────────────┘  └──────────────┘                    │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │knowledge_bases│ │  app_configs │  │database_configs│ │
+│  └──────────────┘  └──────────────┘  └──────────────┘  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │     tags     │  │class_options │  │prompt_test_records│
+│  └──────────────┘  └──────────────┘  └──────────────┘  │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────┐     ┌─────────────────────┐
-│  SQL Server (唯讀)   │     │   Qdrant (向量DB)    │
-│  既有知識庫資料       │     │   Chunk Vectors      │
-│  (md檔、附件等)      │     │                     │
+│SQL Server / Oracle  │     │   Qdrant (向量DB)    │
+│  既有與自訂資料庫    │     │   - Dense Vectors   │
+│   (唯讀連線查詢)    │     │   - Sparse Vectors  │
 └─────────────────────┘     └─────────────────────┘
 ```
 
@@ -42,200 +46,31 @@
 > **ODM 框架**：使用 `beanie` (基於 `motor`) 進行非同步 MongoDB 操作。
 
 ### 3.1 chat_sessions — 對話 Session
-
-```json
-{
-  "_id": "ObjectId",
-  "title": "string | null",
-  "knowledge_base_id": "string | null",
-  "params": {
-    "model": "Qwen3.6-35B-A3B-FP8",
-    "temperature": 0.7,
-    "top_p": 0.9,
-    "max_tokens": 2048,
-    "top_k": 5,
-    "score_threshold": 0.7
-  },
-  "created_by": "string | null",
-  "created_at": "ISODate",
-  "updated_at": "ISODate"
-}
-```
-
-**索引**：
-* `created_at: -1`（按時間排序查詢）
-* `created_by: 1`（按使用者查詢）
-
----
+*同 V1.1*，儲存 `title`、`knowledge_base_id`、`params` 與時間戳記。
 
 ### 3.2 chat_messages — 對話訊息
+*同 V1.1*，儲存 `session_id`、`role`、`content`、`source_chunks`、`thinking_content`、`elapsed_ms` 等。
 
-```json
-{
-  "_id": "ObjectId",
-  "session_id": "ObjectId (ref → chat_sessions)",
-  "role": "user | assistant",
-  "content": "string",
-  "source_chunks": [
-    {
-      "chunk_id": "string",
-      "content": "string",
-      "metadata": {
-        "filename": "string",
-        "page": 1,
-        "section": "string"
-      },
-      "score": 0.92
-    }
-  ],
-  "thinking_content": "string | null",
-  "token_count": 500,
-  "elapsed_ms": 2300,
-  "created_at": "ISODate"
-}
-```
+### 3.3 feedbacks — 回饋標註
+*同 V1.1*，新增支援單筆與批次刪除清理。
 
-**索引**：
-* `session_id: 1, created_at: 1`（查詢某 Session 的所有訊息並按時間排序）
+### 3.4 test_datasets — 測試集
+*同 V1.1*，儲存問題集、標準答案與引用 Contexts。
 
----
-
-### 3.3 feedbacks — 回饋標註 (§4.6)
-
-```json
-{
-  "_id": "ObjectId",
-  "chat_message_id": "ObjectId (ref → chat_messages)",
-  "session_id": "ObjectId (ref → chat_sessions)",
-  "question": "string (原始問題，冗餘存儲方便查詢)",
-  "ai_answer": "string (AI 回答，冗餘存儲)",
-  "is_correct": false,
-  "correct_answer": "string | null",
-  "error_type": "hallucination | incomplete | wrong_source | format_issue | other | null",
-  "note": "string | null",
-  "exported_to_dataset_id": "ObjectId | null",
-  "created_by": "string | null",
-  "created_at": "ISODate"
-}
-```
-
-**索引**：
-* `is_correct: 1`（篩選正確/不正確）
-* `error_type: 1`（篩選錯誤類型）
-* `created_at: -1`（按時間排序）
-
----
-
-### 3.4 test_datasets — 測試集 (§4.3)
-
-```json
-{
-  "_id": "ObjectId",
-  "name": "string",
-  "description": "string | null",
-  "items": [
-    {
-      "question": "string",
-      "ground_truth": "string",
-      "relevant_contexts": ["string"],
-      "source_feedback_id": "ObjectId | null"
-    }
-  ],
-  "item_count": 50,
-  "created_by": "string | null",
-  "created_at": "ISODate",
-  "updated_at": "ISODate"
-}
-```
-
-> **設計決策**：測試集題目以嵌入文件 (Embedded Document) 方式存儲，因為題目與測試集強關聯且通常一起讀寫。若單個測試集超過 1000 題，可考慮拆為獨立 Collection。
-
-**索引**：
-* `name: 1`（按名稱查詢）
-* `created_at: -1`
-
----
-
-### 3.5 eval_reports — 評估報告 (§4.3)
-
-```json
-{
-  "_id": "ObjectId",
-  "dataset_id": "ObjectId (ref → test_datasets)",
-  "dataset_name": "string (冗餘存儲)",
-  "knowledge_base_id": "string | null",
-  "model": "Qwen3.6-35B-A3B-FP8",
-  "params": {
-    "temperature": 0.3,
-    "top_k": 5,
-    "score_threshold": 0.7
-  },
-  "summary": {
-    "faithfulness": 0.85,
-    "answer_relevancy": 0.90,
-    "context_precision": 0.78,
-    "context_recall": 0.82
-  },
-  "details": [
-    {
-      "question": "string",
-      "ground_truth": "string",
-      "generated_answer": "string",
-      "retrieved_contexts": ["string"],
-      "scores": {
-        "faithfulness": 0.9,
-        "answer_relevancy": 0.85,
-        "context_precision": 0.8,
-        "context_recall": 0.75
-      }
-    }
-  ],
-  "status": "pending | running | completed | failed",
-  "created_by": "string | null",
-  "created_at": "ISODate",
-  "completed_at": "ISODate | null"
-}
-```
-
-> **設計決策**：評估明細嵌入報告文件中，因為報告一旦生成就不會修改，且通常整份讀取/匯出。
-
-**索引**：
-* `dataset_id: 1`（按測試集查詢報告）
-* `status: 1`（查詢進行中的評估）
-* `created_at: -1`
-
----
+### 3.5 eval_reports — 評估報告
+*同 V1.1*，儲存自動化跑分 Faithfulness、Answer Relevancy、Context Precision、Context Recall 結果。
 
 ### 3.6 knowledge_bases — 知識庫
+*同 V1.1*，儲存向量庫關聯 collection 名稱、Embedding 模型與 Chunks 總量。
 
+### 3.7 prompt_templates — Prompt 模板
+*新增設計*：於系統啟動時，若資料庫為空，會自動寫入「預設 RAG 助手」與「嚴格知識問答」兩款內建種子範本。
 ```json
 {
   "_id": "ObjectId",
-  "name": "string",
-  "description": "string | null",
-  "qdrant_collection_name": "string (unique)",
-  "embedding_model": "Qwen3-Embedding-8B-Q8_0.gguf",
-  "chunk_count": 150,
-  "created_by": "string | null",
-  "created_at": "ISODate",
-  "updated_at": "ISODate"
-}
-```
-
-**索引**：
-* `qdrant_collection_name: 1` (unique)
-* `name: 1`
-
----
-
-### 3.7 prompt_templates — Prompt 模板 (§4.4)
-
-```json
-{
-  "_id": "ObjectId",
-  "name": "string",
+  "name": "string (範本名稱)",
   "system_prompt": "string | null",
-  "user_prompt_template": "string",
+  "user_prompt_template": "string (支援 {context} 與 {question} 變數)",
   "is_default": false,
   "created_by": "string | null",
   "created_at": "ISODate",
@@ -243,122 +78,132 @@
 }
 ```
 
-**索引**：
-* `is_default: 1`（快速查詢預設模板）
-
----
-
-### 3.8 app_configs — 應用設定
-
+### 3.8 database_configs — 資料庫連線配置 [NEW]
+**用途**：儲存使用者自訂的 SQL Server 或 Oracle Database 連線配置，以便於向量化匯入時快速套用。
 ```json
 {
   "_id": "ObjectId",
-  "key": "string (unique)",
-  "value": "any (mixed type)",
-  "description": "string | null",
+  "name": "string (設定檔名稱)",
+  "db_type": "sqlserver | oracle",
+  "host": "string (資料庫主機 IP)",
+  "port": 1433,
+  "database": "string (資料庫名稱 / Service Name)",
+  "username": "string (登入帳號)",
+  "password": "string (加密/明文密碼)",
+  "created_at": "ISODate",
   "updated_at": "ISODate"
 }
 ```
 
-> **用途**：儲存全域設定（如預設參數、UI 偏好等），鍵值對設計方便擴充。
+### 3.9 tags — 分類標籤 [NEW]
+**用途**：儲存知識庫 Chunks 分類標籤，供使用者於匯入資料時一鍵勾選。
+```json
+{
+  "_id": "ObjectId",
+  "name": "string (標籤名稱，Unique 索引)",
+  "created_at": "ISODate"
+}
+```
 
-**索引**：
-* `key: 1` (unique)
+### 3.10 class_options — 自訂類別選項 [NEW]
+**用途**：儲存使用者自行建立的類別屬性（如：前端、後端、系統），可用於 Qdrant Points 的 `"class"` payload 寫入以利多維度過濾檢索。
+```json
+{
+  "_id": "ObjectId",
+  "name": "string (類別名稱，Unique 索引)",
+  "created_at": "ISODate"
+}
+```
+
+### 3.11 prompt_test_records — Prompt 測試歷史與結果 [NEW]
+**用途**：儲存 Prompt A/B 測試的輸入參數、模板與 Variant 生成答案，供調優對照與參數還原。
+```json
+{
+  "_id": "ObjectId",
+  "name": "string (測試紀錄標題)",
+  "system_prompt": "string (System Prompt)",
+  "user_prompt_template": "string (User Prompt Template)",
+  "context": "string (測試上下文)",
+  "question": "string (測試問題)",
+  "results": [
+    {
+      "label": "string (Variant 標籤名稱，例如 A組-低溫)",
+      "answer": "string (生成回答)",
+      "params": {
+        "temperature": 0.1,
+        "top_p": 0.9,
+        "max_tokens": 2048
+      },
+      "elapsed_ms": 1500
+    }
+  ],
+  "created_by": "string | null",
+  "created_at": "ISODate"
+}
+```
 
 ---
 
-## 4. SQL Server 既有知識庫 (唯讀)
+## 4. Qdrant 向量資料庫設計
 
-> **說明**：此為公司既有的 SQL Server 資料庫，本系統僅進行**唯讀查詢**，不建立新表、不修改資料。
+### 4.1 Collection 與雙向量配置
+本專案採用密集向量與稀疏關鍵字雙路向量混合儲存：
 
-### 4.1 存取方式
-* 使用 `pyodbc` / `aioodbc` 透過 ODBC 連線
-* 僅執行 `SELECT` 查詢
-* 連線字串配置於 `.env` 的 `SQLSERVER_CONNECTION_STRING`
-
-### 4.2 預期查詢的資料
-| 資料類型 | 說明 | 用途 |
-|:---|:---|:---|
-| md 文件 | Markdown 格式的知識文件 | 作為 RAG 知識來源，可匯入向量化 |
-| 附件 | PDF、DOCX 等附件檔案 | 解析後進行 Chunking 與 Embedding |
-| 相關 Metadata | 文件標題、分類、建立日期等 | 作為 Chunk 的 Metadata |
-
-### 4.3 資料流
-```
-SQL Server (既有知識庫) 
-    │ 唯讀查詢
-    ▼
-FastAPI Backend (document_parser.py)
-    │ 解析 + Chunking
-    ▼
-llama.cpp (Embedding)
-    │ 向量化
-    ▼
-Qdrant (寫入向量)
-```
-
----
-
-## 5. Qdrant 向量資料庫
-
-### 5.1 Collection 設計
-
-每個 **知識庫 (KnowledgeBase)** 對應一個 Qdrant **Collection**。
-
-**Collection 建立參數**：
 ```json
 {
   "collection_name": "kb_{knowledge_base_id}",
   "vectors": {
-    "size": 4096,
+    // 1. 密集向量 (Dense Vector) 空間：用以偵測與儲存語義密集向量
+    "size": 4096, // 自適應大小 (預設為 Qwen 3 的 4096 維度)
     "distance": "Cosine"
   },
-  "hnsw_config": {
-    "m": 16,
-    "ef_construct": 100
+  "sparse_vectors": {
+    // 2. 稀疏向量 (Sparse Vector) 空間：用於 SPLADE 關鍵字词頻匹配
+    "sparse-text": {
+      "index": {
+        "on_disk": true
+      }
+    }
   }
 }
 ```
 
-> **向量維度**：`4096`（對應 Qwen3-Embedding-8B 模型的輸出維度）
-
-### 5.2 Point 結構
-
+### 4.2 Point 結構與 Payload 定義
 ```json
 {
   "id": "uuid",
-  "vector": [0.012, -0.034, ...],
+  "vector": {
+    "": [0.012, -0.034, ...], // 密集向量數值 (4096 維)
+    "sparse-text": {
+      "indices": [34, 102, 5903], // 稀疏向量字詞索引
+      "values": [0.45, 0.12, 0.89] // 詞頻權重數值
+    }
+  },
   "payload": {
-    "content": "Chunk 完整文字內容",
-    "filename": "report.pdf",
-    "page": 3,
-    "section": "第二章 系統設計",
-    "chunk_index": 5,
+    "content": "Chunk 完整內容 (或轉成 JSON/自然語言的 ERP 欄位描述)",
+    "filename": "report.pdf", // 檔案名稱，自訂 DB 匯入時固定為 "DB_IMPORT_{tableName}"
+    "page": 1,
+    "section": "段落標題",
+    "chunk_index": 0,
     "token_count": 128,
     "char_count": 450,
-    "start_char": 2000,
-    "end_char": 2449,
-    "source": "sqlserver | upload",
-    "created_at": "2026-06-18T10:00:00Z"
+    "source": "upload | database | json",
+    "tags": ["標籤1", "標籤2"], // 分類標籤陣列
+    "class": ["類別1"], // 類別選項陣列
+    
+    // 以下為大小雙層檢索 (Parent-Child Retriever) 專屬關聯元資料 [NEW]
+    "parent_id": "uuid (對應 Parent Chunk 的唯一 ID)",
+    "parent_chunk_index_range": "0~4 (對應該 Parent Block 分切的所有 Child Chunks 索引區間)",
+    "file_type": "docx | md | 4gl | 4fd", // 原始檔案類型
+    "header_path": "Header1 > Header2 (Word / MD 的層級標題階層首碼)",
+    "function_name": "func_name (4GL 原始碼的函數名稱)",
+    
+    "created_at": "2026-06-30T10:00:00Z"
   }
 }
 ```
 
-### 5.3 索引策略
-* **主要索引**：HNSW（Qdrant 預設）
-* **Payload 索引**：`filename`、`page`、`source` 建立 Payload Index
-* **混合搜尋**：啟用 BM25 全文搜尋索引（Hybrid Search）
-
----
-
-## 6. 資料關聯摘要
-
-| 關聯 | 儲存位置 | 類型 | 說明 |
-|:---|:---|:---|:---|
-| chat_sessions → chat_messages | MongoDB | 一對多 | 透過 `session_id` 關聯 |
-| chat_messages → feedbacks | MongoDB | 一對一 | 透過 `chat_message_id` 關聯 |
-| test_datasets.items | MongoDB | 嵌入文件 | 題目嵌入測試集文件中 |
-| eval_reports.details | MongoDB | 嵌入文件 | 明細嵌入報告文件中 |
-| feedbacks → test_datasets | MongoDB | 可選關聯 | 回饋可匯入為測試題目 |
-| knowledge_bases ↔ Qdrant | MongoDB ↔ Qdrant | 一對一 | `qdrant_collection_name` 對應 |
-| SQL Server → Qdrant | SQL Server → Qdrant | 唯讀→寫入 | 既有資料經解析後向量化寫入 |
+### 4.3 向量索引與檢索策略
+* **HNSW 索引**：對密集向量進行餘弦相似度 (Cosine) 索引。
+* **稀疏索引**：對 `"sparse-text"` 啟用 SPLADE 稀疏點陣索引，加速精確關鍵字及型號召回。
+* **Payload 過濾索引**：針對 `filename`、`source` 與 `class` 欄位建立 Key Payload Index，提供極速檔案名稱過濾查詢與 Points 清理。

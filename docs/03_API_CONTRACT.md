@@ -2,8 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.0
+* **文件版本**：V 1.1 (最新更新)
 * **建立日期**：2026-06-18
+* **更新日期**：2026-06-30
 * **Base URL**：`http://<host>:8000/api`
 * **認證方式**：JWT Bearer Token（除 `/api/auth/login` 外，所有 API 需帶 `Authorization: Bearer <token>`）
 
@@ -12,14 +13,13 @@
 ## 2. 認證 API (Auth)
 
 ### 2.1 POST `/api/auth/login` — 使用者登入
-
 **描述**：驗證帳號密碼，回傳 JWT Token。
 
 **Request Body**：
 ```json
 {
-  "username": "string",
-  "password": "string"
+  "username": "admin",
+  "password": "your_password"
 }
 ```
 
@@ -32,26 +32,18 @@
 }
 ```
 
-**Response 401**：
-```json
-{
-  "detail": "帳號或密碼錯誤"
-}
-```
-
 ---
 
 ## 3. RAG 功能測試 API (§4.1)
 
 ### 3.1 POST `/api/rag/chat` — RAG 對話（SSE 串流）
-
-**描述**：端到端 RAG 對話，透過 SSE 串流回傳 LLM 回答。
+**描述**：端到端 RAG 對話，支援 `vector`、`hybrid` 與 `semantic_hybrid` 三種模式，透過 SSE 串流回傳執行步驟與 LLM 回答。
 
 **Request Body**：
 ```json
 {
   "question": "string",
-  "knowledge_base_id": "string (UUID)",
+  "knowledge_base_id": "string (PydanticObjectId)",
   "chat_history": [
     { "role": "user", "content": "string" },
     { "role": "assistant", "content": "string" }
@@ -62,63 +54,57 @@
     "top_p": 0.9,
     "max_tokens": 2048,
     "top_k": 5,
-    "score_threshold": 0.7
+    "score_threshold": 0.7,
+    "search_type": "vector | hybrid | semantic_hybrid"
   }
 }
 ```
 
 **Response**：`text/event-stream` (SSE)
-```
-event: chunk
-data: {"content": "部分回答文字", "type": "content"}
-
-event: chunk
-data: {"content": "", "type": "done"}
-
-event: sources
-data: {
-  "sources": [
-    {
-      "chunk_id": "string",
-      "content": "Chunk 內容",
-      "metadata": {
-        "filename": "string",
-        "page": 1,
-        "section": "string"
-      },
-      "score": 0.92
-    }
-  ]
-}
-```
+* **管道進度步驟 (event: step)**:
+  ```
+  event: step
+  data: {"event": "semantic_analysis", "detail": "結構化 JSON 字串..."}
+  
+  event: step
+  data: {"event": "retrieval", "detail": "向量檢索完成，召回 5 筆段落..."}
+  ```
+* **回答字元 (event: chunk)**:
+  ```
+  event: chunk
+  data: {"content": "回答文字", "type": "content"}
+  ```
+* **引用的來源 (event: sources)**:
+  ```
+  event: sources
+  data: {
+    "sources": [
+      {
+        "chunk_id": "string",
+        "content": "段落內容",
+        "metadata": { "filename": "string", "page": 1 },
+        "score": 0.85
+      }
+    ]
+  }
+  ```
 
 ### 3.2 GET `/api/rag/history` — 取得對話歷史
-
-**Query Parameters**：
-| 參數 | 類型 | 必填 | 說明 |
-|:---|:---|:---:|:---|
-| `page` | int | 否 | 頁碼，預設 1 |
-| `page_size` | int | 否 | 每頁筆數，預設 20 |
-
 **Response 200**：
 ```json
 {
-  "total": 50,
+  "total": 10,
   "items": [
     {
-      "id": "string (UUID)",
-      "question": "string",
-      "answer": "string",
-      "sources": [...],
-      "params": {...},
-      "created_at": "2026-06-18T10:00:00Z"
+      "id": "string",
+      "title": "對話標題",
+      "created_at": "2026-06-30T10:00:00Z"
     }
   ]
 }
 ```
 
 ### 3.3 DELETE `/api/rag/history/{session_id}` — 刪除對話
-
 **Response 200**：
 ```json
 { "message": "刪除成功" }
@@ -126,22 +112,20 @@ data: {
 
 ---
 
-## 4. 向量搜尋測試 API (§4.2)
+## 4. 向量搜尋與 Point 管理 API (§4.2)
 
-### 4.1 POST `/api/retrieval/search` — 純向量檢索
-
+### 4.1 POST `/api/retrieval/search` — 純向量/混合檢索
 **描述**：僅執行向量搜尋，不呼叫 LLM。
 
 **Request Body**：
 ```json
 {
   "query": "string",
-  "knowledge_base_id": "string (UUID)",
+  "knowledge_base_id": "string",
   "params": {
-    "top_k": 10,
+    "top_k": 5,
     "score_threshold": 0.5,
-    "search_type": "vector | hybrid",
-    "hnsw_ef_search": 128
+    "search_type": "vector | hybrid"
   }
 }
 ```
@@ -153,31 +137,30 @@ data: {
   "results": [
     {
       "chunk_id": "string",
-      "content": "Chunk 完整內容",
-      "metadata": {
-        "filename": "string",
-        "page": 1,
-        "section": "string",
-        "chunk_index": 3
-      },
+      "content": "string",
+      "metadata": { "filename": "string", "page": 1, "class": ["string"] },
       "score": 0.95,
       "distance": 0.05
     }
   ],
-  "elapsed_ms": 123
+  "elapsed_ms": 45
 }
 ```
 
-### 4.2 POST `/api/retrieval/query-transform` — Query 轉換測試
+### 4.2 POST `/api/retrieval/semantic-hybrid-search` — 獨立語義混合搜尋
+**描述**：獨立執行語義混合搜尋，不呼叫對話模型，回傳檢索結果。
 
-**描述**：測試 Query Rewriting 或 HyDE 策略。
+**Request Body**：同 4.1。
 
+**Response 200**：同 4.1 (其中 metadata 會額外傳回包含原始 `text_content`)。
+
+### 4.3 POST `/api/retrieval/query-transform` — Query 轉換測試
 **Request Body**：
 ```json
 {
   "query": "string",
   "strategy": "rewrite | hyde",
-  "knowledge_base_id": "string (UUID)"
+  "knowledge_base_id": "string"
 }
 ```
 
@@ -191,18 +174,46 @@ data: {
 }
 ```
 
+### 4.4 POST `/api/retrieval/knowledge-bases/{knowledge_base_id}/points/batch-delete` — 批次刪除向量點
+**描述**：根據 Point UUID 列表，批次刪除 Qdrant 向量點，並更新 MongoDB 知識庫 counts。
+
+**Request Body**：
+```json
+{
+  "point_ids": ["uuid-1", "uuid-2"]
+}
+```
+
+**Response 200**：
+```json
+{ "message": "已成功刪除 2 筆向量資料" }
+```
+
+### 4.5 POST `/api/retrieval/knowledge-bases/{knowledge_base_id}/files/delete-by-filename` — 依檔名刪除庫內資料
+**Request Body**：
+```json
+{
+  "filename": "your_file.pdf"
+}
+```
+
+**Response 200**：
+```json
+{
+  "message": "成功刪除檔案 'your_file.pdf' 的所有相關向量",
+  "deleted_points_count": 25
+}
+```
+
 ---
 
 ## 5. 準確度評估 API (§4.3)
 
 ### 5.1 POST `/api/evaluation/datasets` — 上傳測試集
-
-**描述**：上傳或建立測試集。
-
-**Request Body** (`multipart/form-data` 或 JSON)：
+**Request Body (JSON)**：
 ```json
 {
-  "name": "string",
+  "name": "測試集名稱",
   "items": [
     {
       "question": "string",
@@ -216,219 +227,84 @@ data: {
 **Response 201**：
 ```json
 {
-  "dataset_id": "string (UUID)",
-  "name": "string",
-  "item_count": 50,
-  "created_at": "2026-06-18T10:00:00Z"
+  "dataset_id": "string",
+  "name": "測試集名稱",
+  "item_count": 1
 }
 ```
 
-### 5.2 GET `/api/evaluation/datasets` — 取得測試集列表
+### 5.2 GET `/api/evaluation/datasets/{dataset_id}` — 取得特定測試集
+**Response 200**：包含 `items` 詳細陣列。
+
+### 5.3 PUT `/api/evaluation/datasets/{dataset_id}` — 修改測試集
+**Request Body**：同 5.1。
 
 **Response 200**：
 ```json
-{
-  "items": [
-    {
-      "dataset_id": "string (UUID)",
-      "name": "string",
-      "item_count": 50,
-      "created_at": "2026-06-18T10:00:00Z"
-    }
-  ]
-}
+{ "message": "更新成功" }
 ```
 
-### 5.3 POST `/api/evaluation/run` — 執行評估
+### 5.4 POST `/api/evaluation/run` — 執行 RAG 評估跑分
+**Response 200**：回傳包含 summary 與四項指標 (faithfulness, answer_relevancy, context_precision, context_recall) 的完整報告。
 
-**描述**：對指定測試集執行批次評估，回傳評分報告。
+---
 
+## 6. Prompt 測試、範本與歷史紀錄 API (§4.4)
+
+### 6.1 POST `/api/prompt/generate` — 手動注入 Context 對話 (SSE)
 **Request Body**：
 ```json
 {
-  "dataset_id": "string (UUID)",
-  "knowledge_base_id": "string (UUID)",
+  "context": "手動貼上或引用的 Context",
+  "question": "問題",
+  "system_prompt": "System Prompt 內容",
+  "user_prompt_template": "根據：\n{context}\n回答問題：{question}",
   "params": {
     "model": "Qwen3.6-35B-A3B-FP8",
-    "temperature": 0.3,
-    "top_k": 5
+    "temperature": 0.7
   }
 }
 ```
 
-**Response 200**：
-```json
-{
-  "report_id": "string (UUID)",
-  "dataset_id": "string (UUID)",
-  "summary": {
-    "faithfulness": 0.85,
-    "answer_relevancy": 0.90,
-    "context_precision": 0.78,
-    "context_recall": 0.82
-  },
-  "details": [
-    {
-      "question": "string",
-      "generated_answer": "string",
-      "ground_truth": "string",
-      "scores": {
-        "faithfulness": 0.9,
-        "answer_relevancy": 0.85,
-        "context_precision": 0.8,
-        "context_recall": 0.75
-      }
-    }
-  ],
-  "created_at": "2026-06-18T10:30:00Z"
-}
-```
+**Response**：`text/event-stream`。
 
-### 5.4 GET `/api/evaluation/reports/{report_id}` — 取得評估報告
+### 6.2 POST `/api/prompt/preview` — Prompt 渲染預覽
+**Response 200**：回傳組合後的 `rendered_system_prompt`、`rendered_user_prompt` 與 Token 估算。
 
-**Response 200**：同 5.3 Response 結構。
+### 6.3 POST `/api/prompt/ab-test` — A/B 測試
+**Request Body**：傳入 context、question 與 variants 陣列。
+**Response 200**：回傳多個 Variant 的 answer 與執行時間。
 
-### 5.5 GET `/api/evaluation/reports/{report_id}/export` — 匯出報告
+### 6.4 GET/POST/DELETE `/api/prompt/templates` — 提示詞範本管理
+* **`GET`**：取得範本列表（包含系統預設範本與自訂範本）。
+* **`POST`** (建立範本)：
+  * Request Body: `{"name": "...", "system_prompt": "...", "user_prompt_template": "..."}`
+* **`DELETE /api/prompt/templates/{template_id}`**：刪除自訂範本。
 
-**Query Parameters**：
-| 參數 | 類型 | 必填 | 說明 |
-|:---|:---|:---:|:---|
-| `format` | string | 是 | `csv` 或 `json` |
-
-**Response 200**：檔案下載 (`application/octet-stream`)
+### 6.5 GET/POST/DELETE `/api/prompt/records` — A/B 測試歷史存檔
+* **`GET`**：取得測試歷史列表。
+* **`POST`** (保存歷史紀錄)：
+  * Request Body: 包含 A/B 測試的 template、參數、question、variant 回答、耗時等。
+* **`DELETE /api/prompt/records/{record_id}`**：刪除歷史紀錄。
 
 ---
 
-## 6. Prompt 測試 API (§4.4)
-
-### 6.1 POST `/api/prompt/generate` — 自訂 Context 生成
-
-**描述**：手動注入 Context，測試 LLM 生成能力（SSE 串流）。
-
-**Request Body**：
-```json
-{
-  "context": "string (手動貼上的 Context)",
-  "question": "string",
-  "system_prompt": "string (System Prompt 模板)",
-  "user_prompt_template": "根據以下資訊回答：\n{context}\n\n問題：{question}",
-  "params": {
-    "model": "Qwen3.6-35B-A3B-FP8",
-    "temperature": 0.7,
-    "top_p": 0.9,
-    "max_tokens": 2048
-  }
-}
-```
-
-**Response**：`text/event-stream` (SSE)，格式同 §3.1。
-
-### 6.2 POST `/api/prompt/preview` — Prompt 變數替換預覽
-
-**描述**：預覽最終組合的完整 Prompt，不呼叫 LLM。
-
-**Request Body**：
-```json
-{
-  "context": "string",
-  "question": "string",
-  "system_prompt": "string",
-  "user_prompt_template": "string"
-}
-```
-
-**Response 200**：
-```json
-{
-  "rendered_system_prompt": "string",
-  "rendered_user_prompt": "string",
-  "total_estimated_tokens": 1500
-}
-```
-
-### 6.3 POST `/api/prompt/ab-test` — 多參數 A/B 測試
-
-**描述**：以不同參數組合同時生成回答進行比較。
-
-**Request Body**：
-```json
-{
-  "context": "string",
-  "question": "string",
-  "variants": [
-    {
-      "label": "低溫度",
-      "system_prompt": "string",
-      "user_prompt_template": "string",
-      "params": { "temperature": 0.1, "top_p": 0.9, "max_tokens": 2048 }
-    },
-    {
-      "label": "高溫度",
-      "system_prompt": "string",
-      "user_prompt_template": "string",
-      "params": { "temperature": 0.9, "top_p": 0.9, "max_tokens": 2048 }
-    }
-  ]
-}
-```
-
-**Response 200**：
-```json
-{
-  "results": [
-    {
-      "label": "低溫度",
-      "answer": "string",
-      "params": {...},
-      "elapsed_ms": 2300
-    },
-    {
-      "label": "高溫度",
-      "answer": "string",
-      "params": {...},
-      "elapsed_ms": 2500
-    }
-  ]
-}
-```
-
----
-
-## 7. Embedding 測試 API (§4.5)
+## 7. Embedding 向量化、標籤與類別 API (§4.5)
 
 ### 7.1 POST `/api/embedding/upload` — 上傳文件
+**Request (multipart/form-data)**：傳入 `file` (PDF/Word/TXT/MD 等)。
+**Response 200**：回傳解析後的純文字與字元數、頁數。
 
-**描述**：上傳文件進行解析。
-
-**Request** (`multipart/form-data`)：
-| 欄位 | 類型 | 說明 |
-|:---|:---|:---|
-| `file` | File | PDF, DOCX, TXT, MD |
-
-**Response 200**：
-```json
-{
-  "file_id": "string (UUID)",
-  "filename": "string",
-  "content": "string (解析後純文字)",
-  "page_count": 10,
-  "char_count": 15000
-}
-```
-
-### 7.2 POST `/api/embedding/chunk` — 文本切分
-
-**描述**：對文件內容執行切分，回傳 Chunk 預覽。
-
+### 7.2 POST `/api/embedding/chunk` — 文本切分預覽
 **Request Body**：
 ```json
 {
-  "file_id": "string (UUID)",
-  "content": "string (或直接貼上純文字)",
+  "filename": "string (選填，傳入以自動分流 4GL/4FD/Word/MD 客製切分)",
+  "content": "文本內容",
   "params": {
-    "chunk_size": 512,
+    "chunk_size": 250,
     "chunk_overlap": 50,
-    "separator": "\n\n"
+    "chunk_mode": "standard | parent_child"
   }
 }
 ```
@@ -439,199 +315,186 @@ data: {
   "chunks": [
     {
       "index": 0,
-      "content": "Chunk 內容",
-      "token_count": 128,
-      "char_count": 450,
-      "start_char": 0,
-      "end_char": 449
+      "content": "Child Chunk 內容",
+      "token_count": 65,
+      "char_count": 120,
+      "metadata": {
+        "parent_id": "uuid",
+        "header_path": "Header1 > Header2",
+        "parent_chunk_index_range": "0~4",
+        "file_type": "docx"
+      }
     }
   ],
-  "total_chunks": 30,
-  "avg_token_count": 120
+  "total_chunks": 5
 }
 ```
 
-### 7.3 POST `/api/embedding/vectorize` — 向量化並寫入 Qdrant
+### 7.3 POST `/api/embedding/vectorize` — 向量化寫入 Qdrant
+**Request Body**：傳入 chunks 陣列（含 metadata 如 classes、tags 陣列）與知識庫 ID。
 
-**描述**：將切分好的 Chunks 向量化並寫入測試用向量資料庫。
+**Response 200**：
+```json
+{
+  "knowledge_base_id": "string",
+  "inserted_count": 5
+}
+```
 
+### 7.4 POST `/api/embedding/vectorize-json` — 地端 AI 語義 JSON 匯入
 **Request Body**：
 ```json
 {
-  "chunks": [
-    { "index": 0, "content": "string", "metadata": {} }
-  ],
-  "knowledge_base_id": "string (UUID)",
-  "embedding_model": "Qwen3-Embedding-8B-Q8_0.gguf"
-}
-```
-
-**Response 200**：
-```json
-{
-  "knowledge_base_id": "string (UUID)",
-  "inserted_count": 30,
-  "embedding_model": "Qwen3-Embedding-8B-Q8_0.gguf",
-  "elapsed_ms": 5000
-}
-```
-
----
-
-## 8. 知識庫管理 API
-
-### 8.1 GET `/api/knowledge-bases` — 取得知識庫列表
-
-**Response 200**：
-```json
-{
+  "knowledge_base_id": "string",
   "items": [
     {
-      "id": "string (UUID)",
-      "name": "string",
-      "description": "string",
-      "chunk_count": 150,
-      "created_at": "2026-06-18T10:00:00Z"
+      "id": "string (點 ID)",
+      "embeddings_input": "用來生成密集向量的語義化文本",
+      "text_content": "原始內容",
+      "sparse_keywords": ["關鍵字1", "關鍵字2"],
+      "classes": ["類別1"],
+      "tags": ["標籤1"]
     }
   ]
 }
 ```
 
-### 8.2 POST `/api/knowledge-bases` — 建立知識庫
+**Response 200**：
+```json
+{
+  "knowledge_base_id": "string",
+  "inserted_count": 1,
+  "elapsed_ms": 1200
+}
+```
+
+### 7.5 GET/POST `/api/embedding/tags` — 分類標籤管理
+* **`GET`**：取得 MongoDB 的動態標籤列表。
+* **`POST`**: 傳入 `{"name": "新標籤"}` 建立標籤。
+
+### 7.6 GET/POST `/api/embedding/classes` — 類別選項管理
+* **`GET`**：取得 MongoDB 的動態類別列表。
+* **`POST`**: 傳入 `{"name": "新類別"}` 建立類別。
+
+---
+
+## 8. 資料庫自訂匯入 API (§4.5)
+
+### 8.1 GET/POST `/api/database-indexing/configs` — DB 連線設定檔管理
+* **`GET`**：取得所有已存的 DB 連線設定（IP、Port、DB、帳密）。
+* **`POST`**：建立新的連線設定檔。
+
+### 8.2 PUT/DELETE `/api/database-indexing/configs/{config_id}` — 編輯/刪除設定檔
+
+### 8.3 POST `/api/database-indexing/test-connection` — 連線測試
+**Request Body**：
+```json
+{
+  "db_type": "sqlserver | oracle",
+  "host": "10.10.130.220",
+  "port": 1433,
+  "database": "ERP_DB",
+  "username": "user",
+  "password": "pwd"
+}
+```
+
+**Response 200**：
+```json
+{ "status": "success", "message": "資料庫連線測試成功" }
+```
+
+### 8.4 POST `/api/database-indexing/fetch-metadata` — 讀取樣品欄位與資料
+**描述**：驗證 SQL 唯讀安全限制，並回傳欄位清單與第一筆資料預覽。
 
 **Request Body**：
 ```json
 {
-  "name": "string",
-  "description": "string"
+  "config_id": "string (或提供連線詳細資訊 connection)",
+  "sql_query": "SELECT TOP 1 * FROM articles"
 }
 ```
-
-**Response 201**：
-```json
-{
-  "id": "string (UUID)",
-  "name": "string",
-  "description": "string",
-  "created_at": "2026-06-18T10:00:00Z"
-}
-```
-
-### 8.3 DELETE `/api/knowledge-bases/{id}` — 刪除知識庫
 
 **Response 200**：
 ```json
-{ "message": "刪除成功" }
+{
+  "columns": ["id", "title", "content"],
+  "sample_row": { "id": 1, "title": "樣品標題", "content": "..." },
+  "table_name": "articles"
+}
+```
+
+### 8.5 POST `/api/database-indexing/ingest` — 執行資料庫向量化匯入
+**描述**：由資料庫提取所有列，根據對照公式將資料欄位拼接為自然語言或 JSON 字串，分批（每批 20 筆）進行密集向量化寫入 Qdrant。支援覆蓋刪除同名舊資料（`DB_IMPORT_{table_name}`）。
+
+**Request Body**：
+```json
+{
+  "knowledge_base_id": "string",
+  "config_id": "string",
+  "sql_query": "SELECT * FROM articles",
+  "ingestion_mode": "text | json",
+  "one_chunk_per_row": true,
+  "table_meaning": "公司技術文章表",
+  "columns_config": {
+    "title": { "enabled": true, "meaning": "標題" },
+    "content": { "enabled": true, "meaning": "詳細內容" }
+  }
+}
+```
+
+**Response 200**：
+```json
+{
+  "status": "success",
+  "inserted_count": 150,
+  "knowledge_base_id": "string",
+  "elapsed_ms": 3200,
+  "filename": "DB_IMPORT_articles"
+}
 ```
 
 ---
 
-## 9. 人工回饋 API (§4.6)
+## 9. 知識庫與檔案元資料 API
 
-### 9.1 POST `/api/feedback` — 提交回饋標註
-
-**描述**：對 AI 回答標記正確/不正確，並可填入正確答案。
-
-**Request Body**：
-```json
-{
-  "chat_message_id": "string (UUID)",
-  "is_correct": false,
-  "correct_answer": "string (當 is_correct=false 時填寫)",
-  "error_type": "hallucination | incomplete | wrong_source | format_issue | other",
-  "note": "string (備註，可選)"
-}
-```
-
-**Response 201**：
-```json
-{
-  "feedback_id": "string (UUID)",
-  "chat_message_id": "string (UUID)",
-  "is_correct": false,
-  "error_type": "hallucination",
-  "created_at": "2026-06-18T10:00:00Z"
-}
-```
-
-### 9.2 GET `/api/feedback` — 取得回饋標註列表
-
-**Query Parameters**：
-| 參數 | 類型 | 必填 | 說明 |
-|:---|:---|:---:|:---|
-| `is_correct` | bool | 否 | 篩選正確/不正確 |
-| `error_type` | string | 否 | 篩選錯誤類型 |
-| `page` | int | 否 | 頁碼 |
-| `page_size` | int | 否 | 每頁筆數 |
+### 9.1 GET `/api/knowledge-bases/{id}/metadata` — 取得庫內檔案清單
+**描述**：用於向量搜尋頁面中，依知識庫動態列出唯一的檔案名稱，方便進行篩選。
 
 **Response 200**：
 ```json
 {
-  "total": 100,
-  "items": [
-    {
-      "feedback_id": "string (UUID)",
-      "question": "string",
-      "ai_answer": "string",
-      "is_correct": false,
-      "correct_answer": "string",
-      "error_type": "hallucination",
-      "created_at": "2026-06-18T10:00:00Z"
-    }
-  ]
+  "files": ["report.pdf", "manual.docx", "DB_IMPORT_articles"]
 }
 ```
-
-### 9.3 POST `/api/feedback/export-to-dataset` — 匯入測試集
-
-**描述**：將不正確的回饋標註批次匯入 §4.3 的測試集。
-
-**Request Body**：
-```json
-{
-  "feedback_ids": ["string (UUID)"],
-  "target_dataset_id": "string (UUID，可選，不填則建立新測試集)",
-  "new_dataset_name": "string (當建立新測試集時)"
-}
-```
-
-**Response 200**：
-```json
-{
-  "dataset_id": "string (UUID)",
-  "imported_count": 15,
-  "message": "成功匯入 15 筆回饋至測試集"
-}
-```
-
-### 9.4 GET `/api/feedback/export` — 匯出回饋紀錄
-
-**Query Parameters**：
-| 參數 | 類型 | 必填 | 說明 |
-|:---|:---|:---:|:---|
-| `format` | string | 是 | `csv` 或 `json` |
-
-**Response 200**：檔案下載
 
 ---
 
-## 10. 共用錯誤回應格式
+## 10. 人工回饋 API (§4.6)
 
-所有 API 的錯誤回應統一格式：
+### 10.1 DELETE `/api/feedback/{feedback_id}` — 刪除單筆回饋
 
+### 10.2 POST `/api/feedback/batch-delete` — 批次刪除回饋
+**Request Body**：
+```json
+{
+  "feedback_ids": ["id-1", "id-2"]
+}
+```
+
+**Response 200**：
+```json
+{ "message": "成功刪除 2 筆回饋紀錄" }
+```
+
+---
+
+## 11. 共用錯誤回應格式
+所有 API 錯誤回應均維持標準格式：
 ```json
 {
   "detail": "錯誤訊息描述",
   "error_code": "ERROR_CODE",
-  "timestamp": "2026-06-18T10:00:00Z"
+  "timestamp": "2026-06-30T10:00:00Z"
 }
 ```
-
-| HTTP 狀態碼 | 說明 |
-|:---|:---|
-| 400 | 請求格式錯誤 / 參數驗證失敗 |
-| 401 | 未認證 / Token 過期 |
-| 404 | 資源不存在 |
-| 422 | 請求內容無法處理 |
-| 500 | 伺服器內部錯誤 |
-| 503 | 外部服務不可用 (vLLM / llama.cpp / Qdrant) |
