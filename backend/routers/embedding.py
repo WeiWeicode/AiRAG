@@ -8,7 +8,8 @@ from beanie import PydanticObjectId
 from typing import List
 from schemas.embedding import (
     UploadResponse, ChunkRequest, ChunkResponse, ChunkItem,
-    VectorizeRequest, VectorizeResponse, TagCreate, ClassOptionCreate
+    VectorizeRequest, VectorizeResponse, TagCreate, ClassOptionCreate,
+    SemanticJSONIngestRequest, SemanticJSONIngestResponse
 )
 from services.document_parser import DocumentParser
 from services.chunking_service import ChunkingService
@@ -283,6 +284,77 @@ async def vectorize_chunks(request: VectorizeRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"向量化寫入失敗: {str(e)}"
+        )
+
+@router.post("/vectorize-json", response_model=SemanticJSONIngestResponse)
+async def vectorize_json(request: SemanticJSONIngestRequest):
+    """
+    接收地端多模態 AI 產出的 JSON 資料，使用專門的語義化 AI 模組進行密集向量化，
+    並生成稀疏向量後寫入向量資料庫 Qdrant。
+    """
+    start_time = time.time()
+    try:
+        kb_id = PydanticObjectId(request.knowledge_base_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="無效的知識庫 ID 格式"
+        )
+        
+    kb = await KnowledgeBase.get(kb_id)
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定的知識庫不存在"
+        )
+        
+    if not request.items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="請提供至少一筆 JSON 資料進行向量化"
+        )
+        
+    try:
+        # 1. 準備需要向量化的語義輸入文本清單 (embeddings_input)
+        semantic_texts = [item.embeddings_input for item in request.items]
+        
+        # 2. 批次呼叫新的 get_semantic_embeddings_batch 取得密集向量
+        dense_vectors = await EmbeddingService.get_semantic_embeddings_batch(semantic_texts)
+        
+        # 3. 取得向量維度大小
+        vector_size = 4096  # 預設
+        if dense_vectors and len(dense_vectors[0]) > 0:
+            vector_size = len(dense_vectors[0])
+            
+        # 4. 準備轉換為字典陣列，便於 upsert 處理
+        items_dict = [item.model_dump() for item in request.items]
+        
+        # 5. 寫入 Qdrant (包含自動建立 collection 與 sparse vector 產生)
+        inserted = await QdrantService.upsert_semantic_json_chunks(
+            collection_name=kb.qdrant_collection_name,
+            items=items_dict,
+            dense_vectors=dense_vectors,
+            vector_size=vector_size
+        )
+        
+        # 6. 更新 MongoDB 知識庫的 Chunk 總量
+        kb.chunk_count += inserted
+        kb.updated_at = datetime.utcnow()
+        await kb.save()
+        
+        elapsed = int((time.time() - start_time) * 1000)
+        from config import settings
+        return SemanticJSONIngestResponse(
+            knowledge_base_id=str(kb.id),
+            inserted_count=inserted,
+            embedding_model=settings.EMBEDDING_MODEL,
+            elapsed_ms=elapsed
+        )
+    except Exception as e:
+        logger.error(f"Semantic JSON vectorization or Qdrant ingestion failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"語義 JSON 向量化寫入失敗: {str(e)}"
         )
 
 @router.get("/tags", response_model=List[str])

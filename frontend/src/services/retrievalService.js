@@ -5,6 +5,10 @@ export default {
     const response = await api.post('/api/retrieval/search', payload)
     return response.data
   },
+  async semanticHybridSearch(payload) {
+    const response = await api.post('/api/retrieval/semantic-hybrid-search', payload)
+    return response.data
+  },
   async queryTransform(payload) {
     const response = await api.post('/api/retrieval/query-transform', payload)
     return response.data

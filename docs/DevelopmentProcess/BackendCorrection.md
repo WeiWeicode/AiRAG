@@ -1,5 +1,32 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-06-30 擴充向量檢索端點 `/semantic-hybrid-search` 語義化分析與回傳資料
+
+### 修改內容
+1. `backend/schemas/retrieval.py` (修改):
+   - **擴充 `RetrievalResponse` 欄位**：新增 `semantic_json`、`embeddings_input`、`sparse_keywords`、`query_vector_preview` 與 `vector_size` 等可選屬性，以便將中間分析過程回傳給檢索測試頁面。
+2. `backend/routers/retrieval.py` (修改):
+   - **優化 `/semantic-hybrid-search` 實作**：將其調整為與 RAG 對話路由一致的雙階段處理——先呼叫 Instruct AI 將提問轉為結構化 JSON，再針對產生的 `embeddings_input` 進行語義向量化，並使用 `sparse_keywords` 執行稀疏向量檢索，最後將所有過程的元資料隨檢索結果一同打包回傳給前端。
+
+## 2026-06-30 串接 Instruct 語義化 AI 將提問轉 JSON 與向量化 embeddings_input
+
+### 修改內容
+1. `backend/services/embedding_service.py` (修改):
+   - **新增 `query_to_semantic_json` 方法**：實作將使用者提問發送至 `settings.DENSE_VECTOR_LLAMACPP_BASE_URL` 的 chat completions 端點，並指示 AI 轉換成帶有 `embeddings_input` 與 `sparse_keywords` 的 JSON。當請求失敗時，採用動態降級產出之預設 JSON。
+   - **修正 `get_semantic_embedding` 呼叫端點**：將原呼叫 `settings.DENSE_VECTOR_LLAMACPP_BASE_URL` (8082, Qwen3VL-Instruct 模型，無向量生成能力) 修正為呼叫 `settings.LLAMACPP_BASE_URL` (8081, Qwen3-Embedding-8B 模型)，修復生成向量回傳 0.0 之問題。
+2. `backend/routers/rag.py` (修改):
+   - **串接語義分析與 JSON 回傳**：在 `rag_chat_stream` 的 `semantic_hybrid` 分流中，先發送「正在進行語義分析與結構化轉換」事件，並調用 `EmbeddingService.query_to_semantic_json`。
+   - **生成與檢索向量優化**：在 SSE 狀態內容中渲染產出的 JSON，以 Qwen3-Embedding-8B 密集向量模型對 `embeddings_input` 欄位進行向量化，並將 `sparse_keywords` 拼接成用以執行稀疏檢索的文本。修正日誌步驟中顯示的模型名稱與 Base URL 為正確的 `EMBEDDING_MODEL` 與 `LLAMACPP_BASE_URL`。
+3. `backend/routers/embedding.py` (修改):
+   - **修正 `vectorize-json` 回傳模型資訊**：將回傳 payload 中的 `embedding_model` 欄位由 `settings.DENSE_VECTOR_INSTRUCT_MODEL` 修正為 `settings.EMBEDDING_MODEL`，維持一致性。
+
+## 2026-06-30 修正 RAG 對話路由之 f-string 反斜線語法錯誤與導入設定檔
+
+### 修改內容
+1. `backend/routers/rag.py` (修改):
+   - **導入 settings**：新增 `from config import settings` 導入語句，修正變數 `settings` 未定義之問題。
+   - **獨立 JSON 字典宣告**：將 `rag_chat_stream` 函式中發送「語義分析」與「向量資料查詢」之事件 payload 字典移出 f-string，改為在 `yield` 前先定義為局部變數（`step_data`），避免在 Python 3.12 之前的版本中因 f-string `{}` 內含反斜線而引發 `SyntaxError`。
+
 ## 2026-06-30 修正 SQL Server (FreeTDS) 與資料庫設定參數之空白修剪
 
 ### 修改內容

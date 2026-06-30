@@ -65,6 +65,7 @@ const paramsStore = useParamsStore()
       >
         <option value="vector" class="bg-[#111827] text-white">向量查詢 (Vector Search)</option>
         <option value="hybrid" class="bg-[#111827] text-white">混合查詢 (Hybrid Search)</option>
+        <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合查詢 (Semantic Hybrid Search)</option>
       </select>
     </div>
   </div>

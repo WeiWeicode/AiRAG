@@ -1,4 +1,82 @@
-<!-- 新增功能紀錄 -->
+新增功能
+
+## 2026-06-30 新增語義混合查詢（Semantic Hybrid Search）提問先轉 JSON 與前端按鈕整合
+
+### 功能描述
+實作了當執行「語義混合查詢（semantic_hybrid）」時，將原始提問先發送給 Instruct 語義化 AI（Qwen3VL-8B-Instruct）轉換為語義結構化 JSON，再提取其 embeddings_input 與 sparse_keywords 生成密集/稀疏向量，並與前端對話視窗上方的「語義混合查詢」按鈕整合。
+
+### 實作內容
+1. **後端問答語義分析轉 JSON 方法**：
+   - 於 `backend/services/embedding_service.py` 實作 `query_to_semantic_json` 類別方法，傳送 `question` 至地端 AI 服務的 `/v1/chat/completions`，格式化為包含 `embeddings_input` 與 `sparse_keywords` 的 JSON。
+2. **後端 RAG 串流檢索語義化**：
+   - 於 `backend/routers/rag.py` 中，當 `search_type` 為 `"semantic_hybrid"` 時，發送 `semantic_analysis` SSE 進度，調用 `query_to_semantic_json` 取得結構化 JSON，並於 UI 中以代碼區塊顯式渲染該 JSON。
+   - 將轉換後的 `embeddings_input` 用於 `get_semantic_embedding` 密集向量生成，將 `sparse_keywords` 拼接成文字用於 `FastEmbed` 稀疏向量生成與檢索。
+3. **前端查詢模式切換按鈕**：
+   - 於 `frontend/src/components/chat/ChatWindow.vue` 對話頂部 Header 新增「語義混合查詢」按鈕，使使用者能快速在 `vector`、`hybrid` 與 `semantic_hybrid` 之間切換。
+
+### 修改檔案
+- `backend/services/embedding_service.py` (修改)
+- `backend/routers/rag.py` (修改)
+- `frontend/src/components/chat/ChatWindow.vue` (修改)
+
+## 2026-06-30 新增地端多模態 AI 語義擷取與向量資料庫語義混合查詢 (Semantic Hybrid Search) 功能
+### 功能描述
+規劃並實作了地端多模態 AI 語義處理管線與混合檢索系統。可解析由地端多模態 AI（Qwen3VL-8B-Instruct）生成之結構化 JSON，自動呼叫專門的語義化 AI 模組生成密集向量（Dense Vector），同時結合關鍵字稀疏向量（Sparse Vector），寫入具有自動向量維度偵測之 Qdrant Collection，並於前後端實現語義混合搜尋（Semantic Hybrid Search）與 RRF 分數融合檢索。在 RAG 功能測試對話框中加入語義混合查詢模式，以即時步驟折疊面板（語義分析、向量資料查詢、思考中、結論）動態呈現資料管線的呼叫內容與處理詳情。
+
+### 實作內容
+1. **後端環境變數配置與語義化 AI 模組串接**：
+   - 於 `backend/config.py` 中新增 `DENSE_VECTOR_LLAMACPP_BASE_URL` 與 `DENSE_VECTOR_INSTRUCT_MODEL` 設定，自訂環境變數載入。
+   - 於 `backend/services/embedding_service.py` 實作 `get_semantic_embedding` 與批次取得方法 `get_semantic_embeddings_batch`，當專用服務尚未啟動時，預設回傳符合 4096 維度之模擬零向量作為降級與測試防線。
+2. **Qdrant 資料庫服務維度自適應與批次寫入**：
+   - 於 `backend/services/qdrant_service.py` 修改 `create_collection` 方法支援 `vector_size` 參數；實作 `upsert_semantic_json_chunks`，將 structured JSON 的 `embeddings_input` 用於密集向量生成、將 `sparse_keywords` 串接文本用於 `fastembed` 稀疏向量生成，連同 metadata 與自訂識別碼安全寫入向量資料庫，並提供稀疏向量配置降級支援。
+3. **語義資料匯入與語義混合檢索端點**：
+   - 於 `backend/schemas/embedding.py` 新增 `SemanticJSONItem`、`SemanticJSONIngestRequest` 與 `SemanticJSONIngestResponse` API Schema。
+   - 於 `backend/routers/embedding.py` 新增 `POST /api/embedding/vectorize-json` 語義資料向量化寫入端點。
+   - 於 `backend/routers/retrieval.py` 新增 `POST /api/retrieval/semantic-hybrid-search` 獨立端點，執行語義混合查詢，回傳 `text_content` 作為原始文本欄位。
+4. **前端 JS 服務與語義混合檢索介面整合**：
+   - 於 `frontend/src/services/embeddingService.js` 與 `retrievalService.js` 新增對應 API 端點呼叫。
+   - 於 `frontend/src/views/RetrievalTestView.vue` 檢索下拉選單新增 `語義混合搜尋` 選項並連結對應 endpoint，對 RRF 分數和距離顯示進行自適應相容處理。
+5. **前端 AI 語義 JSON 檔案匯入頁面**：
+   - 新增 `frontend/src/components/embedding/SemanticJSONTab.vue` 提供使用者貼上 JSON 或上傳 JSON 檔案功能，提供即時格式驗證與解析欄位預覽（含 ID、語義輸入、原始內容與關鍵字氣泡），並可選擇知識庫一鍵匯入。
+   - 於 `frontend/src/views/EmbeddingTestView.vue` 中將該 Tab 元件掛載並命名為「地端 AI 語義 JSON 匯入」。
+6. **E2E RAG 功能測試對話框步驟視覺化**：
+   - 於 `backend/routers/rag.py` 的對話串流 `/chat` 增加 SSE 狀態事件 `event: step`，在語義嵌入計算完畢、向量資料庫檢索完畢等管線節點向前端回傳處理細節（如產生之密集向量預覽、召回之文件來源及對應 RRF 相似度分數）。
+   - 於 `frontend/src/components/params/RagParamsPanel.vue` 的檢索模式中加入 `語義混合查詢`。
+   - 於 `frontend/src/stores/chatStore.js` 中新增 SSE step 解析與狀態跟蹤。
+   - 於 `frontend/src/components/chat/MessageBubble.vue` 設計玻璃擬物化的折疊手風琴步驟元件，展示各分析與檢索步驟的即時狀態並支援點擊展開查看內容詳情。
+
+### 修改檔案
+- `backend/config.py` (修改)
+- `backend/services/embedding_service.py` (修改)
+- `backend/services/qdrant_service.py` (修改)
+- `backend/schemas/embedding.py` (修改)
+- `backend/routers/embedding.py` (修改)
+- `backend/routers/retrieval.py` (修改)
+- `backend/routers/rag.py` (修改)
+- `frontend/src/services/embeddingService.js` (修改)
+- `frontend/src/services/retrievalService.js` (修改)
+- `frontend/src/components/embedding/SemanticJSONTab.vue` (新增)
+- `frontend/src/views/EmbeddingTestView.vue` (修改)
+- `frontend/src/components/params/RagParamsPanel.vue` (修改)
+- `frontend/src/stores/chatStore.js` (修改)
+- `frontend/src/components/chat/MessageBubble.vue` (修改)
+- `docs/DevelopmentProcess/NewFeatures.md` (修改)��選單新增 `語義混合搜尋` 選項並連結對應 endpoint，對 RRF 分數和距離顯示進行自適應相容處理。
+5. **前端 AI 語義 JSON 檔案匯入頁面**：
+   - 新增 `frontend/src/components/embedding/SemanticJSONTab.vue` 提供使用者貼上 JSON 或上傳 JSON 檔案功能，提供即時格式驗證與解析欄位預覽（含 ID、語義輸入、原始內容與關鍵字氣泡），並可選擇知識庫一鍵匯入。
+   - 於 `frontend/src/views/EmbeddingTestView.vue` 中將該 Tab 元件掛載並命名為「地端 AI 語義 JSON 匯入」。
+
+### 修改檔案
+- `backend/config.py` (修改)
+- `backend/services/embedding_service.py` (修改)
+- `backend/services/qdrant_service.py` (修改)
+- `backend/schemas/embedding.py` (修改)
+- `backend/routers/embedding.py` (修改)
+- `backend/routers/retrieval.py` (修改)
+- `frontend/src/services/embeddingService.js` (修改)
+- `frontend/src/services/retrievalService.js` (修改)
+- `frontend/src/components/embedding/SemanticJSONTab.vue` (新增)
+- `frontend/src/views/EmbeddingTestView.vue` (修改)
+- `docs/DevelopmentProcess/NewFeatures.md` (修改)
 
 ## 2026-06-30 新增 Word 文件大小雙層檢索 (Parent-Child Retriever) 語意切分與多檔批次上傳支援
 

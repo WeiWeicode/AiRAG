@@ -41,6 +41,11 @@ class RetrievalResponse(BaseModel):
     query: str
     results: List[RetrievalResultItem]
     elapsed_ms: int
+    semantic_json: Optional[Dict[str, Any]] = None
+    embeddings_input: Optional[str] = None
+    sparse_keywords: Optional[List[str]] = None
+    query_vector_preview: Optional[str] = None
+    vector_size: Optional[int] = None
 
 class QueryTransformRequest(BaseModel):
     query: str

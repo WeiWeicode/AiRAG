@@ -68,6 +68,12 @@ export const useChatStore = defineStore('chat', {
         sources: null,
         thinking: '',
         isThinking: false,
+        steps: paramsStore.searchMode === 'semantic_hybrid' ? [
+          { key: 'semantic_analysis', name: '語義分析', status: 'pending', content: '', expanded: false },
+          { key: 'vector_search', name: '向量資料查詢', status: 'pending', content: '', expanded: false },
+          { key: 'llm_thinking', name: '思考中', status: 'pending', content: '', expanded: false },
+          { key: 'conclusion', name: '結論', status: 'pending', content: '', expanded: false }
+        ] : null,
         created_at: new Date().toISOString()
       }
       this.messages.push(assistantMessage)
@@ -184,6 +190,37 @@ export const useChatStore = defineStore('chat', {
                     msg.thinking = thinkingToShow.trim()
                     msg.content = contentToShow
                     msg.isThinking = (reasoningAccumulator.length > 0 && contentToShow.length === 0) || (thinkStartIdx !== -1 && !hasClosedThinkTag)
+
+                    // Update steps dynamically
+                    if (msg.steps) {
+                      if (data.type === 'reasoning' || msg.isThinking) {
+                        const thinkStep = msg.steps.find(s => s.key === 'llm_thinking')
+                        if (thinkStep) {
+                          thinkStep.status = 'running'
+                          thinkStep.content = msg.thinking || reasoningAccumulator
+                        }
+                      }
+                      if (data.type === 'content' && contentToShow.length > 0) {
+                        const thinkStep = msg.steps.find(s => s.key === 'llm_thinking')
+                        if (thinkStep && thinkStep.status === 'running') {
+                          thinkStep.status = 'success'
+                        }
+                        const conclStep = msg.steps.find(s => s.key === 'conclusion')
+                        if (conclStep) {
+                          conclStep.status = 'running'
+                          conclStep.content = contentToShow
+                        }
+                      }
+                    }
+                  }
+                } else if (currentEvent === 'step') {
+                  const msg = this.messages.find(m => m.id === assistantMessageId)
+                  if (msg && msg.steps) {
+                    const stepObj = msg.steps.find(s => s.key === data.step)
+                    if (stepObj) {
+                      stepObj.status = data.status
+                      stepObj.content = data.content
+                    }
                   }
                 } else if (currentEvent === 'sources') {
                   const msg = this.messages.find(m => m.id === assistantMessageId)
@@ -204,12 +241,29 @@ export const useChatStore = defineStore('chat', {
         const msg = this.messages.find(m => m.id === assistantMessageId)
         if (msg) {
           msg.content = `[連線錯誤] 無法取得回覆：${error.message}`
+          if (msg.steps) {
+            const conclStep = msg.steps.find(s => s.key === 'conclusion')
+            if (conclStep) {
+              conclStep.status = 'failed'
+              conclStep.content = `[連線錯誤] ${error.message}`
+            }
+          }
         }
       } finally {
         this.isLoading = false
         const msg = this.messages.find(m => m.id === assistantMessageId)
         if (msg) {
           msg.isThinking = false
+          if (msg.steps) {
+            msg.steps.forEach(s => {
+              if (s.status === 'running' || s.status === 'pending') {
+                s.status = 'success'
+                if (s.key === 'conclusion') {
+                  s.content = msg.content
+                }
+              }
+            })
+          }
         }
       }
     }

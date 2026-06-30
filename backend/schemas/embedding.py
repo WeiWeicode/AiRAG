@@ -56,3 +56,21 @@ class TagCreate(BaseModel):
 class ClassOptionCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
 
+class SemanticJSONItem(BaseModel):
+    id: str
+    text_content: str
+    embeddings_input: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    sparse_keywords: List[str] = Field(default_factory=list)
+
+class SemanticJSONIngestRequest(BaseModel):
+    knowledge_base_id: str
+    items: List[SemanticJSONItem]
+
+class SemanticJSONIngestResponse(BaseModel):
+    knowledge_base_id: str
+    inserted_count: int
+    embedding_model: str
+    elapsed_ms: int
+
+

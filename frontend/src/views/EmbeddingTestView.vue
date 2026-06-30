@@ -4,10 +4,11 @@ import ChunkingParams from '../components/params/ChunkingParams.vue'
 import SingleIndexingTab from '../components/embedding/SingleIndexingTab.vue'
 import BatchIndexingTab from '../components/embedding/BatchIndexingTab.vue'
 import DatabaseIndexingTab from '../components/embedding/DatabaseIndexingTab.vue'
+import SemanticJSONTab from '../components/embedding/SemanticJSONTab.vue'
 import VectorManagementTab from '../components/embedding/VectorManagementTab.vue'
 
 // Tab state
-const activeTab = ref('indexing') // indexing | batch_indexing | database_indexing | management
+const activeTab = ref('indexing') // indexing | batch_indexing | database_indexing | semantic_json | management
 </script>
 
 <template>
@@ -45,6 +46,15 @@ const activeTab = ref('indexing') // indexing | batch_indexing | database_indexi
           資料庫匯入向量化
         </button>
         <button 
+          @click="activeTab = 'semantic_json'" 
+          :class="[
+            'text-sm font-semibold pb-1.5 border-b-2 transition-all',
+            activeTab === 'semantic_json' ? 'text-[#a78bfa] border-[#8b5cf6]' : 'text-[#9ca3af] border-transparent hover:text-white'
+          ]"
+        >
+          地端 AI 語義 JSON 匯入
+        </button>
+        <button 
           @click="activeTab = 'management'" 
           :class="[
             'text-sm font-semibold pb-1.5 border-b-2 transition-all',
@@ -59,6 +69,7 @@ const activeTab = ref('indexing') // indexing | batch_indexing | database_indexi
       <SingleIndexingTab v-if="activeTab === 'indexing'" />
       <BatchIndexingTab v-else-if="activeTab === 'batch_indexing'" />
       <DatabaseIndexingTab v-else-if="activeTab === 'database_indexing'" />
+      <SemanticJSONTab v-else-if="activeTab === 'semantic_json'" />
       <VectorManagementTab v-else-if="activeTab === 'management'" />
     </div>
 

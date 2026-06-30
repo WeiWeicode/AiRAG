@@ -95,6 +95,109 @@ async def search(request: RetrievalRequest):
             detail=f"檢索失敗: {str(e)}"
         )
 
+@router.post("/semantic-hybrid-search", response_model=RetrievalResponse)
+async def semantic_hybrid_search(request: RetrievalRequest):
+    """
+    執行語義混合搜尋：密集向量使用專門的語義化 AI 模組生成，結合稀疏向量做 RRF 混合檢索。
+    """
+    start_time = time.time()
+    try:
+        kb_id = PydanticObjectId(request.knowledge_base_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="無效的知識庫 ID 格式"
+        )
+        
+    kb = await KnowledgeBase.get(kb_id)
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定的知識庫不存在"
+        )
+        
+    try:
+        # 1. 取得查詢字串的語義密集向量與進行 Instruct 語義分析
+        query_vector = None
+        semantic_json = None
+        embeddings_input = None
+        sparse_keywords = None
+        query_vector_preview = None
+        vector_size = None
+        
+        has_query = bool(request.query and request.query.strip())
+        search_query_text = request.query
+        
+        if has_query:
+            # 呼叫 Instruct AI 轉 JSON
+            semantic_json = await EmbeddingService.query_to_semantic_json(request.query)
+            embeddings_input = semantic_json.get("embeddings_input", request.query)
+            sparse_keywords = semantic_json.get("sparse_keywords", [])
+            
+            # 轉換 embeddings_input 為密集向量
+            query_vector = await EmbeddingService.get_semantic_embedding(embeddings_input)
+            if query_vector:
+                query_vector_preview = str(query_vector[:10]) + "..."
+                vector_size = len(query_vector)
+            
+            # 設定用來做稀疏查詢的文本
+            search_query_text = " ".join(sparse_keywords) if sparse_keywords else request.query
+        
+        # 2. 向 Qdrant 進行語義混合檢索 (search_type 強制為 "semantic_hybrid")
+        raw_results = await QdrantService.search_similar(
+            collection_name=kb.qdrant_collection_name,
+            query_vector=query_vector,
+            query_text=search_query_text,
+            search_type="semantic_hybrid",
+            top_k=request.params.top_k,
+            score_threshold=request.params.score_threshold if has_query else 0.0,
+            filter_tags=request.params.filter_tags,
+            filter_filename=request.params.filter_filename,
+            disable_parent_merge=request.params.disable_parent_merge
+        )
+        
+        # 3. 包裝為回應格式
+        results = []
+        for item in raw_results:
+            meta = item.get("metadata", {})
+            results.append(
+                RetrievalResultItem(
+                    chunk_id=item.get("chunk_id"),
+                    content=item.get("content", ""),
+                    metadata=RetrievalMetadata(
+                        filename=meta.get("filename"),
+                        page=meta.get("page"),
+                        section=meta.get("section"),
+                        chunk_index=meta.get("chunk_index"),
+                        tags=meta.get("tags", []),
+                        class_list=meta.get("class", []),
+                        parent_id=meta.get("parent_id"),
+                        function_name=meta.get("function_name"),
+                        type=meta.get("type")
+                    ),
+                    score=item.get("score", 0.0),
+                    distance=item.get("distance", 1.0)
+                )
+            )
+            
+        elapsed = int((time.time() - start_time) * 1000)
+        return RetrievalResponse(
+            query=request.query,
+            results=results,
+            elapsed_ms=elapsed,
+            semantic_json=semantic_json,
+            embeddings_input=embeddings_input,
+            sparse_keywords=sparse_keywords,
+            query_vector_preview=query_vector_preview,
+            vector_size=vector_size
+        )
+    except Exception as e:
+        logger.error(f"Semantic hybrid search failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"語義混合檢索失敗: {str(e)}"
+        )
+
 @router.post("/query-transform", response_model=QueryTransformResponse)
 async def query_transform(request: QueryTransformRequest):
     """

@@ -19,6 +19,7 @@ const elapsedMs = ref(0)
 const originalQuery = ref('')
 const transformedQuery = ref('')
 const activeStrategy = ref('')
+const semanticSteps = ref(null)
 
 // Filename and selection states
 const filenames = ref([])
@@ -66,6 +67,15 @@ const handleSearch = async () => {
   transformedQuery.value = ''
   selectedChunkIds.value = []
   
+  if (searchType.value === 'semantic_hybrid') {
+    semanticSteps.value = [
+      { key: 'semantic_analysis', name: '語義分析', status: 'running', content: '正在發送提問至地端 AI 進行語義分析與結構化轉換...\n原始提問："' + queryText.value.trim() + '"', expanded: true },
+      { key: 'vector_search', name: '向量資料查詢', status: 'pending', content: '', expanded: false }
+    ]
+  } else {
+    semanticSteps.value = null
+  }
+  
   try {
     const parsedFilterTags = paramsStore.filterTagsString.split(',')
       .map(t => t.trim())
@@ -83,10 +93,50 @@ const handleSearch = async () => {
         filter_filename: filterFilename.value || undefined
       }
     }
-    const response = await retrievalService.search(payload)
+    const response = searchType.value === 'semantic_hybrid'
+      ? await retrievalService.semanticHybridSearch(payload)
+      : await retrievalService.search(payload)
     results.value = response.results || []
     elapsedMs.value = response.elapsed_ms || 0
+    
+    if (searchType.value === 'semantic_hybrid' && response && semanticSteps.value) {
+      const jsonStr = response.semantic_json ? JSON.stringify(response.semantic_json, null, 2) : '{}'
+      const embeddingsInput = response.embeddings_input || queryText.value.trim()
+      const vectorPreview = response.query_vector_preview || '無'
+      const vectorSize = response.vector_size || 4096
+
+      semanticSteps.value[0].status = 'success'
+      semanticSteps.value[0].expanded = false
+      semanticSteps.value[0].content = 
+        `【地端 AI 語義密集嵌入】\n` +
+        `結構化 JSON：\n` +
+        `\`\`\`json\n${jsonStr}\n\`\`\`\n` +
+        `密集向量模型: ${response.embedding_model || 'Qwen3-Embedding-8B-Q8_0.gguf'}\n` +
+        `向量維度: ${vectorSize}\n` +
+        `部分向量: ${vectorPreview}`
+
+      const count = response.results ? response.results.length : 0
+      const elapsed = response.elapsed_ms || 0
+      const keywords = response.sparse_keywords ? response.sparse_keywords.join(', ') : '無'
+
+      semanticSteps.value[1].status = 'success'
+      semanticSteps.value[1].expanded = true
+      semanticSteps.value[1].content = 
+        `【Qdrant 向量資料庫檢索與融合】\n` +
+        `檢索模式: 語義混合搜尋 (Semantic Hybrid Search)\n` +
+        `稀疏關鍵字: [${keywords}]\n` +
+        `混合檢索結果: 成功尋得 ${count} 筆向量段落\n` +
+        `資料檢索與 RRF 融合耗時: ${elapsed} ms`
+    }
   } catch (error) {
+    if (semanticSteps.value) {
+      semanticSteps.value.forEach(step => {
+        if (step.status === 'running') {
+          step.status = 'failed'
+          step.content = '執行出錯：' + error.message
+        }
+      })
+    }
     console.error('Retrieval search failed:', error)
     alert('搜尋失敗，請檢查後端連線或參數設定')
   } finally {
@@ -206,28 +256,6 @@ const handleBatchDelete = async () => {
         <div class="flex justify-between items-center mb-4 flex-shrink-0">
           <div class="flex items-center gap-4">
             <h3 class="font-semibold text-white text-sm">搜尋結果 ({{ results.length }} 筆)</h3>
-            <div v-if="results.length > 0" class="flex items-center gap-3 border-l border-white/10 pl-4">
-              <label class="flex items-center gap-1.5 text-xs text-[#9ca3af] cursor-pointer select-none">
-                <input 
-                  type="checkbox" 
-                  :checked="isAllSelected" 
-                  @change="toggleSelectAll"
-                  class="rounded bg-white/5 border-white/10 text-[#8b5cf6] focus:ring-[#8b5cf6]/50 cursor-pointer"
-                />
-                全選
-              </label>
-              <button 
-                v-if="selectedChunkIds.length > 0"
-                @click="handleBatchDelete"
-                class="bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 px-2.5 py-1 rounded text-xs font-semibold flex items-center gap-1 transition-all"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="3 6 5 6 21 6"></polyline>
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                </svg>
-                刪除所選 ({{ selectedChunkIds.length }})
-              </button>
-            </div>
           </div>
           <span v-if="elapsedMs" class="text-xs text-[#6b7280]">查詢耗時: <strong class="text-white">{{ elapsedMs }}</strong> ms</span>
         </div>
@@ -243,6 +271,59 @@ const handleBatchDelete = async () => {
           </div>
           <div class="pt-1.5 border-t border-white/5">
             轉換後查詢：<span class="text-white font-medium">{{ transformedQuery }}</span>
+          </div>
+        </div>
+
+        <!-- RAG Steps Process (for semantic_hybrid) -->
+        <div v-if="semanticSteps && semanticSteps.length > 0" class="mb-4 flex flex-col gap-2 flex-shrink-0">
+          <div class="text-[10px] text-white/40 font-semibold uppercase tracking-wider mb-1">語義混合查詢分析步驟</div>
+          
+          <div 
+            v-for="step in semanticSteps" 
+            :key="step.key" 
+            class="border border-white/10 rounded-xl bg-white/3 overflow-hidden transition-all"
+            :class="{ 'border-[#8b5cf6]/20 bg-[#8b5cf6]/5': step.status === 'running' }"
+          >
+            <!-- Step Header -->
+            <button 
+              @click="step.expanded = !step.expanded"
+              class="w-full flex items-center justify-between px-4 py-2.5 text-xs text-white/70 hover:text-white hover:bg-white/5 transition-all focus:outline-none"
+            >
+              <div class="flex items-center gap-2.5">
+                <!-- Status icon -->
+                <span v-if="step.status === 'pending'" class="w-3.5 h-3.5 rounded-full border border-white/20 flex-shrink-0"></span>
+                <svg v-else-if="step.status === 'running'" class="animate-spin h-3.5 w-3.5 text-purple-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <svg v-else-if="step.status === 'success'" class="h-3.5 w-3.5 text-emerald-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <svg v-else-if="step.status === 'failed'" class="h-3.5 w-3.5 text-red-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+                <span class="font-semibold text-white/80">{{ step.name }}</span>
+                <span v-if="step.status === 'running'" class="text-[9px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded font-normal animate-pulse">執行中</span>
+              </div>
+              
+              <!-- Chevron -->
+              <svg 
+                class="w-3.5 h-3.5 transition-transform duration-200 text-white/40" 
+                :class="{ 'rotate-180': step.expanded }"
+                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+              >
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
+            
+            <!-- Step Content -->
+            <div 
+              v-show="step.expanded"
+              class="px-4 pb-3.5 pt-1.5 border-t border-white/5 text-xs text-white/60 whitespace-pre-wrap font-mono leading-relaxed max-h-[300px] overflow-y-auto bg-[#0a0f1d]/50"
+            >
+              {{ step.content || '尚無詳細資訊...' }}
+            </div>
           </div>
         </div>
 
@@ -268,12 +349,6 @@ const handleBatchDelete = async () => {
           >
             <div class="flex justify-between items-center gap-4 mb-3 border-b border-white/5 pb-2">
               <span class="text-xs font-semibold text-white truncate flex items-center gap-2 flex-grow min-w-0">
-                <input 
-                  type="checkbox" 
-                  v-model="selectedChunkIds"
-                  :value="res.chunk_id"
-                  class="rounded bg-white/5 border-white/10 text-[#8b5cf6] focus:ring-[#8b5cf6]/50 cursor-pointer flex-shrink-0"
-                />
                 <span class="truncate">[{{ res.metadata?.filename || '未知檔案' }}] P.{{ res.metadata?.page || '?' }}</span>
                 <span class="text-[#6b7280] flex-shrink-0">段落索引: #{{ res.metadata?.chunk_index || idx }}</span>
                 <span v-if="res.metadata?.tags?.length" class="flex gap-1 flex-shrink-0">
@@ -288,23 +363,11 @@ const handleBatchDelete = async () => {
               </span>
               <div class="flex gap-2 items-center flex-shrink-0">
                 <span class="bg-[#10b981]/15 text-[#10b981] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
-                  {{ searchType === 'hybrid' ? 'RRF Score' : 'Score' }}: {{ (res.score || 0).toFixed(4) }}
+                  {{ ['hybrid', 'semantic_hybrid'].includes(searchType) ? 'RRF Score' : 'Score' }}: {{ (res.score || 0).toFixed(4) }}
                 </span>
-                <span v-if="searchType !== 'hybrid' && res.distance" class="bg-[#3b82f6]/15 text-[#3b82f6] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
+                <span v-if="!['hybrid', 'semantic_hybrid'].includes(searchType) && res.distance" class="bg-[#3b82f6]/15 text-[#3b82f6] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
                   Distance: {{ (res.distance || 0).toFixed(4) }}
                 </span>
-                <button 
-                  @click="handleDeleteSingle(res.chunk_id)" 
-                  class="text-red-400 hover:text-red-300 hover:bg-red-500/10 p-1 rounded transition-all ml-1"
-                  title="刪除此向量段落"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="3 6 5 6 21 6"></polyline>
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                    <line x1="10" y1="11" x2="10" y2="17"></line>
-                    <line x1="14" y1="11" x2="14" y2="17"></line>
-                  </svg>
-                </button>
               </div>
             </div>
             
@@ -395,6 +458,7 @@ const handleBatchDelete = async () => {
           >
             <option value="vector" class="bg-[#111827] text-white">向量搜尋 (Vector Search)</option>
             <option value="hybrid" class="bg-[#111827] text-white">混合搜尋 (Hybrid Search)</option>
+            <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合搜尋 (Semantic Hybrid Search)</option>
           </select>
         </div>
 
@@ -442,6 +506,7 @@ const handleBatchDelete = async () => {
             <ul class="list-disc pl-4 mt-0.5 space-y-0.5">
               <li><span class="text-[#a78bfa]">向量搜尋</span>：依據語意概念進行特徵相似度比對。</li>
               <li><span class="text-[#a78bfa]">混合搜尋</span>：結合語意搜尋與傳統全文關鍵字檢索。</li>
+              <li><span class="text-[#a78bfa]">語義混合搜尋</span>：透過專用語義模組對自然語言進行語意密集檢索，並融合關鍵字稀疏檢索進行 RRF 加速。</li>
             </ul>
           </div>
           

@@ -103,6 +103,17 @@ const handleNewChat = () => {
           >
             混合查詢
           </button>
+          <button 
+            @click="paramsStore.searchMode = 'semantic_hybrid'"
+            :class="[
+              'px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all',
+              paramsStore.searchMode === 'semantic_hybrid' 
+                ? 'bg-[#8b5cf6] text-white shadow-[0_2px_8px_rgba(139,92,246,0.3)]' 
+                : 'text-[#9ca3af] hover:text-white hover:bg-white/5'
+            ]"
+          >
+            語義混合查詢
+          </button>
         </div>
       </div>
 

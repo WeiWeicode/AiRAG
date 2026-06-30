@@ -19,6 +19,10 @@ export default {
     const response = await api.post('/api/embedding/vectorize', payload)
     return response.data
   },
+  async vectorizeJson(payload) {
+    const response = await api.post('/api/embedding/vectorize-json', payload)
+    return response.data
+  },
   async getTags() {
     const response = await api.get('/api/embedding/tags')
     return response.data

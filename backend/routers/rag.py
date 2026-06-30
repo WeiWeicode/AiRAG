@@ -11,6 +11,7 @@ from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
 from utils.security import get_current_user
+from config import settings
 
 logger = logging.getLogger("airag.rag_router")
 router = APIRouter(prefix="/rag", tags=["RAG"], dependencies=[Depends(get_current_user)])
@@ -69,13 +70,94 @@ async def rag_chat_stream(request: ChatRequest):
             kb = await KnowledgeBase.get(kb_id)
             if kb:
                 try:
+                    # 發送「語義分析」進行中事件
+                    step_data = {
+                        "step": "semantic_analysis",
+                        "status": "running",
+                        "content": f"開始將問題轉換為嵌入向量...\n原始提問：\"{question}\""
+                    }
+                    yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
+                    
                     # 取得提問向量
-                    query_vector = await EmbeddingService.get_embedding(question)
+                    if search_type == "semantic_hybrid":
+                        # 先發送進行中事件表示在進行 Instruct 語義分析
+                        step_data = {
+                            "step": "semantic_analysis",
+                            "status": "running",
+                            "content": f"正在發送提問至地端 AI ({settings.DENSE_VECTOR_INSTRUCT_MODEL}) 進行語義分析與結構化轉換...\n原始提問：\"{question}\""
+                        }
+                        yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
+                        
+                        # 呼叫 Instruct AI 轉 JSON
+                        semantic_json = await EmbeddingService.query_to_semantic_json(question)
+                        embeddings_input = semantic_json.get("embeddings_input", question)
+                        sparse_keywords = semantic_json.get("sparse_keywords", [])
+                        
+                        # 顯示結構化 JSON
+                        json_str = json.dumps(semantic_json, indent=2, ensure_ascii=False)
+                        step_data = {
+                            "step": "semantic_analysis",
+                            "status": "running",
+                            "content": (
+                                f"【地端 AI 語義分析結果】\n"
+                                f"結構化 JSON：\n"
+                                f"```json\n{json_str}\n```\n"
+                                f"正在產生密集向量（輸入：\"{embeddings_input}\"，模型：{settings.EMBEDDING_MODEL}）..."
+                            )
+                        }
+                        yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
+                        
+                        # 轉換 embeddings_input 為密集向量
+                        query_vector = await EmbeddingService.get_semantic_embedding(embeddings_input)
+                        vector_preview = str(query_vector[:10]) + "..."
+                        
+                        step_data = {
+                            "step": "semantic_analysis",
+                            "status": "success",
+                            "content": (
+                                f"【地端 AI 語義密集嵌入】\n"
+                                f"結構化 JSON：\n"
+                                f"```json\n{json_str}\n```\n"
+                                f"密集向量模型: {settings.EMBEDDING_MODEL}\n"
+                                f"Base URL: {settings.LLAMACPP_BASE_URL}\n"
+                                f"向量維度: {len(query_vector)}\n"
+                                f"部分向量: {vector_preview}"
+                            )
+                        }
+                        yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
+                        
+                        # 設定用來做稀疏查詢的文本
+                        search_query_text = " ".join(sparse_keywords) if sparse_keywords else question
+                    else:
+                        query_vector = await EmbeddingService.get_embedding(question)
+                        vector_preview = str(query_vector[:10]) + "..."
+                        step_data = {
+                            "step": "semantic_analysis",
+                            "status": "success",
+                            "content": (
+                                f"【標準語義密集嵌入】\n"
+                                f"Base URL: {settings.LLAMACPP_BASE_URL}\n"
+                                f"向量維度: {len(query_vector)}\n"
+                                f"部分向量: {vector_preview}"
+                            )
+                        }
+                        yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
+                        
+                        search_query_text = question
+                    
+                    # 發送「向量資料查詢」進行中事件
+                    step_data = {
+                        "step": "vector_search",
+                        "status": "running",
+                        "content": f"正在進行資料庫檢索...\n檢索模式: {search_type}\nTop-K: {top_k}\n最低相似度閾值: {score_threshold}"
+                    }
+                    yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
+
                     # Qdrant 相似度與雙路融合檢索
                     raw_results = await QdrantService.search_similar(
                         collection_name=kb.qdrant_collection_name,
                         query_vector=query_vector,
-                        query_text=question,
+                        query_text=search_query_text,
                         search_type=search_type,
                         top_k=top_k,
                         score_threshold=score_threshold,
@@ -84,7 +166,8 @@ async def rag_chat_stream(request: ChatRequest):
                     
                     # 整理 Chunks 為 Context
                     context_parts = []
-                    for item in raw_results:
+                    retrieved_summary = []
+                    for idx, item in enumerate(raw_results):
                         meta = item.get("metadata", {})
                         sources.append({
                             "chunk_id": item.get("chunk_id"),
@@ -101,15 +184,34 @@ async def rag_chat_stream(request: ChatRequest):
                         chunk_idx = meta.get("chunk_index")
                         chunk_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
                         context_parts.append(f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{item.get('content', '')}")
-                    
+                        
+                        score_label = "RRF Score" if search_type in ["hybrid", "semantic_hybrid"] else "Score"
+                        retrieved_summary.append(f"[{idx+1}] 來源文件：{meta.get('filename', '未知')} | P.{meta.get('page', '?')} | {score_label}: {item.get('score', 0.0):.4f}\\n內容預覽：{item.get('content', '')[:100]}...")
+
                     if context_parts:
                         context_str = "\n---\n".join(context_parts)
+                        search_details = f"檢索模式: {search_type}\\n Collection: {kb.qdrant_collection_name}\\n成功召回 {len(raw_results)} 筆相關段落：\\n\\n" + "\\n\\n".join(retrieved_summary)
+                    else:
+                        search_details = "向量檢索完成。沒有找到符合相似度閥值限制的相關資料。"
+                    
+                    yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': search_details}, ensure_ascii=False)}\n\n"
+
                 except Exception as inner_e:
                     logger.error(f"Failed to perform vector search or embedding for RAG: {inner_e}")
+                    yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'failed', 'content': f'向量資料查詢錯誤: {str(inner_e)}'}, ensure_ascii=False)}\n\n"
             else:
                 logger.warning(f"Knowledge base with ID {kb_id} not found.")
+                yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'failed', 'content': f'找不到指定的知識庫 ID: {kb_id}'}, ensure_ascii=False)}\n\n"
         except Exception as outer_e:
             logger.error(f"Invalid knowledge_base_id format or error loading KB: {outer_e}")
+            yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'failed', 'content': f'知識庫 ID 格式錯誤或載入失敗: {str(outer_e)}'}, ensure_ascii=False)}\n\n"
+    else:
+        yield f"event: step\ndata: {json.dumps({'step': 'semantic_analysis', 'status': 'success', 'content': '無目標知識庫，略過語義分析。'}, ensure_ascii=False)}\n\n"
+        yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': '無目標知識庫，略過向量資料查詢。'}, ensure_ascii=False)}\n\n"
+
+    # 發送模型推理思考步驟事件
+    yield f"event: step\ndata: {json.dumps({'step': 'llm_thinking', 'status': 'running', 'content': '正在整理思緒...'}, ensure_ascii=False)}\n\n"
+    yield f"event: step\ndata: {json.dumps({'step': 'conclusion', 'status': 'pending', 'content': ''}, ensure_ascii=False)}\n\n"
 
     # 2. 構建 System Prompt 與 Messages
     if context_str:

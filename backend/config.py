@@ -20,6 +20,10 @@ class Settings:
     LLAMACPP_BASE_URL: str = os.getenv("LLAMACPP_BASE_URL", "http://localhost:8081")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "Qwen3-Embedding-8B-Q8_0.gguf")
 
+    # llama.cpp (Instruct 語義化)
+    DENSE_VECTOR_LLAMACPP_BASE_URL: str = os.getenv("DenseVector_LLAMACPP_BASE_URL", "http://localhost:8082")
+    DENSE_VECTOR_INSTRUCT_MODEL: str = os.getenv("DenseVector_INSTRUCT_MODEL", "Qwen3VL-8B-Instruct-Q4_K_M.gguf")
+
     # Qdrant
     QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
     QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))

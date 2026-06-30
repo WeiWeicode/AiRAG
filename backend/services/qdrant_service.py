@@ -17,9 +17,9 @@ class QdrantService:
         return cls._client
 
     @classmethod
-    async def create_collection(cls, collection_name: str) -> bool:
+    async def create_collection(cls, collection_name: str, vector_size: int = 4096) -> bool:
         """
-        若 Collection 不存在則建立，設定向量維度為 4096，使用 Cosine 相似度。
+        若 Collection 不存在則建立，設定向量維度（預設為 4096），使用 Cosine 相似度。
         並新增 sparse-text 稀疏向量空間支援。
         """
         client = cls.get_client()
@@ -29,7 +29,7 @@ class QdrantService:
                 await client.create_collection(
                     collection_name=collection_name,
                     vectors_config=models.VectorParams(
-                        size=4096,  # 配合 Qwen3-Embedding-8B
+                        size=vector_size,  # 動態對齊模型維度
                         distance=models.Distance.COSINE
                     ),
                     sparse_vectors_config={
@@ -44,7 +44,7 @@ class QdrantService:
                         ef_construct=100
                     )
                 )
-                logger.info(f"Qdrant collection '{collection_name}' created successfully.")
+                logger.info(f"Qdrant collection '{collection_name}' created successfully with size {vector_size}.")
             
             # 確保 'content' 欄位有建立全文檢索 Text Index，以支援 Exact keyword MatchText 查詢
             try:
@@ -65,6 +65,89 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Failed to create Qdrant collection '{collection_name}': {e}")
             return False
+
+    @classmethod
+    async def upsert_semantic_json_chunks(
+        cls,
+        collection_name: str,
+        items: List[Dict[str, Any]],
+        dense_vectors: List[List[float]],
+        vector_size: int = 4096
+    ) -> int:
+        """
+        批次將地端 AI 生成的語義 JSON 資料與其 Dense/Sparse 向量寫入 Qdrant。
+        """
+        client = cls.get_client()
+        from datetime import datetime
+        # 確保 Collection 存在，使用指定的 Dense 向量長度
+        await cls.create_collection(collection_name, vector_size=vector_size)
+        
+        # 批次生成 Chunks 的稀疏向量 (使用其 sparse_keywords 串接的文本)
+        from services.sparse_embedding_service import SparseEmbeddingService
+        sparse_texts = [" ".join(item.get("sparse_keywords", [])) for item in items]
+        sparse_vectors = SparseEmbeddingService.get_sparse_vectors_batch(sparse_texts)
+        
+        points = []
+        for i, item in enumerate(items):
+            point_id = str(uuid.uuid4())
+            
+            # 建立 metadata payload
+            payload = {
+                "content": item.get("text_content", ""),
+                "embeddings_input": item.get("embeddings_input", ""),
+                "filename": item.get("metadata", {}).get("source_file", "unknown"),
+                "page": item.get("metadata", {}).get("page_number", 1),
+                "section": item.get("metadata", {}).get("category", ""),
+                "tags": [item.get("metadata", {}).get("category")] if item.get("metadata", {}).get("category") else [],
+                "custom_id": item.get("id"),
+                "sparse_keywords": item.get("sparse_keywords", []),
+                "source": "json_semantic",
+                "created_at": item.get("metadata", {}).get("created_at") or datetime.utcnow().isoformat()
+            }
+            # 合併原 metadata 中的其他屬性
+            for k, v in item.get("metadata", {}).items():
+                if k not in ["source_file", "page_number", "category", "created_at"]:
+                    payload[k] = v
+                    
+            points.append(
+                models.PointStruct(
+                    id=point_id,
+                    vector={
+                        "": dense_vectors[i],
+                        "sparse-text": sparse_vectors[i]
+                    },
+                    payload=payload
+                )
+            )
+            
+        try:
+            await client.upsert(
+                collection_name=collection_name,
+                points=points
+            )
+            logger.info(f"Upserted {len(points)} semantic points into Qdrant collection '{collection_name}'.")
+            return len(points)
+        except Exception as e:
+            error_str = str(e)
+            if "sparse-text" in error_str:
+                logger.warning("Fallback: upserting semantic points with dense vectors only.")
+                points_dense_only = []
+                for i, p in enumerate(points):
+                    points_dense_only.append(
+                        models.PointStruct(
+                            id=p.id,
+                            vector=dense_vectors[i],
+                            payload=p.payload
+                        )
+                    )
+                await client.upsert(
+                    collection_name=collection_name,
+                    points=points_dense_only
+                )
+                return len(points_dense_only)
+            else:
+                logger.error(f"Failed to upsert semantic points to Qdrant: {e}")
+                raise e
 
     @classmethod
     async def delete_collection(cls, collection_name: str) -> bool:
@@ -193,7 +276,7 @@ class QdrantService:
             if must_conditions:
                 query_filter = models.Filter(must=must_conditions)
             
-            if search_type == "hybrid" and query_vector is not None and query_text is not None and query_text.strip():
+            if search_type in ["hybrid", "semantic_hybrid"] and query_vector is not None and query_text is not None and query_text.strip():
                 try:
                     from services.sparse_embedding_service import SparseEmbeddingService
                     query_sparse = SparseEmbeddingService.get_sparse_vector(query_text)

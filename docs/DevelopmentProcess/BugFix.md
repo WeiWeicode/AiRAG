@@ -1,5 +1,19 @@
 <!-- BUG修正 -->
 
+## 2026-06-30 修正 Python 3.11 環境下 RAG API 產生的 f-string 語法錯誤與 settings 未定義問題
+
+### 問題描述
+後端 Docker 容器在啟動時（採用 Python 3.11 運作環境），Uvicorn 啟動失敗並拋出以下錯誤：
+`SyntaxError: f-string expression part cannot include a backslash`（在 `backend/routers/rag.py` 第 73 行）。
+原因在於 Python 3.12 之前的版本中，f-string 內部 `{...}` 運算式中不允許包含反斜線符號（如 `\n` 或 `\"`）。此外，`backend/routers/rag.py` 內使用了 `settings` 變數但並未導入 `config` 中的 `settings`。
+
+### 解決方案
+1. **獨立 JSON 字典宣告**：將 `json.dumps` 內的字典（例如含有 `\\n` 或 `\n` 換行的 content 訊息）從雙引號 f-string 巢狀運算式中抽離，在 `yield` 前先定義為常規的 `step_data` 字典，再以 `json.dumps(step_data)` 序列化傳入，消除 f-string 內的反斜線。
+2. **導入 settings**：於 `backend/routers/rag.py` 頂部導入 `from config import settings`。
+
+### 修改檔案
+- `backend/routers/rag.py`
+
 ## 2026-06-30 修正批次上傳 MD 檔案無法解析切分之問題
 
 ### 問題描述
