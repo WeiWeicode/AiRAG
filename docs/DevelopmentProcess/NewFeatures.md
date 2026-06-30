@@ -1,5 +1,51 @@
 <!-- 新增功能紀錄 -->
 
+## 2026-06-30 新增 Word 文件大小雙層檢索 (Parent-Child Retriever) 語意切分與多檔批次上傳支援
+
+### 功能描述
+規劃並實作了針對 Word 文件（包含 `.docx`, `.doc`, `.dotx` 副檔名）的大小雙層（Parent-Child Retriever）語意切分策略。先將 Word 結構化轉換為 Markdown，精準提取多層級 Heading 樣式作為結構邊界，且支援清單與表格的 Markdown 格式轉換；再呼叫 Markdown 切分器生成子區塊並前置注入標題路徑進行語意增強，最後將此能力與前端多 Word 檔案佇列及後端 API 完成深度整合。
+
+### 實作內容
+1. **後端 Word 結構化解析與 Parent-Child 切分服務**：
+   - 於 `backend/services/word_parent_child_chunker.py` 實作全新的 Word 區塊解析與切分服務。
+   - 使用 `python-docx` 遍歷段落和表格，將 `Heading 1` ~ `Heading 3` 或帶有 outline_level 的段落映射為 `#`、`##`、`###` 標題。
+   - 處理清單樣式前置 `* ` 或 `1. ` 符號，並將 Word 表格格式化為標準 Markdown 表格。
+   - 針對 `.doc` 舊版 Word 檔案建立具高容錯度的轉換路徑，結合 `textract`、`pypandoc`、`comtypes`（Windows）及備用的 ASCII/非 ASCII 純文字提取器。
+   - 將 Word 轉換出的 Markdown 文本丟入 `chunk_markdown_content` 進行大小雙層切分，並自動為 Child Chunks 加上標題階層前綴（例如 `[第一章 > 1.1 功能]`）與綁定 `parent_id`。
+2. **後端 API /chunk 端點與分流擴充**：
+   - 於 `backend/services/document_parser.py` 將 `.docx`, `.doc`, `.dotx` 解碼分流整合至 `parse_file` 中，使上傳預覽階段直接輸出 Markdown 內容。
+   - 於 `backend/routers/embedding.py` 的 `/chunk` 端點中，將 `is_word` 副檔名納入雙層結構處理範圍，自動計算並在 Child Chunks Metadata 注入 `parent_chunk_index_range` 索引範圍與 `file_type`。
+3. **前端批次寫入支援多 Word 檔案**：
+   - 於 `frontend/src/components/embedding/BatchIndexingTab.vue` 中，將 Word 的下拉選項改為 `Word (.docx, .doc, .dotx)`。
+   - 支援多 Word 副檔名上傳過濾、拖曳驗證與 MIME 類型過濾。
+   - 當選取 Word 類型時，透過 watch 自動啟用 `parent_child` 切分模式，並預設帶入 `250` 字元 size 與 `50` 字元 overlap。
+4. **單元測試與容器編譯驗證**：
+   - 於 `backend/tests/test_word_chunker.py` 建立完整的自動化測試，模擬包含標題、內文、清單、表格的 `.docx` 文件，驗證其 Markdown 標題、清單、表格轉換、Child 標題路徑注入及 Metadata 欄位完整性，測試成功通過。
+   - 完成 Docker 後端容器重建編譯並通過前端 `npm run build` 打包校正。
+
+### 修改檔案
+- `backend/services/word_parent_child_chunker.py` (新增)
+- `backend/services/document_parser.py` (修改)
+- `backend/routers/embedding.py` (修改)
+- `frontend/src/components/embedding/BatchIndexingTab.vue` (修改)
+- `backend/tests/test_word_chunker.py` (新增)
+
+## 2026-06-30 新增 Markdown 大小雙層檢索 (Parent-Child Retriever) 語意切分工具
+
+### 功能描述
+規劃並實作了針對 Markdown (.md) 檔案的大小雙層切分（Parent-Child Retriever）檢索優化腳本。第一步精準依據 Markdown 的多層級標題（如 `#`, `##`, `###`）切分出 Parent Chunks，第二步將其內容依據字元長度切分出 Child Chunks，並自動加上該區塊所屬的完整標題路徑作為前綴以進行語意增強，方便寫入 Qdrant 或 Chroma 向量資料庫。
+
+### 實作內容
+1. **後端大小雙層切分腳本新增**：
+   - 於 `backend/services/markdown_parent_child_chunker.py` 實作 Markdown 大小雙層切分工具。
+   - 呼叫 `langchain_text_splitters.MarkdownHeaderTextSplitter` 與 `RecursiveCharacterTextSplitter` 進行邏輯與字元重疊切分。
+   - 實作標題路徑重建與字串拼接，為 Child Chunks 前置注入 `[標題1 > 標題2]` 前綴，並妥善綁定 `parent_id`、`source_file` 與 `header_path` 等 rich metadata。
+   - 在腳本的 `if __name__ == "__main__":` 區塊提供完整的單機模擬與測試功能。
+
+### 修改檔案
+- `backend/services/markdown_parent_child_chunker.py` (新增)
+
+
 ## 2026-06-29 新增 Genero .4fd 畫面定義檔大小雙層檢索 (Parent-Child Retriever) 解析與批次寫入支援
 
 ### 功能描述

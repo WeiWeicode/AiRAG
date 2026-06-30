@@ -54,10 +54,12 @@ async def chunk_text(request: ChunkRequest):
     依據設定切分純文字。
     """
     try:
-        # 檢查是否啟用大小雙層 (Parent-Child) 語法切分或是 4GL/4FD 檔案
+        # 檢查是否啟用大小雙層 (Parent-Child) 語法切分或是 4GL/4FD/MD/Word 檔案
         is_4fd = request.filename and request.filename.lower().endswith('.4fd')
         is_4gl = request.filename and request.filename.lower().endswith('.4gl')
-        if request.params.chunk_mode == "parent_child" or is_4gl or is_4fd:
+        is_md = request.filename and (request.filename.lower().endswith('.md') or request.filename.lower().endswith('.markdown'))
+        is_word = request.filename and (request.filename.lower().endswith('.docx') or request.filename.lower().endswith('.doc') or request.filename.lower().endswith('.dotx'))
+        if request.params.chunk_mode == "parent_child" or is_4gl or is_4fd or is_md or is_word:
             all_children = []
             idx = 0
             
@@ -88,6 +90,46 @@ async def chunk_text(request: ChunkRequest):
                             metadata=child_metadata
                         ))
                         idx += 1
+            elif is_md or is_word:
+                from services.markdown_parent_child_chunker import chunk_markdown_content
+                fname = request.filename or ("unknown.md" if is_md else "unknown.docx")
+                children = chunk_markdown_content(
+                    markdown_content=request.content,
+                    filename=fname,
+                    child_size=request.params.chunk_size,
+                    child_overlap=request.params.chunk_overlap,
+                    use_langchain=True
+                )
+                
+                # 計算每個 parent_id 對應的 Child Chunks 索引範圍
+                parent_to_indices = {}
+                for child_idx, child in enumerate(children):
+                    pid = child["metadata"]["parent_id"]
+                    if pid not in parent_to_indices:
+                        parent_to_indices[pid] = []
+                    parent_to_indices[pid].append(child_idx)
+                
+                for child_idx, child in enumerate(children):
+                    pid = child["metadata"]["parent_id"]
+                    indices = parent_to_indices[pid]
+                    start_idx = indices[0]
+                    end_idx = indices[-1]
+                    parent_range = f"{start_idx}~{end_idx}" if len(indices) > 1 else str(start_idx)
+                    
+                    child_metadata = dict(child["metadata"])
+                    child_metadata["parent_chunk_index_range"] = parent_range
+                    child_metadata["file_type"] = fname.split('.')[-1].lower()
+                    
+                    all_children.append(ChunkItem(
+                        index=idx,
+                        content=child["child_content"],
+                        token_count=ChunkingService.estimate_tokens(child["child_content"]),
+                        char_count=len(child["child_content"]),
+                        start_char=0,
+                        end_char=len(child["child_content"]),
+                        metadata=child_metadata
+                    ))
+                    idx += 1
             else:
                 from services.parent_child_chunker import parse_4gl_to_parents, slice_to_children
                 fname = request.filename or "unknown.4gl"

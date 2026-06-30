@@ -160,7 +160,8 @@ class QdrantService:
         top_k: int = 5, 
         score_threshold: float = 0.7,
         filter_tags: Optional[List[str]] = None,
-        filter_filename: Optional[str] = None
+        filter_filename: Optional[str] = None,
+        disable_parent_merge: bool = False
     ) -> List[Dict[str, Any]]:
         """
         依據向量相似度檢索資料塊（可切換純向量或 Hybrid 雙路 RRF 混合檢索）。
@@ -326,6 +327,9 @@ class QdrantService:
                     "score": score,
                     "distance": 1.0 - score
                 })
+            
+            if disable_parent_merge:
+                return temp_results
             
             # 2. 根據 parent_id 進行去重 (保留分數高者)
             seen_parents = set()

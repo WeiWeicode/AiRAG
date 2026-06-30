@@ -1,5 +1,25 @@
 <!-- BUG修正 -->
 
+## 2026-06-30 修正批次上傳 MD 檔案無法解析切分之問題
+
+### 問題描述
+在「自動分批寫入」分頁中，上傳並解析 `.md` 檔案時，前端會拋出「切分後未生成任何 Chunks」的錯誤且無法解析。原因在於：
+1. 後端 `backend/routers/embedding.py` 的 `/chunk` 路由在判斷 `parent_child` 模式時，未特別處理 `.md` 副檔名，使其進入 fallback 機制，被當作 `.4gl` 程式碼檔案呼叫 `parse_4gl_to_parents` 解析。因為 Markdown 檔案不含 4GL 的 `FUNCTION ... END FUNCTION` 等宣告，導致解析結果為空，無法生成 any Chunks。
+2. 前端 `BatchIndexingTab.vue` 中在選擇 `.md` 限制副檔名時，預設將 `batchChunkModeExt` 切分模式設為 `'standard'`（標準字元切分），但當使用者想要套用 Markdown 父子雙層（Parent-Child）結構切分時，缺乏合適的預設對接，且後端亦未提供 API 連接。
+
+### 解決方案
+1. **後端支援 Markdown 父子區塊切分 API 整合**：
+   - 於 `backend/services/markdown_parent_child_chunker.py` 中重構 `chunk_markdown_file`，將其實作解耦並抽離出 `chunk_markdown_content` 函數，支援直接在記憶體中處理字串形式的 Markdown 文本內容。
+   - 修改 `backend/routers/embedding.py` 的 `/chunk` 端點，加入對 `.md` 與 `.markdown` 檔案的識別分流。當在 `parent_child` 模式或偵測為 Markdown 檔案時，自動呼叫 `chunk_markdown_content` 進行大小雙層切分與標題路徑重建。
+   - 在 Markdown 切分完成後，動態計算並注入 `parent_chunk_index_range` 索引範圍 metadata，確保與既有的 Qdrant 還原拼接機制完美相容。
+2. **前端參數預設對接優化**：
+   - 修改 `frontend/src/components/embedding/BatchIndexingTab.vue`，當使用者在批次寫入下拉選單中選取限制上傳副檔名為 `Markdown (.md)` 時，自動將 `batchChunkModeExt` 預設切分模式切換為 `parent_child`，並預設帶入推薦的 `child_size`（250字元）與 `child_overlap`（50字元）。
+
+### 修改檔案
+- `backend/services/markdown_parent_child_chunker.py`
+- `backend/routers/embedding.py`
+- `frontend/src/components/embedding/BatchIndexingTab.vue`
+
 ## 2026-06-30 修正 SQL Server/FreeTDS 伺服器 IP/主機名含有尾隨空格導致連線失敗之問題
 
 ### 問題描述

@@ -1,5 +1,20 @@
 前端修正
 
+## 2026-06-30 修正 Parent-Child 向量段落批次刪除不完全之 Bug 與新增刪除整個檔案功能
+
+### 修改內容
+1. `backend/schemas/retrieval.py` (修改):
+   - 在 `SearchParams` 類別中新增 `disable_parent_merge` 參數（預設為 `False`），以提供在檢索時停用 parent-child 合併去重之能力。
+2. `backend/services/qdrant_service.py` (修改):
+   - 於 `search_similar` 函數中新增並處理 `disable_parent_merge` 參數。若為 `True`，則跳過 Qdrant points 的 `parent_id` 去重與兄弟節點合併邏輯，直接回傳所有原始的 Points 列表。
+3. `backend/routers/retrieval.py` (修改):
+   - 於 `/search` 路由中，將前端傳入的 `disable_parent_merge` 傳給 `QdrantService.search_similar`。
+4. `frontend/src/components/embedding/VectorManagementTab.vue` (修改):
+   - **修正批次刪除 Bug**：在管理分頁 `loadManagementPoints` 載入點時，將 `disable_parent_merge: true` 帶入檢索 params，確保使用者能在 UI 清單中勾選檔案在向量庫中的所有原始 Point，從而完整批次刪除。
+   - **新增一鍵刪除整個檔案功能**：
+     - 在「重新整理 / 載入」按鈕右側新增「刪除整個檔案」的紅色警告按鈕。
+     - 實作 `handleDeleteFile` 方法，呼叫 `retrievalService.deleteFileByFilename` 連接後端直接清除該檔案的所有段落，以應對段落過多時的刪除管理。
+
 ## 2026-06-30 修正資料庫連線與測試連線發送參數之空白修剪
 
 ### 修改內容

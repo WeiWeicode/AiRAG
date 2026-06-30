@@ -8,6 +8,7 @@ class SearchParams(BaseModel):
     hnsw_ef_search: int = Field(default=128)
     filter_tags: Optional[List[str]] = Field(default=None)
     filter_filename: Optional[str] = Field(default=None)
+    disable_parent_merge: bool = Field(default=False)
 
 class RetrievalRequest(BaseModel):
     query: str

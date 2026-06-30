@@ -44,7 +44,8 @@ const loadManagementPoints = async () => {
         top_k: 500,
         score_threshold: 0.0,
         search_type: 'vector',
-        filter_filename: managementFilterFilename.value
+        filter_filename: managementFilterFilename.value,
+        disable_parent_merge: true
       }
     }
     const response = await retrievalService.search(payload)
@@ -116,6 +117,26 @@ const handleBatchDeleteManagement = async () => {
   }
 }
 
+const handleDeleteFile = async () => {
+  if (!managementFilterFilename.value) return
+  if (!confirm(`確定要永久刪除檔案「${managementFilterFilename.value}」的所有向量段落資料嗎？`)) return
+  
+  isLoadingManagement.value = true
+  try {
+    const response = await retrievalService.deleteFileByFilename(paramsStore.knowledgeBaseId, managementFilterFilename.value)
+    alert(`成功刪除檔案，共移除 ${response.deleted_count || 0} 筆向量段落。`)
+    managementFilterFilename.value = ''
+    managementPoints.value = []
+    selectedManagementChunkIds.value = []
+    fetchManagementMetadata()
+  } catch (error) {
+    console.error('刪除整個檔案失敗:', error)
+    alert('刪除整個檔案失敗，請檢查後端連線或權限。')
+  } finally {
+    isLoadingManagement.value = false
+  }
+}
+
 onMounted(() => {
   fetchManagementMetadata()
 })
@@ -159,6 +180,18 @@ onMounted(() => {
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
           {{ isLoadingManagement ? '載入中...' : '重新整理 / 載入' }}
+        </button>
+        <button 
+          v-if="managementFilterFilename"
+          @click="handleDeleteFile"
+          :disabled="isLoadingManagement"
+          class="bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 font-semibold px-5 py-2.5 rounded-lg text-xs transition-all h-[42px] whitespace-nowrap flex items-center gap-1.5"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+          刪除整個檔案
         </button>
       </div>
     </div>

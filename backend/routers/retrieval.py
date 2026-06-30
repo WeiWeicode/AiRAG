@@ -54,7 +54,8 @@ async def search(request: RetrievalRequest):
             top_k=request.params.top_k,
             score_threshold=request.params.score_threshold if has_query else 0.0,
             filter_tags=request.params.filter_tags,
-            filter_filename=request.params.filter_filename
+            filter_filename=request.params.filter_filename,
+            disable_parent_merge=request.params.disable_parent_merge
         )
         
         # 3. 包裝為回應格式

@@ -63,13 +63,20 @@ const batchChunkOverlapExt = ref(50)
 const batchSeparatorExt = ref('\\n\\n')
 const batchChunkModeExt = ref('standard')
 
+const acceptAttribute = computed(() => {
+  if (selectedExtension.value === '.docx') {
+    return '.docx,.doc,.dotx'
+  }
+  return selectedExtension.value
+})
+
 watch(selectedExtension, (newExt) => {
-  if (newExt === '.4gl' || newExt === '.4fd') {
+  if (newExt === '.4gl' || newExt === '.4fd' || newExt === '.md' || newExt === '.docx') {
     batchChunkModeExt.value = 'parent_child'
     batchSeparatorExt.value = '\\n\\n'
-    batchChunkSizeExt.value = 512
-    batchChunkOverlapExt.value = 50
-  } else if (newExt === '.pdf' || newExt === '.docx') {
+    batchChunkSizeExt.value = (newExt === '.md' || newExt === '.docx') ? 250 : 512
+    batchChunkOverlapExt.value = (newExt === '.md' || newExt === '.docx') ? 50 : 50
+  } else if (newExt === '.pdf') {
     batchChunkModeExt.value = 'standard'
     batchSeparatorExt.value = '\\n'
     batchChunkSizeExt.value = 512
@@ -132,8 +139,12 @@ const addFilesToQueue = (filesList) => {
     
     // Check file extension
     const ext = '.' + file.name.split('.').pop().toLowerCase()
-    if (ext !== selectedExtension.value) {
-      alert(`僅限上傳符合副檔名「${selectedExtension.value}」的檔案！\n不符檔案：${file.name}`)
+    const wordExtensions = ['.docx', '.doc', '.dotx']
+    const isWordSelected = selectedExtension.value === '.docx'
+    const isMatch = isWordSelected ? wordExtensions.includes(ext) : ext === selectedExtension.value
+    if (!isMatch) {
+      const expectedText = isWordSelected ? 'Word (.docx, .doc, .dotx)' : selectedExtension.value
+      alert(`僅限上傳符合副檔名「${expectedText}」的檔案！\n不符檔案：${file.name}`)
       continue
     }
 
@@ -398,7 +409,7 @@ onUnmounted(() => {
           type="file" 
           class="hidden" 
           multiple
-          :accept="selectedExtension"
+          :accept="acceptAttribute"
           @change="handleBatchFileSelect"
         />
 
@@ -432,7 +443,9 @@ onUnmounted(() => {
           <div class="text-xs font-semibold">
             {{ isBatchProcessing ? '佇列處理中，請稍候...' : '拖曳多個檔案至此或點擊上傳' }}
           </div>
-          <div class="text-[10px] text-[#6b7280] mt-1">目前僅限制上傳 {{ selectedExtension }} 格式之檔案</div>
+          <div class="text-[10px] text-[#6b7280] mt-1">
+            目前僅限制上傳 {{ selectedExtension === '.docx' ? 'Word (.docx, .doc, .dotx)' : selectedExtension }} 格式之檔案
+          </div>
         </div>
       </div>
     </div>
@@ -454,7 +467,7 @@ onUnmounted(() => {
             class="flex-grow bg-transparent text-white text-xs outline-none cursor-pointer"
           >
             <option value=".pdf" class="bg-[#111827] text-white">PDF (.pdf)</option>
-            <option value=".docx" class="bg-[#111827] text-white">DOCX (.docx)</option>
+            <option value=".docx" class="bg-[#111827] text-white">Word (.docx, .doc, .dotx)</option>
             <option value=".txt" class="bg-[#111827] text-white">TXT (.txt)</option>
             <option value=".md" class="bg-[#111827] text-white">Markdown (.md)</option>
             <option value=".4gl" class="bg-[#111827] text-white">Genero 4GL (.4gl)</option>

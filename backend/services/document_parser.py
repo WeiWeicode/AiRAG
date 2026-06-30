@@ -70,11 +70,17 @@ class DocumentParser:
         ext = filename.split(".")[-1].lower()
         if ext == "pdf":
             text, pages = cls.parse_pdf(file_bytes)
-        elif ext in ["docx", "doc"]:
-            text, pages = cls.parse_docx(file_bytes)
+        elif ext in ["docx", "doc", "dotx"]:
+            from services.word_parent_child_chunker import parse_docx_to_markdown, parse_doc_to_markdown
+            if ext in ["docx", "dotx"]:
+                text = parse_docx_to_markdown(file_bytes)
+            else:
+                text = parse_doc_to_markdown(file_bytes, filename)
+            pages = 1
         elif ext in ["txt", "md", "markdown", "4gl", "4fd"]:
             text, pages = cls.parse_text(file_bytes)
         else:
-            raise ValueError(f"目前不支援 .{ext} 的檔案格式。支援的格式有 PDF, DOCX, TXT, MD, 4GL, 4FD")
+            raise ValueError(f"目前不支援 .{ext} 的檔案格式。支援的格式有 PDF, DOCX, DOC, DOTX, TXT, MD, 4GL, 4FD")
         
         return text, pages, len(text)
+
