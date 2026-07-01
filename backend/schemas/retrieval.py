@@ -25,6 +25,7 @@ class RetrievalMetadata(BaseModel):
     parent_id: Optional[str] = None
     function_name: Optional[str] = None
     type: Optional[str] = None
+    links_to: Optional[List[str]] = Field(default_factory=list)
 
     class Config:
         populate_by_name = True

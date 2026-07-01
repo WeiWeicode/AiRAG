@@ -1,4 +1,4 @@
-<!-- 後端修正紀錄 -->
+後端修正紀錄(最新紀錄放最前面) 
 
 ## 2026-07-01 彙整並提供結構化知識庫關聯地圖（Knowledge Map）至語義分析 AI
 
@@ -8,21 +8,25 @@
 2. `backend/services/embedding_service.py` (修改):
    - **修復語法錯誤與程式碼損毀**：還原 `get_semantic_embeddings_batch` 與 `query_to_semantic_json` 的完整正常程式碼，徹底解決 `SyntaxError` 及檔案毀損問題。
    - **知識庫地圖提示詞注入**：於 `query_to_semantic_json` 中新增 `structured_metadata` 選填參數。若有傳入，將在 LLM System Prompt 中渲染格式化後的 `【參考知識庫結構地圖】`，包含各檔案的檔名、類別、標籤與關聯點位，引導地端 AI 在查詢重寫與 `sparse_keywords` 提取時能進行強關聯聯想推理。
-   - **優化提示詞避免語意稀釋**：於 System Prompt 中新增 Rule 5 與 Few-Shot 範例調整，限制 LLM 不要將「說明」、「意義」、「file extensions」、「meaning」等通用語意說明詞加入檢索用欄位，防止對程式碼或 XML 這類純結構化文件進行檢索時，因語意偏離而將真實點位排除。
 3. `backend/routers/rag.py` (修改):
    - **獲取並傳遞結構化地圖**：在對話串流 `/chat` 啟用 `semantic_hybrid` 混合檢索時，自 `get_unique_metadata` 取得並傳遞 `structured_metadata` 給 `query_to_semantic_json`。同時更新 `logger.info` 偵錯日誌，輸出完整的檔案數、標籤數與結構化項目數。
 4. `backend/routers/retrieval.py` (修改):
    - **獲取並傳遞結構化地圖**：於檢索端點 `/search` 進行語義混合搜尋時，提取並傳遞 `structured_metadata` 參數，並更新偵錯日誌。
 5. `backend/routers/evaluation.py` (修改):
-   - **獲取並傳遞結構化地圖**：於評估端點 `/run` 串流中，於迴圈外提取 `structured_metadata`，於評估任務迴圈內調用時傳入參數，避免重複查詢造成效能瓶頸，並更新偵錯日誌。
+   - **獲取並傳遞結構化地圖**：於評估端點 `/run` 串流中，於迴圈外提取 `structured_metadata`，於評估任務迴圈內調用時傳入參數，避免重複查詢造成效能瓶頸，並更新偵錯日誌。ice.query_to_semantic_json`。同時新增 `logger.info` 輸出，以便在終端機觀察 Qdrant 抓取到的元資料資訊。
+3. `backend/routers/retrieval.py` (修改):
+   - **獲取並傳遞元資料**：於檢索端點 `/search` 進行語義混合搜尋時，在呼叫 `query_to_semantic_json` 前提取知識庫元資料並傳入參數。同時新增 `logger.info` 偵錯日誌。
+4. `backend/routers/evaluation.py` (修改):
+   - **獲取並傳遞元資料**：於評估端點 `/run` 串流，在迴圈外先行獲取一次該知識庫的元資料（`filenames` 與 `tags`），並在評估任務迴圈內調用 `query_to_semantic_json` 時傳入參數，避免重複查詢造成效能瓶頸。同時新增 `logger.info` 輸出。
 
 ## 2026-07-01 修正與擴充檢索與寫入之 Metadata Schema 相容性
 
 ### 修改內容
-1. `backend/schemas/retrieval.py` (修改):
+1. `backend/schemas/retrieval.py`:
    - 於 `RetrievalMetadata` 新增 `links_to: Optional[List[str]] = Field(default_factory=list)` 屬性，確保雙階段檢索出的關聯點位 metadata 可被前端與 API JSON 回應正確序列化輸出。
-2. `backend/services/qdrant_service.py` & `backend/routers/embedding.py` (修改):
+2. `backend/services/qdrant_service.py` & `backend/routers/embedding.py`:
    - 修改 Qdrant Payload 的寫入格式，確保 `class` 與 `links_to` 寫入時，即使為空亦會以列表格式 `[]` 寫入，解決格式不一致與 null 的相容性問題。
+
 
 ## 2026-06-30 調整 Dockerfile 的 Oracle Instant Client 目錄結構與 ORACLE_HOME
 

@@ -46,17 +46,30 @@ async def search(request: RetrievalRequest):
             query_vector = await EmbeddingService.get_embedding(request.query)
         
         # 2. 向 Qdrant 進行雙路融合檢索、純向量檢索或直接 Scroll
-        raw_results = await QdrantService.search_similar(
-            collection_name=kb.qdrant_collection_name,
-            query_vector=query_vector,
-            query_text=request.query,
-            search_type=request.params.search_type,
-            top_k=request.params.top_k,
-            score_threshold=request.params.score_threshold if has_query else 0.0,
-            filter_tags=request.params.filter_tags,
-            filter_filename=request.params.filter_filename,
-            disable_parent_merge=request.params.disable_parent_merge
-        )
+        if request.params.search_type == "semantic_hybrid":
+            raw_results = await QdrantService.search_similar_two_step(
+                collection_name=kb.qdrant_collection_name,
+                query_vector=query_vector,
+                query_text=request.query,
+                search_type=request.params.search_type,
+                top_k=request.params.top_k,
+                score_threshold=request.params.score_threshold if has_query else 0.0,
+                filter_tags=request.params.filter_tags,
+                filter_filename=request.params.filter_filename,
+                disable_parent_merge=request.params.disable_parent_merge
+            )
+        else:
+            raw_results = await QdrantService.search_similar(
+                collection_name=kb.qdrant_collection_name,
+                query_vector=query_vector,
+                query_text=request.query,
+                search_type=request.params.search_type,
+                top_k=request.params.top_k,
+                score_threshold=request.params.score_threshold if has_query else 0.0,
+                filter_tags=request.params.filter_tags,
+                filter_filename=request.params.filter_filename,
+                disable_parent_merge=request.params.disable_parent_merge
+            )
         
         # 3. 包裝為回應格式
         results = []
@@ -75,7 +88,8 @@ async def search(request: RetrievalRequest):
                         class_list=meta.get("class", []),
                         parent_id=meta.get("parent_id"),
                         function_name=meta.get("function_name"),
-                        type=meta.get("type")
+                        type=meta.get("type"),
+                        links_to=meta.get("links_to", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)
@@ -129,8 +143,20 @@ async def semantic_hybrid_search(request: RetrievalRequest):
         search_query_text = request.query
         
         if has_query:
+            # 取得該知識庫的 metadata
+            metadata_info = await QdrantService.get_unique_metadata(kb.qdrant_collection_name)
+            filenames = metadata_info.get("filenames", [])
+            tags = metadata_info.get("tags", [])
+            structured_metadata = metadata_info.get("structured_metadata", [])
+            # logger.info(
+            #     f"[Retrieval] 已從 Qdrant 取得結構化元資料 - 檔案數: {len(filenames)}, 標籤數: {len(tags)}, 結構化項目數: {len(structured_metadata)}, 檔名樣例: {filenames[:5]}, 標籤: {tags}"
+            # )
+            
             # 呼叫 Instruct AI 轉 JSON
-            semantic_json = await EmbeddingService.query_to_semantic_json(request.query)
+            semantic_json = await EmbeddingService.query_to_semantic_json(
+                request.query, filenames=filenames, tags=tags, structured_metadata=structured_metadata
+            )
+            # logger.info(f"[Retrieval] 已從 Instruct AI 取得結構化 JSON，以下是結構化內容: {semantic_json}")
             embeddings_input = semantic_json.get("embeddings_input", request.query)
             sparse_keywords = semantic_json.get("sparse_keywords", [])
             
@@ -144,7 +170,7 @@ async def semantic_hybrid_search(request: RetrievalRequest):
             search_query_text = " ".join(sparse_keywords) if sparse_keywords else request.query
         
         # 2. 向 Qdrant 進行語義混合檢索 (search_type 強制為 "semantic_hybrid")
-        raw_results = await QdrantService.search_similar(
+        raw_results = await QdrantService.search_similar_two_step(
             collection_name=kb.qdrant_collection_name,
             query_vector=query_vector,
             query_text=search_query_text,
@@ -173,7 +199,8 @@ async def semantic_hybrid_search(request: RetrievalRequest):
                         class_list=meta.get("class", []),
                         parent_id=meta.get("parent_id"),
                         function_name=meta.get("function_name"),
-                        type=meta.get("type")
+                        type=meta.get("type"),
+                        links_to=meta.get("links_to", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)

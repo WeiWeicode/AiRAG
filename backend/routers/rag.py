@@ -88,8 +88,21 @@ async def rag_chat_stream(request: ChatRequest):
                         }
                         yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
                         
+                        # 取得該知識庫的 metadata
+                        metadata_info = await QdrantService.get_unique_metadata(kb.qdrant_collection_name)
+                        filenames = metadata_info.get("filenames", [])
+                        tags = metadata_info.get("tags", [])
+                        structured_metadata = metadata_info.get("structured_metadata", [])
+                        # logger.info(
+                        #     f"[RAG] 已從 Qdrant 取得結構化元資料 - 檔案數: {len(filenames)}, 標籤數: {len(tags)}, 結構化項目數: {len(structured_metadata)}, 檔名樣例: {filenames[:5]}, 標籤: {tags}"
+                        # )
+                        
                         # 呼叫 Instruct AI 轉 JSON
-                        semantic_json = await EmbeddingService.query_to_semantic_json(question)
+                        semantic_json = await EmbeddingService.query_to_semantic_json(
+                            question, filenames=filenames, tags=tags, structured_metadata=structured_metadata
+                        )
+                        # logger.info(f"[RAG] 已從 Instruct AI 取得結構化 JSON，以下是結構化內容: {semantic_json}")
+
                         embeddings_input = semantic_json.get("embeddings_input", question)
                         sparse_keywords = semantic_json.get("sparse_keywords", [])
                         
@@ -154,15 +167,26 @@ async def rag_chat_stream(request: ChatRequest):
                     yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
 
                     # Qdrant 相似度與雙路融合檢索
-                    raw_results = await QdrantService.search_similar(
-                        collection_name=kb.qdrant_collection_name,
-                        query_vector=query_vector,
-                        query_text=search_query_text,
-                        search_type=search_type,
-                        top_k=top_k,
-                        score_threshold=score_threshold,
-                        filter_tags=filter_tags
-                    )
+                    if search_type == "semantic_hybrid":
+                        raw_results = await QdrantService.search_similar_two_step(
+                            collection_name=kb.qdrant_collection_name,
+                            query_vector=query_vector,
+                            query_text=search_query_text,
+                            search_type=search_type,
+                            top_k=top_k,
+                            score_threshold=score_threshold,
+                            filter_tags=filter_tags
+                        )
+                    else:
+                        raw_results = await QdrantService.search_similar(
+                            collection_name=kb.qdrant_collection_name,
+                            query_vector=query_vector,
+                            query_text=search_query_text,
+                            search_type=search_type,
+                            top_k=top_k,
+                            score_threshold=score_threshold,
+                            filter_tags=filter_tags
+                        )
                     
                     # 整理 Chunks 為 Context
                     context_parts = []
@@ -177,7 +201,9 @@ async def rag_chat_stream(request: ChatRequest):
                                 "page": meta.get("page"),
                                 "section": meta.get("section"),
                                 "chunk_index": meta.get("chunk_index"),
-                                "tags": meta.get("tags", [])
+                                "tags": meta.get("tags", []),
+                                "class": meta.get("class", []),
+                                "links_to": meta.get("links_to", [])
                             },
                             "score": item.get("score", 0.0)
                         })

@@ -91,22 +91,33 @@ class QdrantService:
         for i, item in enumerate(items):
             point_id = str(uuid.uuid4())
             
+            meta = item.get("metadata", {})
+            tags_val = meta.get("tags") or ([meta.get("category")] if meta.get("category") else [])
+            class_val = meta.get("class") or meta.get("classes") or []
+            if isinstance(class_val, str):
+                class_val = [class_val] if class_val else []
+            links_val = meta.get("links_to") or meta.get("links") or []
+            if isinstance(links_val, str):
+                links_val = [links_val] if links_val else []
+                
             # 建立 metadata payload
             payload = {
                 "content": item.get("text_content", ""),
                 "embeddings_input": item.get("embeddings_input", ""),
-                "filename": item.get("metadata", {}).get("source_file", "unknown"),
-                "page": item.get("metadata", {}).get("page_number", 1),
-                "section": item.get("metadata", {}).get("category", ""),
-                "tags": [item.get("metadata", {}).get("category")] if item.get("metadata", {}).get("category") else [],
+                "filename": meta.get("source_file", "unknown"),
+                "page": meta.get("page_number", 1),
+                "section": meta.get("category", ""),
+                "tags": tags_val,
+                "class": class_val,
+                "links_to": links_val,
                 "custom_id": item.get("id"),
                 "sparse_keywords": item.get("sparse_keywords", []),
                 "source": "json_semantic",
-                "created_at": item.get("metadata", {}).get("created_at") or datetime.utcnow().isoformat()
+                "created_at": meta.get("created_at") or datetime.utcnow().isoformat()
             }
             # 合併原 metadata 中的其他屬性
-            for k, v in item.get("metadata", {}).items():
-                if k not in ["source_file", "page_number", "category", "created_at"]:
+            for k, v in meta.items():
+                if k not in ["source_file", "page_number", "category", "created_at", "tags", "class", "classes", "links_to", "links"]:
                     payload[k] = v
                     
             points.append(
@@ -401,11 +412,13 @@ class QdrantService:
                         "section": payload.get("section"),
                         "chunk_index": payload.get("chunk_index"),
                         "tags": payload.get("tags", []),
+                        "class": payload.get("class", []),
                         "parent_id": payload.get("parent_id"),
                         "parent_content": payload.get("parent_content"),
                         "parent_chunk_index_range": payload.get("parent_chunk_index_range"),
                         "function_name": payload.get("function_name"),
-                        "type": payload.get("type")
+                        "type": payload.get("type"),
+                        "links_to": payload.get("links_to", [])
                     },
                     "score": score,
                     "distance": 1.0 - score
@@ -469,24 +482,184 @@ class QdrantService:
             return []
 
     @classmethod
-    async def get_unique_metadata(cls, collection_name: str) -> Dict[str, List[str]]:
+    async def search_similar_two_step(
+        cls,
+        collection_name: str,
+        query_vector: Optional[List[float]] = None,
+        query_text: Optional[str] = None,
+        search_type: str = "vector",
+        top_k: int = 5,
+        score_threshold: float = 0.7,
+        filter_tags: Optional[List[str]] = None,
+        filter_filename: Optional[str] = None,
+        disable_parent_merge: bool = False,
+        neighbor_limit: int = 50
+    ) -> List[Dict[str, Any]]:
         """
-        從向量庫集合中提取所有唯一的檔案名稱與標籤。
+        雙階段關聯檢索 (Two-Step Hybrid Retrieval)：
+        第一階段：核心實體檢索 (1st-hop Search)，撈出與問題最相關的點位。
+        第二階段：一階鄰居關係拉取 (2nd-hop Search)，利用 Scroll API 補撈鄰居點位片段。
+        最後進行去重與合併，回傳完整的 Context。
+        """
+        # 第一步：進行核心 Hybrid 搜尋
+        raw_results = await cls.search_similar(
+            collection_name=collection_name,
+            query_vector=query_vector,
+            query_text=query_text,
+            search_type=search_type,
+            top_k=top_k,
+            score_threshold=score_threshold,
+            filter_tags=filter_tags,
+            filter_filename=filter_filename,
+            disable_parent_merge=disable_parent_merge
+        )
+
+        if not raw_results:
+            return []
+
+        # 第二步：解析 links_to 欄位，獲取所有關聯名稱/ID
+        all_links = []
+        for item in raw_results:
+            links = item.get("metadata", {}).get("links_to") or []
+            if isinstance(links, str):
+                links = [links]
+            for link in links:
+                if link and link not in all_links:
+                    all_links.append(link)
+
+        # 第三步：如果有關聯，拉取關聯點位 (2nd-hop Search)
+        neighbor_results = []
+        if all_links:
+            client = cls.get_client()
+            try:
+                # 建立 Filter 條件：filename 匹配 link 或 custom_id 匹配 link
+                should_conditions = [
+                    models.FieldCondition(key="filename", match=models.MatchAny(any=all_links)),
+                    models.FieldCondition(key="custom_id", match=models.MatchAny(any=all_links))
+                ]
+                
+                scroll_filter = models.Filter(should=should_conditions)
+                scroll_result = await client.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=scroll_filter,
+                    limit=neighbor_limit,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                points = scroll_result[0]
+
+                # 包裝為與核心檢索結果一致的結構
+                for p in points:
+                    payload = p.payload or {}
+                    neighbor_results.append({
+                        "chunk_id": str(p.id),
+                        "content": payload.get("content", ""),
+                        "metadata": {
+                            "filename": payload.get("filename"),
+                            "page": payload.get("page"),
+                            "section": payload.get("section"),
+                            "chunk_index": payload.get("chunk_index"),
+                            "tags": payload.get("tags", []),
+                            "class": payload.get("class", []),
+                            "parent_id": payload.get("parent_id"),
+                            "parent_content": payload.get("parent_content"),
+                            "parent_chunk_index_range": payload.get("parent_chunk_index_range"),
+                            "function_name": payload.get("function_name"),
+                            "type": payload.get("type"),
+                            "links_to": payload.get("links_to", [])
+                        },
+                        "score": 0.0,
+                        "distance": 1.0,
+                        "is_neighbor": True
+                    })
+            except Exception as e:
+                logger.error(f"Failed to scroll neighbor points for links {all_links}: {e}")
+
+        # 第四步：若鄰居點位有 parent_id 且未禁用合併，亦執行 parent-child 合併
+        final_neighbors = []
+        if neighbor_results:
+            # 依 parent_id 去重鄰居 (避免重複合併同個 parent 的多個 chunk)
+            seen_parents = set()
+            deduped_neighbors = []
+            for item in neighbor_results:
+                pid = item["metadata"].get("parent_id")
+                if pid:
+                    if pid in seen_parents:
+                        continue
+                    seen_parents.add(pid)
+                deduped_neighbors.append(item)
+
+            if not disable_parent_merge:
+                for item in deduped_neighbors:
+                    meta = item["metadata"]
+                    parent_id = meta.get("parent_id")
+                    if parent_id:
+                        parent_content = meta.get("parent_content")
+                        parent_range = meta.get("parent_chunk_index_range")
+                        if not parent_content:
+                            parent_content, parent_range = await cls.get_siblings_and_merge(
+                                collection_name=collection_name,
+                                parent_id=parent_id,
+                                orig_content=item["content"],
+                                metadata=meta
+                            )
+                        else:
+                            if item["content"].startswith("[檔案名稱]"):
+                                filename = meta.get("filename") or "unknown"
+                                tags = ", ".join(meta.get("tags", [])) or "一般"
+                                parent_content = (
+                                    f"[檔案名稱] {filename}\n"
+                                    f"[段落編號] 第 {parent_range} 段\n"
+                                    f"[分類標籤] {tags}\n"
+                                    f"[主要內容]\n"
+                                    f"{parent_content}"
+                                )
+                        if parent_content:
+                            item["content"] = parent_content
+                        if parent_range:
+                            item["metadata"]["chunk_index"] = parent_range
+                    final_neighbors.append(item)
+            else:
+                final_neighbors = deduped_neighbors
+
+        # 第五步：與核心片段合併，並執行內容去重
+        seen_contents = set()
+        merged_results = []
+
+        for item in raw_results:
+            content_strip = item["content"].strip()
+            if content_strip not in seen_contents:
+                seen_contents.add(content_strip)
+                merged_results.append(item)
+
+        for item in final_neighbors:
+            content_strip = item["content"].strip()
+            if content_strip not in seen_contents:
+                seen_contents.add(content_strip)
+                merged_results.append(item)
+
+        return merged_results
+
+    @classmethod
+    async def get_unique_metadata(cls, collection_name: str) -> Dict[str, Any]:
+        """
+        從向量庫集合中提取所有唯一的檔案名稱、標籤與結構化關聯元資料。
         """
         client = cls.get_client()
         try:
             exists = await client.collection_exists(collection_name)
             if not exists:
-                return {"filenames": [], "tags": []}
+                return {"filenames": [], "tags": [], "structured_metadata": []}
                 
             filenames = set()
             tags = set()
+            structured_map = {}
             
-            # 捲動取得點，僅需要 filename 與 tags 欄位，加快效率
+            # 捲動取得點，僅需要 filename、tags、class 與 links_to 欄位，加快效率
             scroll_result = await client.scroll(
                 collection_name=collection_name,
                 limit=10000,
-                with_payload=["filename", "tags"],
+                with_payload=["filename", "tags", "class", "links_to"],
                 with_vectors=False
             )
             
@@ -496,15 +669,47 @@ class QdrantService:
                 fn = payload.get("filename")
                 if fn:
                     filenames.add(fn)
-                t_list = payload.get("tags")
-                if t_list and isinstance(t_list, list):
-                    for t in t_list:
-                        if t:
-                            tags.add(t)
-                            
+                    if fn not in structured_map:
+                        structured_map[fn] = {
+                            "filename": fn,
+                            "classes": set(),
+                            "tags": set(),
+                            "links_to": set()
+                        }
+                    
+                    # class
+                    c_val = payload.get("class")
+                    if isinstance(c_val, list):
+                        structured_map[fn]["classes"].update([c for c in c_val if c])
+                    elif isinstance(c_val, str) and c_val:
+                        structured_map[fn]["classes"].add(c_val)
+                        
+                    # tags
+                    t_list = payload.get("tags")
+                    if isinstance(t_list, list):
+                        for t in t_list:
+                            if t:
+                                tags.add(t)
+                                structured_map[fn]["tags"].add(t)
+                                
+                    # links_to
+                    l_list = payload.get("links_to")
+                    if isinstance(l_list, list):
+                        structured_map[fn]["links_to"].update([l for l in l_list if l])
+            
+            structured_list = []
+            for fn, data in structured_map.items():
+                structured_list.append({
+                    "filename": fn,
+                    "class": sorted(list(data["classes"])),
+                    "tags": sorted(list(data["tags"])),
+                    "links_to": sorted(list(data["links_to"]))
+                })
+                
             return {
                 "filenames": sorted(list(filenames)),
-                "tags": sorted(list(tags))
+                "tags": sorted(list(tags)),
+                "structured_metadata": sorted(structured_list, key=lambda x: x["filename"])
             }
         except Exception as e:
             logger.error(f"Failed to scroll unique metadata from Qdrant: {e}")

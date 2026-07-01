@@ -224,6 +224,22 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
         if payload.params and payload.params.search_type is not None:
             search_type = payload.params.search_type
 
+        # 先行取得知識庫元資料以優化語義分析
+        filenames = []
+        tags = []
+        structured_metadata = []
+        if kb:
+            try:
+                metadata_info = await QdrantService.get_unique_metadata(kb.qdrant_collection_name)
+                filenames = metadata_info.get("filenames", [])
+                tags = metadata_info.get("tags", [])
+                structured_metadata = metadata_info.get("structured_metadata", [])
+                # logger.info(
+                #     f"[Evaluation] 已從 Qdrant 取得結構化元資料 - 檔案數: {len(filenames)}, 標籤數: {len(tags)}, 結構化項目數: {len(structured_metadata)}, 檔名樣例: {filenames[:5]}, 標籤: {tags}"
+                # )
+            except Exception as me:
+                logger.error(f"Failed to fetch unique metadata for evaluation: {me}")
+
         for idx, item in enumerate(items_to_eval):
             # 發送進度狀態
             yield f"event: progress\ndata: {json.dumps({'index': idx + 1, 'question': item.question}, ensure_ascii=False)}\n\n"
@@ -234,7 +250,11 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
                 try:
                     if search_type == "semantic_hybrid":
                         # 語義混合查詢流程
-                        semantic_json = await EmbeddingService.query_to_semantic_json(item.question)
+                        semantic_json = await EmbeddingService.query_to_semantic_json(
+                            item.question, filenames=filenames, tags=tags, structured_metadata=structured_metadata
+                        )
+                        # logger.info(f"[Evaluation] 已從 Instruct AI 取得結構化 JSON，以下是結構化內容: {semantic_json}")
+
                         embeddings_input = semantic_json.get("embeddings_input", item.question)
                         sparse_keywords = semantic_json.get("sparse_keywords", [])
                         

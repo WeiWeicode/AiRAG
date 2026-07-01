@@ -241,6 +241,10 @@ async def vectorize_chunks(request: VectorizeRequest):
             if isinstance(classes, str):
                 classes = [classes] if classes else []
                 
+            links_to = chunk.metadata.get("links_to") or chunk.metadata.get("links") or []
+            if isinstance(links_to, str):
+                links_to = [links_to] if links_to else []
+                
             payload = {
                 "content": chunk.content,
                 "filename": chunk.metadata.get("filename", "unknown"),
@@ -252,11 +256,12 @@ async def vectorize_chunks(request: VectorizeRequest):
                 "source": chunk.metadata.get("source", "upload"),
                 "tags": chunk.metadata.get("tags", []),
                 "class": classes,
+                "links_to": links_to,
                 "created_at": datetime.utcnow().isoformat()
             }
             # 額外合併 metadata 中的其他自訂屬性 (例如 parent_id, function_name, type)
             for k, v in chunk.metadata.items():
-                if k not in payload and k not in ["class", "classes"]:
+                if k not in payload and k not in ["class", "classes", "links_to", "links"]:
                     payload[k] = v
             qdrant_chunks.append(payload)
             
