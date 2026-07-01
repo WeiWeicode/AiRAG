@@ -65,3 +65,8 @@ class BatchDeleteRequest(BaseModel):
 class DeleteByFilenameRequest(BaseModel):
     filename: str
 
+class UpdateLinksRequest(BaseModel):
+    filename: str
+    links_to: List[str]
+
+

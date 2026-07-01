@@ -493,13 +493,13 @@ class QdrantService:
         filter_tags: Optional[List[str]] = None,
         filter_filename: Optional[str] = None,
         disable_parent_merge: bool = False,
-        neighbor_limit: int = 50
+        neighbor_limit: int = 10
     ) -> List[Dict[str, Any]]:
         """
         雙階段關聯檢索 (Two-Step Hybrid Retrieval)：
         第一階段：核心實體檢索 (1st-hop Search)，撈出與問題最相關的點位。
-        第二階段：一階鄰居關係拉取 (2nd-hop Search)，利用 Scroll API 補撈鄰居點位片段。
-        最後進行去重與合併，回傳完整的 Context。
+        第二階段：一階鄰居關係拉取 (2nd-hop Search)，利用相似度/混合檢索在關聯點位中進行二次搜尋，只挑選高相關段落。
+        最後進行去重與合併，回傳精準的 Context。
         """
         # 第一步：進行核心 Hybrid 搜尋
         raw_results = await cls.search_similar(
@@ -527,29 +527,107 @@ class QdrantService:
                 if link and link not in all_links:
                     all_links.append(link)
 
-        # 第三步：如果有關聯，拉取關聯點位 (2nd-hop Search)
+        # 第三步：如果有關聯，拉取與查詢相關的關聯點位 (2nd-hop Search)
         neighbor_results = []
         if all_links:
             client = cls.get_client()
             try:
-                # 建立 Filter 條件：filename 匹配 link 或 custom_id 匹配 link
+                # 建立 Filter 條件：限制只能在關聯檔案/ID範圍內搜尋
                 should_conditions = [
                     models.FieldCondition(key="filename", match=models.MatchAny(any=all_links)),
                     models.FieldCondition(key="custom_id", match=models.MatchAny(any=all_links))
                 ]
-                
                 scroll_filter = models.Filter(should=should_conditions)
-                scroll_result = await client.scroll(
-                    collection_name=collection_name,
-                    scroll_filter=scroll_filter,
-                    limit=neighbor_limit,
-                    with_payload=True,
-                    with_vectors=False
-                )
-                points = scroll_result[0]
+                
+                points = []
+                # 情況 A：若啟用 Hybrid / Semantic Hybrid，且有向量與查詢文字，則進行帶 Filter 的混合檢索
+                if search_type in ["hybrid", "semantic_hybrid"] and query_vector is not None and query_text is not None and query_text.strip():
+                    try:
+                        from services.sparse_embedding_service import SparseEmbeddingService
+                        query_sparse = SparseEmbeddingService.get_sparse_vector(query_text)
+                        
+                        prefetch_dense = models.Prefetch(
+                            query=query_vector,
+                            using="",  # 預設密集向量空間
+                            limit=neighbor_limit * 2,
+                            score_threshold=score_threshold,
+                            filter=scroll_filter
+                        )
+                        prefetch_sparse = models.Prefetch(
+                            query=query_sparse,
+                            using="sparse-text",  # 稀疏向量空間
+                            limit=neighbor_limit * 2,
+                            filter=scroll_filter
+                        )
+                        
+                        # Exact keyword match text prefetch boost
+                        import re
+                        keywords = [kw for kw in re.findall(r'[a-zA-Z0-9_]{3,}', query_text) if not kw.isdigit()]
+                        
+                        prefetch_list = [prefetch_dense, prefetch_sparse]
+                        if keywords:
+                            exact_should = []
+                            for kw in keywords:
+                                exact_should.append(models.FieldCondition(key="content", match=models.MatchText(text=kw)))
+                                exact_should.append(models.FieldCondition(key="function_name", match=models.MatchValue(value=kw)))
+                                exact_should.append(models.FieldCondition(key="parent_id", match=models.MatchValue(value=kw)))
+                            
+                            exact_filter = models.Filter(
+                                should=exact_should,
+                                must=scroll_filter.should
+                            )
+                            prefetch_exact = models.Prefetch(
+                                query=query_sparse,
+                                using="sparse-text",
+                                limit=neighbor_limit * 2,
+                                filter=exact_filter
+                            )
+                            prefetch_list.append(prefetch_exact)
+                        
+                        response = await client.query_points(
+                            collection_name=collection_name,
+                            prefetch=prefetch_list,
+                            query=models.FusionQuery(fusion=models.Fusion.RRF),
+                            limit=neighbor_limit
+                        )
+                        points = response.points
+                        logger.info(f"Two-step neighbor search successfully executed hybrid query for links: {all_links}")
+                    except Exception as he:
+                        logger.warning(f"Neighbor hybrid search failed, falling back to pure vector search: {he}")
+                        response = await client.query_points(
+                            collection_name=collection_name,
+                            query=query_vector,
+                            limit=neighbor_limit,
+                            score_threshold=score_threshold,
+                            query_filter=scroll_filter
+                        )
+                        points = response.points
+                # 情況 B：若僅為純向量檢索，則進行帶 Filter 的密集向量查詢
+                elif query_vector is not None:
+                    response = await client.query_points(
+                        collection_name=collection_name,
+                        query=query_vector,
+                        limit=neighbor_limit,
+                        score_threshold=score_threshold,
+                        query_filter=scroll_filter
+                    )
+                    points = response.points
+                # 情況 C：無查詢向量，則降級為 Scroll
+                else:
+                    scroll_result = await client.scroll(
+                        collection_name=collection_name,
+                        scroll_filter=scroll_filter,
+                        limit=neighbor_limit,
+                        with_payload=True,
+                        with_vectors=False
+                    )
+                    points = scroll_result[0]
 
                 # 包裝為與核心檢索結果一致的結構
                 for p in points:
+                    score = getattr(p, "score", 0.0)
+                    if score is None:
+                        score = 0.0
                     payload = p.payload or {}
                     neighbor_results.append({
                         "chunk_id": str(p.id),
@@ -568,12 +646,12 @@ class QdrantService:
                             "type": payload.get("type"),
                             "links_to": payload.get("links_to", [])
                         },
-                        "score": 0.0,
-                        "distance": 1.0,
+                        "score": score,
+                        "distance": 1.0 - score,
                         "is_neighbor": True
                     })
             except Exception as e:
-                logger.error(f"Failed to scroll neighbor points for links {all_links}: {e}")
+                logger.error(f"Failed to query neighbor points for links {all_links}: {e}")
 
         # 第四步：若鄰居點位有 parent_id 且未禁用合併，亦執行 parent-child 合併
         final_neighbors = []
@@ -769,6 +847,44 @@ class QdrantService:
             return count
         except Exception as e:
             logger.error(f"Failed to delete points by filename '{filename}' from collection '{collection_name}': {e}")
+            raise e
+
+    @classmethod
+    async def update_links_to_by_filename(cls, collection_name: str, filename: str, links_to: List[str]) -> int:
+        """
+        更新指定 Collection 中所有匹配該檔案名稱的 Points 的 links_to 欄位，並回傳更新的數量。
+        """
+        client = cls.get_client()
+        try:
+            # 1. 先 Scroll 獲取該 filename 的所有點以取得 ID
+            scroll_result = await client.scroll(
+                collection_name=collection_name,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="filename",
+                            match=models.MatchValue(value=filename)
+                        )
+                    ]
+                ),
+                limit=10000,  # 預期單個檔案的 Chunks 不會超過 10000
+                with_payload=False,
+                with_vectors=False
+            )
+            points = scroll_result[0]
+            count = len(points)
+            
+            if count > 0:
+                point_ids = [p.id for p in points]
+                await client.set_payload(
+                    collection_name=collection_name,
+                    payload={"links_to": links_to},
+                    points=point_ids
+                )
+                logger.info(f"Successfully updated links_to for {count} points of filename '{filename}' in collection '{collection_name}'.")
+            return count
+        except Exception as e:
+            logger.error(f"Failed to update links_to by filename '{filename}' in collection '{collection_name}': {e}")
             raise e
 
     @classmethod

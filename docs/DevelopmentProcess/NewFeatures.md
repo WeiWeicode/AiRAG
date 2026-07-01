@@ -1,4 +1,28 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
+## 2026-07-01 向量管理頁面新增關聯檔案 (links_to) 管理與顯示功能
+
+### 功能描述
+在向量管理頁面中，點選主要檔案後可額外選取多個關聯檔案，並批次寫入對應點位的 `links_to` 欄位中，以便支援雙階段檢索（Two-Step Hybrid Retrieval），同時在段落列表上顯示關聯檔案徽章。
+
+### 實作內容
+1. **後端 Qdrant 批次更新**：
+   - 修改 `backend/services/qdrant_service.py`：新增 `update_links_to_by_filename` 類別方法，利用 Scroll API 拉取該檔案所有 Chunks 的 Point ID，再呼叫 `set_payload` API 批次更新這些點位的 `links_to` 欄位。
+2. **後端 API 路由與 Schema**：
+   - 修改 `backend/schemas/retrieval.py`：新增 `UpdateLinksRequest` 模型。
+   - 修改 `backend/routers/retrieval.py`：新增 `/knowledge-bases/{knowledge_base_id}/files/update-links` POST 端點。
+3. **前端 API 與 UI 串接**：
+   - 修改 `frontend/src/services/retrievalService.js`：新增 `updateLinks` 方法調用。
+   - 修改 `frontend/src/components/embedding/VectorManagementTab.vue`：
+     - 新增多選關聯檔案編輯區（Links To），自動從 Metadata 中讀取並同步既有之關聯檔案關係。
+     - 在 Chunks 列表上為具備 `links_to` 的 Chunk 繪製藍色關聯徽章。
+
+### 修改檔案
+- `backend/services/qdrant_service.py`
+- `backend/schemas/retrieval.py`
+- `backend/routers/retrieval.py`
+- `frontend/src/services/retrievalService.js`
+- `frontend/src/components/embedding/VectorManagementTab.vue`
+
 ## 2026-07-01 新增雙階段關聯檢索與防幻想語意分析層系統
 
 ### 功能描述

@@ -93,15 +93,15 @@ async def rag_chat_stream(request: ChatRequest):
                         filenames = metadata_info.get("filenames", [])
                         tags = metadata_info.get("tags", [])
                         structured_metadata = metadata_info.get("structured_metadata", [])
-                        # logger.info(
-                        #     f"[RAG] 已從 Qdrant 取得結構化元資料 - 檔案數: {len(filenames)}, 標籤數: {len(tags)}, 結構化項目數: {len(structured_metadata)}, 檔名樣例: {filenames[:5]}, 標籤: {tags}"
-                        # )
+                        logger.info(
+                            f"[RAG] 已從 Qdrant 取得結構化元資料 - 檔案數: {len(filenames)}, 標籤數: {len(tags)}, 結構化項目數: {len(structured_metadata)}, 檔名樣例: {filenames[:5]}, 標籤: {tags}"
+                        )
                         
                         # 呼叫 Instruct AI 轉 JSON
                         semantic_json = await EmbeddingService.query_to_semantic_json(
                             question, filenames=filenames, tags=tags, structured_metadata=structured_metadata
                         )
-                        # logger.info(f"[RAG] 已從 Instruct AI 取得結構化 JSON，以下是結構化內容: {semantic_json}")
+                        logger.info(f"[RAG] 已從 Instruct AI 取得結構化 JSON，以下是結構化內容: {semantic_json}")
 
                         embeddings_input = semantic_json.get("embeddings_input", question)
                         sparse_keywords = semantic_json.get("sparse_keywords", [])

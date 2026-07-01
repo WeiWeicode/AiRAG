@@ -1,5 +1,25 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-07-01 修正雙階段檢索 (Two-Step Search) 關聯檔案全量載入與 context 稀釋問題
+
+### 問題描述
+原本的雙階段檢索在第一階段召回核心點位後，第二階段針對其 `links_to` 指定的關聯檔案，是採用無條件的 Qdrant Scroll API 直接把關聯檔案的所有向量點位（高達 50 筆 Chunks）全部抓取出來。這會導致關聯檔案中的大量無關點位（如非對應資料庫列/非對應段落）全部被塞入 RAG 上下文中，造成嚴重的 Context 稀釋與 Token 浪費。
+
+### 解決方案
+1. **二次檢索由 Scroll 改為語意/混合搜尋**：
+   - 修改 `backend/services/qdrant_service.py` 中的 `search_similar_two_step` 方法。
+   - 當召回關聯檔案 (`all_links`) 後，不再使用無差別的 `client.scroll`。
+   - 改為對 Qdrant 進行過濾搜尋（以 `filename` 或 `custom_id` 匹配 `all_links` 作為 `should` 條件），並使用與使用者問題相同的 `query_vector`、`query_text` 進行密集與稀疏 Hybrid 檢索（支援 exact keyword boost 加速）。
+   - 在密集向量 Prefetch 中套用 `score_threshold=score_threshold`，確保只有與查詢內容高度相關的鄰居片段才會被召回，完全隔絕無關點位。
+2. **調降預設鄰居召回上限**：
+   - 將 `neighbor_limit` 參數的預設值由 `50` 調降至 `10`，以防止過多邻居片段稀釋主要檢索脈絡，提升 LLM 回答的精準度。
+3. **單元測試相容**：
+   - 無查詢向量時，系統會自動安全降級為 Scroll，以確保原有單元測試程式碼及無向量檢索場景的運作正常。
+
+### 修改檔案
+- `backend/services/qdrant_service.py`
+
+
 ## 2026-06-30 修正 Oracle Instant Client CPU 架構不符（x86_64 zip 安裝於 ARM64 Ubuntu）
 
 ### 問題描述

@@ -13,14 +13,28 @@ const managementPoints = ref([])
 const selectedManagementChunkIds = ref([])
 const isLoadingManagement = ref(false)
 
+const managementStructuredMetadata = ref([])
+const selectedLinks = ref([])
+const isSavingLinks = ref(false)
+
+const candidateLinks = computed(() => {
+  return managementFilenames.value.filter(fn => fn !== managementFilterFilename.value)
+})
+
 const fetchManagementMetadata = async () => {
   if (!paramsStore.knowledgeBaseId) return
   try {
     const response = await api.get(`/api/knowledge-bases/${paramsStore.knowledgeBaseId}/metadata`)
     managementFilenames.value = response.data?.filenames || []
+    managementStructuredMetadata.value = response.data?.structured_metadata || []
+    
     if (managementFilterFilename.value && !managementFilenames.value.includes(managementFilterFilename.value)) {
       managementFilterFilename.value = ''
       managementPoints.value = []
+      selectedLinks.value = []
+    } else if (managementFilterFilename.value) {
+      const metadataItem = managementStructuredMetadata.value.find(item => item.filename === managementFilterFilename.value)
+      selectedLinks.value = metadataItem?.links_to ? [...metadataItem.links_to] : []
     }
   } catch (error) {
     console.error('無法取得知識庫元資料:', error)
@@ -30,8 +44,13 @@ const fetchManagementMetadata = async () => {
 const loadManagementPoints = async () => {
   if (!paramsStore.knowledgeBaseId || !managementFilterFilename.value) {
     managementPoints.value = []
+    selectedLinks.value = []
     return
   }
+  
+  // Sync selectedLinks for this file
+  const metadataItem = managementStructuredMetadata.value.find(item => item.filename === managementFilterFilename.value)
+  selectedLinks.value = metadataItem?.links_to ? [...metadataItem.links_to] : []
   
   isLoadingManagement.value = true
   selectedManagementChunkIds.value = []
@@ -64,6 +83,26 @@ const loadManagementPoints = async () => {
     alert('載入失敗，請確認後端連線。')
   } finally {
     isLoadingManagement.value = false
+  }
+}
+
+const handleSaveLinks = async () => {
+  if (!managementFilterFilename.value) return
+  isSavingLinks.value = true
+  try {
+    await retrievalService.updateLinks(
+      paramsStore.knowledgeBaseId,
+      managementFilterFilename.value,
+      selectedLinks.value
+    )
+    alert('儲存關聯成功！')
+    await fetchManagementMetadata()
+    await loadManagementPoints()
+  } catch (error) {
+    console.error('儲存關聯失敗:', error)
+    alert('儲存關聯失敗，請確認後端連線。')
+  } finally {
+    isSavingLinks.value = false
   }
 }
 
@@ -194,6 +233,48 @@ onMounted(() => {
           刪除整個檔案
         </button>
       </div>
+
+      <!-- Links To Association Section -->
+      <div v-if="managementFilterFilename" class="border-t border-white/5 pt-4 flex flex-col gap-3 animate-fade-in">
+        <div class="flex flex-col gap-1.5">
+          <span class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">設定關聯檔案 (Links To)</span>
+          <span class="text-[11px] text-[#6b7280]">設定關聯檔案後，雙階段檢索會同時拉取這些關聯檔案的內容作為上下文。</span>
+        </div>
+        <div class="flex gap-4">
+          <div class="flex-grow bg-white/3 border border-white/8 rounded-lg p-3 max-h-[160px] overflow-y-auto flex flex-col gap-2">
+            <div v-if="candidateLinks.length === 0" class="text-xs text-[#6b7280] py-4 text-center">
+              無其他可用檔案以建立關聯
+            </div>
+            <label 
+              v-else
+              v-for="fn in candidateLinks" 
+              :key="fn" 
+              class="flex items-center gap-2 text-xs text-white cursor-pointer select-none hover:text-[#8b5cf6] transition-all"
+            >
+              <input 
+                type="checkbox" 
+                v-model="selectedLinks" 
+                :value="fn"
+                class="rounded bg-white/5 border-white/10 text-[#8b5cf6] focus:ring-[#8b5cf6]/50 cursor-pointer"
+              />
+              <span class="truncate">{{ fn }}</span>
+            </label>
+          </div>
+          <div class="flex flex-col justify-end">
+            <button 
+              @click="handleSaveLinks"
+              :disabled="isLoadingManagement || isSavingLinks"
+              class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-900/50 disabled:text-emerald-300/50 text-white font-semibold px-5 py-2.5 rounded-lg text-xs transition-all h-[42px] whitespace-nowrap flex items-center gap-1.5"
+            >
+              <svg v-if="isSavingLinks" class="animate-spin h-3.5 w-3.5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span>{{ isSavingLinks ? '儲存中...' : '儲存關聯關係' }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Chunks List Card -->
@@ -273,6 +354,18 @@ onMounted(() => {
                   class="bg-[#8b5cf6]/10 border border-[#8b5cf6]/20 text-[#a78bfa] px-1.5 py-0.5 rounded text-[9px]"
                 >
                   {{ t }}
+                </span>
+              </span>
+
+              <!-- Links To Badges -->
+              <span v-if="point.metadata?.links_to?.length" class="flex gap-1 flex-shrink-0">
+                <span 
+                  v-for="link in point.metadata.links_to" 
+                  :key="link"
+                  class="bg-blue-500/10 border border-blue-500/20 text-[#60a5fa] px-1.5 py-0.5 rounded text-[9px]"
+                  :title="'關聯檔案: ' + link"
+                >
+                  🔗 {{ link }}
                 </span>
               </span>
             </span>

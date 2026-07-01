@@ -1,5 +1,24 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-07-01 修正雙階段檢索 (Two-Step Search) 關聯檔案全量載入與 context 稀釋問題
+
+### 修改內容
+1. `backend/services/qdrant_service.py` (修改):
+   - **優化 `search_similar_two_step` 二階段檢索**：將對關聯鄰居點位的獲取方式由無差別的 `scroll` 調整為有針對性的「語意與關鍵字混合檢索（query_points）」，以原查詢的 `query_vector`、`query_text` 加上關聯檔名過濾條件進行查詢。
+   - **增加 score_threshold 門檻過濾**：在鄰居密集向量 Prefetch 中套用 `score_threshold` 過濾，剔除不相關鄰居 Chunks，徹底解決全量載入產生的 noise 及 context 稀釋問題。
+   - **調降預設限制**：將二階段鄰居最大召回上限 `neighbor_limit` 從 `50` 調降至 `10`。
+   - **測試相容降級**：當無查詢向量輸入時（如單元測試或特殊檢索），系統會自動安全降級為原 `scroll` 機制，確保相容性。
+
+## 2026-07-01 向量管理頁面新增關聯檔案 (links_to) API 支援
+
+### 修改內容
+1. `backend/services/qdrant_service.py` (修改):
+   - **新增 `update_links_to_by_filename` 方法**：使用 Scroll API 加上 filename 篩選拉取所有屬於主要檔案的 Points ID，再呼叫 Qdrant client 的 `set_payload` 方法，批次將 `links_to` (關聯檔案名稱列表) 欄位寫入這些向量段落的 payload 中。
+2. `backend/schemas/retrieval.py` (修改):
+   - **新增 `UpdateLinksRequest` Schema**：定義接收 `filename: str` 與 `links_to: List[str]` 的 Pydantic 請求資料模型。
+3. `backend/routers/retrieval.py` (修改):
+   - **新增 `/knowledge-bases/{knowledge_base_id}/files/update-links` POST 端點**：呼叫 `QdrantService.update_links_to_by_filename` 實現將選取的關聯關係批次寫入 Qdrant payload。
+
 ## 2026-07-01 彙整並提供結構化知識庫關聯地圖（Knowledge Map）至語義分析 AI
 
 ### 修改內容

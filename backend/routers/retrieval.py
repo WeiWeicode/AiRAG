@@ -6,7 +6,8 @@ from beanie import PydanticObjectId
 from datetime import datetime
 from schemas.retrieval import (
     RetrievalRequest, RetrievalResponse, RetrievalResultItem, RetrievalMetadata,
-    QueryTransformRequest, QueryTransformResponse, BatchDeleteRequest, DeleteByFilenameRequest
+    QueryTransformRequest, QueryTransformResponse, BatchDeleteRequest, DeleteByFilenameRequest,
+    UpdateLinksRequest
 )
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
@@ -148,15 +149,15 @@ async def semantic_hybrid_search(request: RetrievalRequest):
             filenames = metadata_info.get("filenames", [])
             tags = metadata_info.get("tags", [])
             structured_metadata = metadata_info.get("structured_metadata", [])
-            # logger.info(
-            #     f"[Retrieval] 已從 Qdrant 取得結構化元資料 - 檔案數: {len(filenames)}, 標籤數: {len(tags)}, 結構化項目數: {len(structured_metadata)}, 檔名樣例: {filenames[:5]}, 標籤: {tags}"
-            # )
+            logger.info(
+                f"[Retrieval] 已從 Qdrant 取得結構化元資料 - 檔案數: {len(filenames)}, 標籤數: {len(tags)}, 結構化項目數: {len(structured_metadata)}, 檔名樣例: {filenames[:5]}, 標籤: {tags}"
+            )
             
             # 呼叫 Instruct AI 轉 JSON
             semantic_json = await EmbeddingService.query_to_semantic_json(
                 request.query, filenames=filenames, tags=tags, structured_metadata=structured_metadata
             )
-            # logger.info(f"[Retrieval] 已從 Instruct AI 取得結構化 JSON，以下是結構化內容: {semantic_json}")
+            logger.info(f"[Retrieval] 已從 Instruct AI 取得結構化 JSON，以下是結構化內容: {semantic_json}")
             embeddings_input = semantic_json.get("embeddings_input", request.query)
             sparse_keywords = semantic_json.get("sparse_keywords", [])
             
@@ -390,4 +391,53 @@ async def delete_file_by_filename(knowledge_base_id: str, request: DeleteByFilen
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"無法從向量資料庫中刪除檔案: {str(e)}"
         )
+
+
+@router.post("/knowledge-bases/{knowledge_base_id}/files/update-links")
+async def update_file_links(knowledge_base_id: str, request: UpdateLinksRequest):
+    """
+    更新指定知識庫中特定檔案名稱的所有向量段落 (Points) 的 links_to 欄位
+    """
+    try:
+        kb_id = PydanticObjectId(knowledge_base_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="無效的知識庫 ID 格式"
+        )
+        
+    kb = await KnowledgeBase.get(kb_id)
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定的知識庫不存在"
+        )
+        
+    if not request.filename.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="請提供主要檔案名稱"
+        )
+        
+    try:
+        updated_count = await QdrantService.update_links_to_by_filename(
+            collection_name=kb.qdrant_collection_name,
+            filename=request.filename,
+            links_to=request.links_to
+        )
+        
+        kb.updated_at = datetime.utcnow()
+        await kb.save()
+        
+        return {
+            "message": f"成功更新檔案 '{request.filename}' 的關聯檔案",
+            "updated_count": updated_count
+        }
+    except Exception as e:
+        logger.error(f"Update file links failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"無法在向量資料庫中更新關聯: {str(e)}"
+        )
+
 

@@ -24,6 +24,13 @@ export default {
       filename: filename
     })
     return response.data
+  },
+  async updateLinks(knowledgeBaseId, filename, linksTo) {
+    const response = await api.post(`/api/retrieval/knowledge-bases/${knowledgeBaseId}/files/update-links`, {
+      filename: filename,
+      links_to: linksTo
+    })
+    return response.data
   }
 }
 
