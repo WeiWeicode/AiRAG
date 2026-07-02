@@ -8,17 +8,28 @@ logger = logging.getLogger("airag.embedding")
 
 class EmbeddingService:
     @staticmethod
-    async def get_embedding(text: str) -> List[float]:
+    async def _fetch_embedding(text: str) -> List[float]:
         """
-        向 llama.cpp (/embedding) 取得單一文本的向量。
+        依 EMBEDDING_API_STYLE 呼叫對應的本地 Embedding 服務端點（llama.cpp / Ollama / OpenAI 相容），
+        並彈性解析多種可能的回傳格式後回傳向量。
         """
-        url = f"{settings.LLAMACPP_BASE_URL.rstrip('/')}/embedding"
+        base = settings.LLAMACPP_BASE_URL.rstrip('/')
+        if settings.EMBEDDING_API_STYLE == "ollama":
+            url = f"{base}/api/embeddings"
+            payload = {"model": settings.EMBEDDING_MODEL, "prompt": text}
+        elif settings.EMBEDDING_API_STYLE == "openai":
+            url = f"{base}/v1/embeddings"
+            payload = {"model": settings.EMBEDDING_MODEL, "input": text}
+        else:  # "llamacpp"（預設，原生端點）
+            url = f"{base}/embedding"
+            payload = {"content": text}
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, json={"content": text})
+                response = await client.post(url, json=payload)
                 response.raise_for_status()
                 data = response.json()
-                
+
                 # 彈性解析多種可能的回傳格式
                 # 1. 列表型格式 (e.g. [{'embedding': [...]}] 或是 [{'embedding': [[...]]}])
                 if isinstance(data, list) and len(data) > 0:
@@ -28,7 +39,7 @@ class EmbeddingService:
                         if isinstance(emb, list) and len(emb) > 0 and isinstance(emb[0], list):
                             return emb[0]
                         return emb
-                
+
                 # 2. 字典型格式 (e.g. {'embedding': [...]} 或是 {'data': [{'embedding': [...]}]})
                 if isinstance(data, dict):
                     if "embedding" in data:
@@ -43,13 +54,20 @@ class EmbeddingService:
                             if isinstance(emb, list) and len(emb) > 0 and isinstance(emb[0], list):
                                 return emb[0]
                             return emb
-                            
+
                 raise ValueError(f"無法解析的向量回應格式: {data}")
         except Exception as e:
-            logger.error(f"Failed to generate embedding via llama.cpp: {e}")
-            # 為利於測試，若 llama.cpp 服務尚未啟動，提供 4096 維度之模擬零向量作為降級防線
+            logger.error(f"Failed to generate embedding via {settings.EMBEDDING_API_STYLE} ({url}): {e}")
+            # 為利於測試，若 Embedding 服務尚未啟動，提供 4096 維度之模擬零向量作為降級防線
             logger.warning("Using a mock 4096-dim vector for testing bypass.")
             return [0.0] * 4096
+
+    @staticmethod
+    async def get_embedding(text: str) -> List[float]:
+        """
+        取得單一文本的向量。
+        """
+        return await EmbeddingService._fetch_embedding(text)
 
     @classmethod
     async def get_embeddings_batch(cls, texts: List[str]) -> List[List[float]]:
@@ -68,44 +86,9 @@ class EmbeddingService:
     @staticmethod
     async def get_semantic_embedding(text: str) -> List[float]:
         """
-        向 LLAMACPP_BASE_URL (/embedding) 取得語義密集向量。
+        取得語義密集向量（與 get_embedding 共用同一個 Embedding 服務端點）。
         """
-        url = f"{settings.LLAMACPP_BASE_URL.rstrip('/')}/embedding"
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, json={"content": text})
-                response.raise_for_status()
-                data = response.json()
-                
-                # 彈性解析多種可能的回傳格式
-                if isinstance(data, list) and len(data) > 0:
-                    first_item = data[0]
-                    if isinstance(first_item, dict) and "embedding" in first_item:
-                        emb = first_item["embedding"]
-                        if isinstance(emb, list) and len(emb) > 0 and isinstance(emb[0], list):
-                            return emb[0]
-                        return emb
-                
-                if isinstance(data, dict):
-                    if "embedding" in data:
-                        emb = data["embedding"]
-                        if isinstance(emb, list) and len(emb) > 0 and isinstance(emb[0], list):
-                            return emb[0]
-                        return emb
-                    if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-                        first_data = data["data"][0]
-                        if isinstance(first_data, dict) and "embedding" in first_data:
-                            emb = first_data["embedding"]
-                            if isinstance(emb, list) and len(emb) > 0 and isinstance(emb[0], list):
-                                return emb[0]
-                            return emb
-                            
-                raise ValueError(f"無法解析的向量回應格式: {data}")
-        except Exception as e:
-            logger.error(f"Failed to generate semantic embedding via llama.cpp (Instruct): {e}")
-            # 為利於測試，若服務尚未啟動，提供 4096 維度之模擬零向量作為降級防線
-            logger.warning("Using a mock 4096-dim vector for testing bypass.")
-            return [0.0] * 4096
+        return await EmbeddingService._fetch_embedding(text)
 
     @classmethod
     async def get_semantic_embeddings_batch(cls, texts: List[str]) -> List[List[float]]:

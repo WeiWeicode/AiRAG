@@ -19,6 +19,8 @@ class Settings:
     # llama.cpp
     LLAMACPP_BASE_URL: str = os.getenv("LLAMACPP_BASE_URL", "http://localhost:8081")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "Qwen3-Embedding-8B-Q8_0.gguf")
+    # Embedding 服務的 API 風格："llamacpp"（預設，原生 /embedding）、"ollama"（原生 /api/embeddings）、"openai"（OpenAI 相容 /v1/embeddings，適用 LM Studio）
+    EMBEDDING_API_STYLE: str = os.getenv("EMBEDDING_API_STYLE", "llamacpp")
 
     # llama.cpp (Instruct 語義化)
     DENSE_VECTOR_LLAMACPP_BASE_URL: str = os.getenv("DenseVector_LLAMACPP_BASE_URL", "http://localhost:8082")

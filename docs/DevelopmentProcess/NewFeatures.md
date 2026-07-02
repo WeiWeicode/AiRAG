@@ -1,4 +1,21 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
+## 2026-07-02 新增可切換的本地 Embedding API 風格，支援居家 Ollama / LM Studio 取代地端部署
+
+### 功能描述
+為了讓使用者能在家用 Ollama、llama.cpp、LM Studio 三套本地引擎取代公司地端的 vLLM / llama.cpp 部署，補上環境變數範本，並讓 Embedding 服務可依設定切換呼叫端點與 payload 格式。對話（`VLLM_BASE_URL` + `/chat/completions`）與 Instruct 語義解析（`DenseVector_LLAMACPP_BASE_URL` + `/v1/chat/completions`）原本就已是 OpenAI 相容格式，Ollama／LM Studio 皆相容，僅需調整 `.env`；只有 Embedding 因為原本寫死呼叫 llama.cpp 原生 `/embedding` 端點，需要新增可切換的 API 風格。
+
+### 實作內容
+1. **Embedding API 風格切換**：
+   - 修改 `backend/config.py`：新增 `EMBEDDING_API_STYLE`（預設 `llamacpp`，可選 `ollama`／`openai`）。
+   - 修改 `backend/services/embedding_service.py`：抽出共用私有方法 `_fetch_embedding()`，依 `EMBEDDING_API_STYLE` 決定端點路徑（`/embedding` vs `/api/embeddings` vs `/v1/embeddings`）與 payload key（`content` vs `prompt` vs `input`），回應解析沿用既有的多格式彈性解析邏輯；`get_embedding()` 與 `get_semantic_embedding()` 改為呼叫共用方法，公開簽章不變，既有呼叫端零影響。
+2. **環境變數範本**：
+   - 新增 `backend/.env.example`：涵蓋公司地端（vLLM/llama.cpp）與居家（Ollama/LM Studio）的對話、Instruct 語義解析、Embedding 三組設定範例（後兩者以註解形式提供替代方案），並註明 docker-compose 容器需用 `host.docker.internal` 連到宿主機上執行的本地引擎。
+
+### 修改檔案
+- `backend/config.py`
+- `backend/services/embedding_service.py`
+- `backend/.env.example`（新增）
+
 ## 2026-07-02 新增「語義混合回饋查詢法」並補上人工回饋→檢索來源的資料鏈路
 
 ### 功能描述
