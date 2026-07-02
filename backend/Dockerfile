@@ -22,7 +22,7 @@ ENV ORACLE_HOME=/opt/oracle
 COPY instantclient-basic-linux.*.zip /tmp/instantclient.zip
 RUN mkdir -p /opt/oracle \
     && unzip /tmp/instantclient.zip -d /opt/oracle \
-    && mv /opt/oracle/instantclient_19_* /opt/oracle/lib \
+    && mv /opt/oracle/instantclient_* /opt/oracle/lib \
     && echo "/opt/oracle/lib" > /etc/ld.so.conf.d/oracle-instantclient.conf \
     && ldconfig \
     && rm /tmp/instantclient.zip

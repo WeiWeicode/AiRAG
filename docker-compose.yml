@@ -17,12 +17,9 @@ services:
       - "53020:53020"
     volumes:
       - ./backend:/app
-    env_file:
-      - ./backend/.env
     environment:
       - MONGODB_URL=mongodb://mongodb:27017
       - QDRANT_HOST=qdrant
-      - AUTH_PASSWORD_HASH=$$2b$$12$$XOLoLbldxgU3vdmkYsTEteZqF02GKcAw6zIWXNy6Q7yJwi9kziqsm
       - HF_HUB_DISABLE_TELEMETRY=1
     extra_hosts:
       - "host.docker.internal:host-gateway"
