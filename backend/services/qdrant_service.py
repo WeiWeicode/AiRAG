@@ -1,4 +1,5 @@
 import logging
+import time
 import uuid
 from typing import List, Dict, Any, Optional
 from qdrant_client import AsyncQdrantClient, models
@@ -8,6 +9,8 @@ logger = logging.getLogger("airag.qdrant")
 
 class QdrantService:
     _client: Optional[AsyncQdrantClient] = None
+    _metadata_cache: Dict[str, Dict[str, Any]] = {}
+    _METADATA_CACHE_TTL = 600  # 秒，作為主動 invalidate 遺漏時的保底
 
     @classmethod
     def get_client(cls) -> AsyncQdrantClient:
@@ -255,7 +258,8 @@ class QdrantService:
         score_threshold: float = 0.7,
         filter_tags: Optional[List[str]] = None,
         filter_filename: Optional[str] = None,
-        disable_parent_merge: bool = False
+        disable_parent_merge: bool = False,
+        sparse_keywords: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
         依據向量相似度檢索資料塊（可切換純向量或 Hybrid 雙路 RRF 混合檢索）。
@@ -307,10 +311,9 @@ class QdrantService:
                     )
                     
                     # 針對程式碼識別碼/關鍵字進行 Exact keyword Match text 搜尋加速
-                    import re
-                    # 提取長度大於等於3個字元、且非純數字的英數底線詞彙 (例如: p_zz_q)
-                    keywords = [kw for kw in re.findall(r'[a-zA-Z0-9_]{3,}', query_text) if not kw.isdigit()]
-                    
+                    # 優先使用語義層已抽取的 sparse_keywords（含中文），否則退回正則抽取英數詞彙
+                    keywords = cls._extract_exact_keywords(query_text, sparse_keywords)
+
                     prefetch_list = [prefetch_dense, prefetch_sparse]
                     
                     if keywords:
@@ -493,12 +496,16 @@ class QdrantService:
         filter_tags: Optional[List[str]] = None,
         filter_filename: Optional[str] = None,
         disable_parent_merge: bool = False,
-        neighbor_limit: int = 10
+        neighbor_limit: int = 10,
+        neighbor_score_threshold: float = 0.1,
+        sparse_keywords: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
         雙階段關聯檢索 (Two-Step Hybrid Retrieval)：
         第一階段：核心實體檢索 (1st-hop Search)，撈出與問題最相關的點位。
         第二階段：一階鄰居關係拉取 (2nd-hop Search)，利用相似度/混合檢索在關聯點位中進行二次搜尋，只挑選高相關段落。
+        鄰居屬於補充性關聯內容，門檻獨立於核心搜尋的 score_threshold，預設較寬鬆（neighbor_score_threshold），
+        避免與核心搜尋同等嚴格的門檻把大部分鄰居過濾掉，導致 Two-Step 檢索的第二階段形同虛設。
         最後進行去重與合併，回傳精準的 Context。
         """
         # 第一步：進行核心 Hybrid 搜尋
@@ -511,7 +518,8 @@ class QdrantService:
             score_threshold=score_threshold,
             filter_tags=filter_tags,
             filter_filename=filter_filename,
-            disable_parent_merge=disable_parent_merge
+            disable_parent_merge=disable_parent_merge,
+            sparse_keywords=sparse_keywords
         )
 
         if not raw_results:
@@ -550,7 +558,7 @@ class QdrantService:
                             query=query_vector,
                             using="",  # 預設密集向量空間
                             limit=neighbor_limit * 2,
-                            score_threshold=score_threshold,
+                            score_threshold=neighbor_score_threshold,
                             filter=scroll_filter
                         )
                         prefetch_sparse = models.Prefetch(
@@ -561,9 +569,8 @@ class QdrantService:
                         )
                         
                         # Exact keyword match text prefetch boost
-                        import re
-                        keywords = [kw for kw in re.findall(r'[a-zA-Z0-9_]{3,}', query_text) if not kw.isdigit()]
-                        
+                        keywords = cls._extract_exact_keywords(query_text, sparse_keywords)
+
                         prefetch_list = [prefetch_dense, prefetch_sparse]
                         if keywords:
                             exact_should = []
@@ -598,7 +605,7 @@ class QdrantService:
                             collection_name=collection_name,
                             query=query_vector,
                             limit=neighbor_limit,
-                            score_threshold=score_threshold,
+                            score_threshold=neighbor_score_threshold,
                             query_filter=scroll_filter
                         )
                         points = response.points
@@ -608,7 +615,7 @@ class QdrantService:
                         collection_name=collection_name,
                         query=query_vector,
                         limit=neighbor_limit,
-                        score_threshold=score_threshold,
+                        score_threshold=neighbor_score_threshold,
                         query_filter=scroll_filter
                     )
                     points = response.points
@@ -718,17 +725,56 @@ class QdrantService:
 
         return merged_results
 
+    @staticmethod
+    def _extract_exact_keywords(query_text: Optional[str], sparse_keywords: Optional[List[str]] = None) -> List[str]:
+        """
+        萃取用於 Exact keyword boost 的關鍵字清單。
+        若已有語義層抽取的 sparse_keywords（含中英文），優先使用；否則退回對 query_text 的正則抽取（僅支援英數）。
+        英數關鍵字需長度 >=3 且非純數字；含中文或其他非 ASCII 字元的關鍵字則需長度 >=2，避免單字誤傷。
+        """
+        import re
+        if sparse_keywords:
+            candidates = [kw.strip() for kw in sparse_keywords if isinstance(kw, str) and kw.strip()]
+        elif query_text:
+            candidates = re.findall(r'[a-zA-Z0-9_]{3,}', query_text)
+        else:
+            candidates = []
+
+        keywords = []
+        for kw in candidates:
+            if re.fullmatch(r'[a-zA-Z0-9_]+', kw):
+                if len(kw) >= 3 and not kw.isdigit():
+                    keywords.append(kw)
+            elif len(kw) >= 2:
+                keywords.append(kw)
+        return keywords
+
+    @classmethod
+    def invalidate_metadata_cache(cls, collection_name: str) -> None:
+        """
+        清除指定 Collection 的結構化元資料快取（於任何寫入/刪除向量的操作後呼叫）。
+        """
+        cls._metadata_cache.pop(collection_name, None)
+
     @classmethod
     async def get_unique_metadata(cls, collection_name: str) -> Dict[str, Any]:
         """
         從向量庫集合中提取所有唯一的檔案名稱、標籤與結構化關聯元資料。
+        結果會依 Collection 快取（TTL 保底 + 寫入操作主動 invalidate），避免每次查詢都重新 scroll 全量資料。
         """
+        cached = cls._metadata_cache.get(collection_name)
+        if cached and (time.time() - cached["cached_at"]) < cls._METADATA_CACHE_TTL:
+            logger.info(f"[Qdrant] 使用快取的結構化元資料 - collection: {collection_name}")
+            return cached["data"]
+
         client = cls.get_client()
         try:
             exists = await client.collection_exists(collection_name)
             if not exists:
-                return {"filenames": [], "tags": [], "structured_metadata": []}
-                
+                empty_result = {"filenames": [], "tags": [], "structured_metadata": []}
+                cls._metadata_cache[collection_name] = {"data": empty_result, "cached_at": time.time()}
+                return empty_result
+
             filenames = set()
             tags = set()
             structured_map = {}
@@ -784,11 +830,13 @@ class QdrantService:
                     "links_to": sorted(list(data["links_to"]))
                 })
                 
-            return {
+            result = {
                 "filenames": sorted(list(filenames)),
                 "tags": sorted(list(tags)),
                 "structured_metadata": sorted(structured_list, key=lambda x: x["filename"])
             }
+            cls._metadata_cache[collection_name] = {"data": result, "cached_at": time.time()}
+            return result
         except Exception as e:
             logger.error(f"Failed to scroll unique metadata from Qdrant: {e}")
             return {"filenames": [], "tags": []}

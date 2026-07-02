@@ -10,6 +10,7 @@ from models.knowledge_base import KnowledgeBase
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
+from services.rerank_service import RerankService
 from utils.security import get_current_user
 from config import settings
 
@@ -175,8 +176,12 @@ async def rag_chat_stream(request: ChatRequest):
                             search_type=search_type,
                             top_k=top_k,
                             score_threshold=score_threshold,
-                            filter_tags=filter_tags
+                            filter_tags=filter_tags,
+                            sparse_keywords=sparse_keywords
                         )
+                        # 借用 Instruct LLM 對融合後的候選片段做相關性重排序，取前 top_k 筆
+                        if raw_results:
+                            raw_results = await RerankService.rerank(question, raw_results, top_k)
                     else:
                         raw_results = await QdrantService.search_similar(
                             collection_name=kb.qdrant_collection_name,

@@ -271,7 +271,8 @@ async def vectorize_chunks(request: VectorizeRequest):
             chunks=qdrant_chunks,
             vectors=vectors
         )
-        
+        QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
+
         # 更新 MongoDB 知識庫的 Chunk 總量
         kb.chunk_count += inserted
         kb.updated_at = datetime.utcnow()
@@ -341,7 +342,8 @@ async def vectorize_json(request: SemanticJSONIngestRequest):
             dense_vectors=dense_vectors,
             vector_size=vector_size
         )
-        
+        QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
+
         # 6. 更新 MongoDB 知識庫的 Chunk 總量
         kb.chunk_count += inserted
         kb.updated_at = datetime.utcnow()

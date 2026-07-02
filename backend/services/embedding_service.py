@@ -225,16 +225,18 @@ class EmbeddingService:
                 system_prompt += f"- 已存在的標籤清單 (若用戶提及相關意圖，可在 category 與 sparse_keywords 中參考對齊使用)：{json.dumps(tags, ensure_ascii=False)}\n"
         
         url = f"{settings.DENSE_VECTOR_LLAMACPP_BASE_URL.rstrip('/')}/v1/chat/completions"
-        payload = {
+        base_payload = {
             "model": settings.DENSE_VECTOR_INSTRUCT_MODEL,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"問題：{question}"}
             ],
-            "temperature": 0.1,
-            "max_tokens": 512
+            "max_tokens": 512,
+            # 要求 llama.cpp 以 grammar-constrained decoding 強制輸出語法合法的 JSON，
+            # 降低模型偶發漏逗號/多逗號等語法錯誤導致降級為 fallback 的機率。
+            "response_format": {"type": "json_object"}
         }
-        
+
         fallback_json = {
             "id": f"query_{current_time_id}",
             "text_content": question,
@@ -245,16 +247,18 @@ class EmbeddingService:
                 "category": "General",
                 "created_at": current_date
             },
-            "sparse_keywords": [question]
+            "sparse_keywords": [question],
+            "is_fallback": True
         }
-        
-        try:
+
+        async def _call_and_parse(temperature: float) -> dict:
+            payload = {**base_payload, "temperature": temperature}
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
                 result = response.json()
                 content = result["choices"][0]["message"]["content"].strip()
-                
+
                 # 簡單清理 Markdown 格式（如果有）
                 if content.startswith("```"):
                     lines = content.split("\n")
@@ -263,12 +267,27 @@ class EmbeddingService:
                     if lines and lines[-1].startswith("```"):
                         lines = lines[:-1]
                     content = "\n".join(lines).strip()
-                
+
                 parsed = json.loads(content)
-                # 確保必要欄位存在
-                if "embeddings_input" in parsed:
-                    return parsed
-                return fallback_json
-        except Exception as e:
-            logger.error(f"Failed to convert query to semantic JSON: {e}")
-            return fallback_json
+                if "embeddings_input" not in parsed:
+                    raise ValueError(f"JSON 缺少 embeddings_input 欄位: {parsed}")
+                return parsed
+
+        # 第 1 次維持低溫度以求穩定；重試時提高溫度打破確定性重複失敗
+        # （實測觀察到同一問題於 temperature=0.1 下兩次重試會產生完全相同的語法錯誤，原地重試無效）
+        retry_temperatures = [0.1, 0.5]
+        max_attempts = len(retry_temperatures)
+        for attempt, temperature in enumerate(retry_temperatures, start=1):
+            try:
+                parsed = await _call_and_parse(temperature)
+                parsed["is_fallback"] = False
+                if attempt > 1:
+                    logger.info(f"Instruct AI JSON 於第 {attempt} 次嘗試後解析成功（temperature={temperature}）。")
+                return parsed
+            except Exception as e:
+                if attempt < max_attempts:
+                    logger.warning(f"Instruct AI JSON 轉換第 {attempt} 次嘗試失敗（temperature={temperature}），將以更高溫度重試: {e}")
+                else:
+                    logger.error(f"Instruct AI JSON 轉換重試 {max_attempts} 次後仍失敗，降級為 fallback: {e}")
+
+        return fallback_json

@@ -110,7 +110,8 @@ async def delete_knowledge_base(id: str):
     qdrant_success = await QdrantService.delete_collection(kb.qdrant_collection_name)
     if not qdrant_success:
         logger.warning(f"Failed to delete Qdrant collection {kb.qdrant_collection_name} during deletion of KB {id}")
-        
+    QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
+
     try:
         await kb.delete()
         return {"message": "刪除成功"}

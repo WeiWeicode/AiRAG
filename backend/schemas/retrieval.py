@@ -47,6 +47,7 @@ class RetrievalResponse(BaseModel):
     sparse_keywords: Optional[List[str]] = None
     query_vector_preview: Optional[str] = None
     vector_size: Optional[int] = None
+    is_fallback: Optional[bool] = None
 
 class QueryTransformRequest(BaseModel):
     query: str

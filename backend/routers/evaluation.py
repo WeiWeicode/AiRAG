@@ -12,6 +12,7 @@ from models.knowledge_base import KnowledgeBase
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
+from services.rerank_service import RerankService
 from utils.security import get_current_user
 
 logger = logging.getLogger("airag.evaluation_router")
@@ -263,15 +264,25 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
                     else:
                         query_vector = await EmbeddingService.get_embedding(item.question)
                         search_query_text = item.question
+                        sparse_keywords = None
+
+                    # semantic_hybrid 時多召回一批候選（供 rerank 使用），其餘搜尋類型維持原本 top_k
+                    fetch_k = max(top_k, RerankService.MAX_CANDIDATES) if search_type == "semantic_hybrid" else top_k
 
                     search_results = await QdrantService.search_similar(
                         collection_name=kb.qdrant_collection_name,
                         query_vector=query_vector,
                         query_text=search_query_text,
                         search_type=search_type,
-                        top_k=top_k,
-                        score_threshold=score_threshold
+                        top_k=fetch_k,
+                        score_threshold=score_threshold,
+                        sparse_keywords=sparse_keywords
                     )
+
+                    # 借用 Instruct LLM 對融合後的候選片段做相關性重排序，取前 top_k 筆
+                    if search_type == "semantic_hybrid" and search_results:
+                        search_results = await RerankService.rerank(item.question, search_results, top_k)
+
                     retrieved_contexts = [r.get("content", "") for r in search_results]
                 except Exception as se:
                     logger.error(f"Retrieval failed for question '{item.question}': {se}")

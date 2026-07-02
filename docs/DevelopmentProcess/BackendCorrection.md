@@ -1,5 +1,118 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-07-02 停用 huggingface_hub 的 agent-harness 偵測遙測（Semantic Search Optimization #8）
+
+### 問題描述
+測試過程中 Docker log 重複出現非常規的對外請求 `GET https://huggingface.co/api/agent-harnesses`。查證運行中容器（`huggingface_hub` 1.21.0）原始碼，確認這是官方合法功能（`huggingface_hub/utils/_detect_agent.py`）：用於偵測呼叫程序是否為 AI coding agent，並在 Hub 請求的 `User-Agent` 標頭中標記，供 Hugging Face 做流量統計。觸發鏈為 `fastembed` 首次初始化 SPLADE 稀疏向量模型下載時，經 `huggingface_hub` 組 User-Agent 觸發。非惡意、非供應鏈風險，與語義搜尋優化程式碼無關，但屬非必要的額外對外請求。
+
+### 修改內容
+1. `docker-compose.yml` (修改):
+   - `backend` service 的 `environment` 新增 `HF_HUB_DISABLE_TELEMETRY=1`。
+2. `backend/.env` (修改，git-ignored，僅影響本機環境):
+   - 新增 `HF_HUB_DISABLE_TELEMETRY=1`，讓非 Docker 的本機開發模式也套用同樣設定。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/SemanticSearchOptimizationPlan.md` 待處理事項第 8 項。
+
+## 2026-07-02 語義 JSON 重試改為漸進提高 temperature（Semantic Search Optimization #7）
+
+### 修改內容
+1. `backend/services/embedding_service.py` (修改):
+   - **`query_to_semantic_json` 重試機制改為漸進調整 `temperature`**：實測發現同一問題在 `temperature=0.1` 下兩次請求會產生完全相同的語法錯誤（同一行、同一字元位置），代表 `response_format: json_object` 疑似未被目前部署的 llama.cpp 版本實際強制生效，且原地重試對這種確定性失敗沒有幫助。
+   - 改為 `retry_temperatures = [0.1, 0.5]`：第 1 次維持低溫度以求穩定，第 2 次提高至 0.5 靠抽樣隨機性打破確定性重複失敗；log 訊息補上各次嘗試使用的 `temperature` 數值，方便後續追蹤重試是否真的帶來不同結果。
+   - `payload` 拆分為 `base_payload`（不含 temperature）+ 每次呼叫時組裝含當次 temperature 的 payload。
+
+### 備註
+根本原因（llama.cpp 是否真的支援 `response_format` grammar 強制）屬於部署設定層級，需另行確認 llama.cpp 版本與啟動參數，不在本次程式碼修正範圍內，已記錄於 `docs/DevelopmentProcess/SemanticSearchOptimizationPlan.md` 待處理事項第 7 項。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/SemanticSearchOptimizationPlan.md` 待處理事項第 7 項。
+
+## 2026-07-02 語義混合搜尋新增 LLM-based Rerank 層（Semantic Search Optimization #3）
+
+### 修改內容
+1. `backend/services/rerank_service.py` (新增):
+   - **新增 `RerankService`**：借用既有地端 Instruct LLM（`DENSE_VECTOR_LLAMACPP_BASE_URL`，Qwen3VL-8B-Instruct，方案 A，非部署新的 cross-encoder 模型）對 RRF 融合後的候選片段做相關性重排序，彌補 RRF 只看排名、不看實際語意相關程度的限制。
+   - 候選池上限 `MAX_CANDIDATES = 20`，每筆候選內容截斷至 `CONTENT_PREVIEW_LEN = 500` 字元納入 prompt，控制 token 用量與延遲。
+   - 要求 LLM 以 `response_format: json_object` 輸出 `{"ranking": [...]}`（僅排序，不用分數，降低輸出 token 量），並對缺漏/越界編號做保底補齊，避免候選憑空消失。
+   - **失敗優雅降級**：任何逾時/解析錯誤皆記錄 warning 並回退為保留原始 RRF 排序後的前 `top_k` 筆，不中斷檢索流程；候選數量本就 ≤ `top_k` 時直接略過（避免無意義的 LLM 呼叫）。
+2. `backend/routers/retrieval.py` (修改):
+   - `/semantic-hybrid-search` 於 `search_similar_two_step` 取得候選後呼叫 `RerankService.rerank`，取前 `params.top_k` 筆。
+3. `backend/routers/rag.py` (修改):
+   - `semantic_hybrid` 對話分流於 `search_similar_two_step` 取得候選後呼叫 `RerankService.rerank`。
+4. `backend/routers/evaluation.py` (修改):
+   - **`semantic_hybrid` 評估流程改為多召回候選再重排序**：原本 `search_similar` 直接以 `top_k` 限制 Qdrant RRF 融合結果，候選數等於 `top_k`，rerank 無候選可排序形同無效。改為 `semantic_hybrid` 時以 `max(top_k, RerankService.MAX_CANDIDATES)` 召回候選池，取得結果後再交給 `RerankService.rerank` 裁切回真正的 `top_k`。
+
+### 範圍說明
+本次僅套用於「語義混合搜尋」（`semantic_hybrid`）流程，`/api/retrieval/search`（`vector`/`hybrid` 類型）未套用 rerank，維持原行為。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/SemanticSearchOptimizationPlan.md` 第 3 項。
+
+## 2026-07-02 修正 Instruct AI JSON 語法失敗問題（Semantic Search Optimization #6）
+
+### 修改內容
+1. `backend/services/embedding_service.py` (修改):
+   - **`query_to_semantic_json` 的 payload 新增 `"response_format": {"type": "json_object"}`**：要求 llama.cpp 以 grammar-constrained decoding 強制輸出語法合法的 JSON，從生成層面降低模型偶發漏逗號/多逗號等語法錯誤（實測曾發生 `Expecting ',' delimiter`、`Expecting property name enclosed in double quotes` 兩種錯誤）。
+   - **新增解析失敗重試機制**：抽出 `_call_and_parse` 內部函式，解析失敗（HTTP 錯誤、JSON 語法錯誤、缺少 `embeddings_input` 欄位）時最多重試 1 次（總計 2 次請求），仍失敗才降級為 `fallback_json`；並補上重試過程的 log 區分「第 N 次嘗試失敗將重試」與「重試後仍失敗降級」。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/SemanticSearchOptimizationPlan.md` 第 6 項。
+
+## 2026-07-02 Exact Keyword 精準比對加成支援中文（Semantic Search Optimization #5）
+
+### 修改內容
+1. `backend/services/qdrant_service.py` (修改):
+   - **新增 `_extract_exact_keywords` 靜態方法**：優先使用語義層已抽取的 `sparse_keywords`（含中英文）作為 exact keyword boost 來源；若無提供則退回原本對 `query_text` 的正則抽取（僅英數）。過濾規則：純英數詞需長度 ≥3 且非純數字，含中文或其他非 ASCII 字元的詞需長度 ≥2，避免單字（如「的」）誤觸發。
+   - **`search_similar`、`search_similar_two_step` 新增 `sparse_keywords` 參數**，並將原本內嵌的正則抽取邏輯替換為呼叫 `_extract_exact_keywords`。
+2. `backend/routers/retrieval.py`、`backend/routers/rag.py`、`backend/routers/evaluation.py` (修改):
+   - 語義混合搜尋流程中，將已從 Instruct AI 取得的 `sparse_keywords` 一併傳入 `search_similar`/`search_similar_two_step`，讓中文檔名/術語也能觸發 Exact keyword boost。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/SemanticSearchOptimizationPlan.md` 第 5 項。
+
+## 2026-07-02 語義 JSON 轉換失敗降級標記可觀測性（Semantic Search Optimization #4）
+
+### 修改內容
+1. `backend/services/embedding_service.py` (修改):
+   - **`query_to_semantic_json` 回傳值新增 `is_fallback` 欄位**：Instruct AI 成功解析出合法 JSON 且含 `embeddings_input` 時標記 `is_fallback: False`；逾時、HTTP 錯誤、JSON 解析失敗、或解析結果缺少 `embeddings_input` 時一律回傳 `fallback_json` 並標記 `is_fallback: True`。
+   - 補上「JSON 缺少 embeddings_input」情境的 `logger.warning`，先前此分支完全沒有 log，難以追蹤觸發原因。
+2. `backend/schemas/retrieval.py` (修改):
+   - **`RetrievalResponse` 新增 `is_fallback: Optional[bool]` 欄位**。
+3. `backend/routers/retrieval.py` (修改):
+   - **`/semantic-hybrid-search` 從 `semantic_json` 中取出 `is_fallback` 並帶入回應**，讓測試時能直接從 API 回應判斷該次語義轉換是否為降級結果，不需再肉眼比對 `embeddings_input` 是否等於原始問題。
+   - 註：`rag.py`、`evaluation.py` 呼叫 `query_to_semantic_json` 時取得的 `semantic_json` 字典也會自動帶有 `is_fallback` 欄位（因為是同一個回傳值），但本次僅將其暴露到 `/semantic-hybrid-search` 的回應 Schema，尚未在 RAG 對話串流或評估報表中額外處理。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/SemanticSearchOptimizationPlan.md` 第 4 項。
+
+## 2026-07-02 放寬雙階段檢索 2nd-hop 鄰居搜尋門檻（Semantic Search Optimization #2）
+
+### 修改內容
+1. `backend/services/qdrant_service.py` (修改):
+   - **`search_similar_two_step` 新增 `neighbor_score_threshold: float = 0.1` 參數**：鄰居搜尋（2nd-hop，擴充 `links_to` 關聯內容）原本套用與核心搜尋相同的 `score_threshold`（預設 0.4），過於嚴格容易把大部分鄰居過濾掉，導致第二階段形同虛設。改為獨立的較寬鬆門檻，只影響鄰居搜尋，核心搜尋（1st-hop）行為不變。
+   - 套用位置：hybrid RRF 融合的密集向量 prefetch、hybrid 失敗降級的純向量查詢、以及純向量檢索分支的 `query_points`，共 3 處。
+   - 呼叫端（`retrieval.py`、`rag.py`、`evaluation.py`）未變動介面，沿用新參數的預設值即可。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/SemanticSearchOptimizationPlan.md` 第 2 項。
+
+## 2026-07-02 新增語義搜尋結構化元資料快取（Semantic Search Optimization #1）
+
+### 修改內容
+1. `backend/services/qdrant_service.py` (修改):
+   - **新增 `get_unique_metadata` 記憶體快取**：以 `collection_name` 為鍵值快取結構化知識庫地圖（filenames/tags/structured_metadata），TTL 600 秒作為保底，避免每次語義混合搜尋都重新 scroll 整個 Collection（最多 10000 點）。
+   - **新增 `invalidate_metadata_cache` 類別方法**：供寫入/刪除向量的操作主動清除快取，確保資料一致性優先於 TTL 過期。
+2. `backend/routers/embedding.py` (修改):
+   - 於 `vectorize_chunks`、`vectorize_json` 寫入 Qdrant 成功後呼叫 `invalidate_metadata_cache`。
+3. `backend/routers/retrieval.py` (修改):
+   - 於 `batch_delete_points`、`delete_file_by_filename`、`update_file_links` 三個會變更向量 payload 的端點成功後呼叫 `invalidate_metadata_cache`。
+4. `backend/routers/knowledge_base.py` (修改):
+   - 於 `delete_knowledge_base` 刪除 Qdrant collection 後呼叫 `invalidate_metadata_cache`。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/SemanticSearchOptimizationPlan.md` 第 1 項。
+
 ## 2026-07-01 修正雙階段檢索 (Two-Step Search) 關聯檔案全量載入與 context 稀釋問題
 
 ### 修改內容

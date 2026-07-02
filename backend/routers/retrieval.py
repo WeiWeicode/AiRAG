@@ -12,6 +12,7 @@ from schemas.retrieval import (
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
+from services.rerank_service import RerankService
 from models.knowledge_base import KnowledgeBase
 from utils.security import get_current_user
 
@@ -139,7 +140,8 @@ async def semantic_hybrid_search(request: RetrievalRequest):
         sparse_keywords = None
         query_vector_preview = None
         vector_size = None
-        
+        is_fallback = None
+
         has_query = bool(request.query and request.query.strip())
         search_query_text = request.query
         
@@ -158,6 +160,7 @@ async def semantic_hybrid_search(request: RetrievalRequest):
                 request.query, filenames=filenames, tags=tags, structured_metadata=structured_metadata
             )
             logger.info(f"[Retrieval] 已從 Instruct AI 取得結構化 JSON，以下是結構化內容: {semantic_json}")
+            is_fallback = semantic_json.get("is_fallback", False)
             embeddings_input = semantic_json.get("embeddings_input", request.query)
             sparse_keywords = semantic_json.get("sparse_keywords", [])
             
@@ -180,9 +183,14 @@ async def semantic_hybrid_search(request: RetrievalRequest):
             score_threshold=request.params.score_threshold if has_query else 0.0,
             filter_tags=request.params.filter_tags,
             filter_filename=request.params.filter_filename,
-            disable_parent_merge=request.params.disable_parent_merge
+            disable_parent_merge=request.params.disable_parent_merge,
+            sparse_keywords=sparse_keywords
         )
-        
+
+        # 2.5 借用 Instruct LLM 對融合後的候選片段做相關性重排序，取前 top_k 筆
+        if has_query and raw_results:
+            raw_results = await RerankService.rerank(request.query, raw_results, request.params.top_k)
+
         # 3. 包裝為回應格式
         results = []
         for item in raw_results:
@@ -207,7 +215,7 @@ async def semantic_hybrid_search(request: RetrievalRequest):
                     distance=item.get("distance", 1.0)
                 )
             )
-            
+
         elapsed = int((time.time() - start_time) * 1000)
         return RetrievalResponse(
             query=request.query,
@@ -217,7 +225,8 @@ async def semantic_hybrid_search(request: RetrievalRequest):
             embeddings_input=embeddings_input,
             sparse_keywords=sparse_keywords,
             query_vector_preview=query_vector_preview,
-            vector_size=vector_size
+            vector_size=vector_size,
+            is_fallback=is_fallback
         )
     except Exception as e:
         logger.error(f"Semantic hybrid search failed: {e}")
@@ -335,7 +344,8 @@ async def batch_delete_points(knowledge_base_id: str, request: BatchDeleteReques
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="無法從向量資料庫中刪除指定的 Points"
         )
-        
+    QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
+
     # 更新 MongoDB 中的 chunk_count
     kb.chunk_count = max(0, kb.chunk_count - len(request.point_ids))
     kb.updated_at = datetime.utcnow()
@@ -375,7 +385,8 @@ async def delete_file_by_filename(knowledge_base_id: str, request: DeleteByFilen
         
     try:
         deleted_count = await QdrantService.delete_by_filename(kb.qdrant_collection_name, request.filename)
-        
+        QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
+
         # 更新 MongoDB 中的 chunk_count
         kb.chunk_count = max(0, kb.chunk_count - deleted_count)
         kb.updated_at = datetime.utcnow()
@@ -425,7 +436,8 @@ async def update_file_links(knowledge_base_id: str, request: UpdateLinksRequest)
             filename=request.filename,
             links_to=request.links_to
         )
-        
+        QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
+
         kb.updated_at = datetime.utcnow()
         await kb.save()
         
