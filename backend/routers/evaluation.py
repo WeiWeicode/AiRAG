@@ -13,6 +13,7 @@ from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
 from services.rerank_service import RerankService
+from services.feedback_boost_service import FeedbackBoostService
 from utils.security import get_current_user
 
 logger = logging.getLogger("airag.evaluation_router")
@@ -249,7 +250,8 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
             # A. 向量檢索
             if kb:
                 try:
-                    if search_type == "semantic_hybrid":
+                    is_semantic_hybrid_family = search_type in ("semantic_hybrid", "semantic_hybrid_feedback")
+                    if is_semantic_hybrid_family:
                         # 語義混合查詢流程
                         semantic_json = await EmbeddingService.query_to_semantic_json(
                             item.question, filenames=filenames, tags=tags, structured_metadata=structured_metadata
@@ -258,7 +260,7 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
 
                         embeddings_input = semantic_json.get("embeddings_input", item.question)
                         sparse_keywords = semantic_json.get("sparse_keywords", [])
-                        
+
                         query_vector = await EmbeddingService.get_semantic_embedding(embeddings_input)
                         search_query_text = " ".join(sparse_keywords) if sparse_keywords else item.question
                     else:
@@ -266,22 +268,28 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
                         search_query_text = item.question
                         sparse_keywords = None
 
-                    # semantic_hybrid 時多召回一批候選（供 rerank 使用），其餘搜尋類型維持原本 top_k
-                    fetch_k = max(top_k, RerankService.MAX_CANDIDATES) if search_type == "semantic_hybrid" else top_k
+                    # semantic_hybrid 系列時多召回一批候選（供 rerank 使用），其餘搜尋類型維持原本 top_k
+                    fetch_k = max(top_k, RerankService.MAX_CANDIDATES) if is_semantic_hybrid_family else top_k
 
                     search_results = await QdrantService.search_similar(
                         collection_name=kb.qdrant_collection_name,
                         query_vector=query_vector,
                         query_text=search_query_text,
-                        search_type=search_type,
+                        search_type="semantic_hybrid" if is_semantic_hybrid_family else search_type,
                         top_k=fetch_k,
                         score_threshold=score_threshold,
                         sparse_keywords=sparse_keywords
                     )
 
                     # 借用 Instruct LLM 對融合後的候選片段做相關性重排序，取前 top_k 筆
-                    if search_type == "semantic_hybrid" and search_results:
+                    if is_semantic_hybrid_family and search_results:
                         search_results = await RerankService.rerank(item.question, search_results, top_k)
+
+                    # 語義混合回饋查詢法：依歷史人工回饋對命中片段做分數加權重排
+                    if search_type == "semantic_hybrid_feedback" and search_results:
+                        search_results = await FeedbackBoostService.apply_feedback_boost(
+                            search_results, knowledge_base_id=str(kb.id)
+                        )
 
                     retrieved_contexts = [r.get("content", "") for r in search_results]
                 except Exception as se:

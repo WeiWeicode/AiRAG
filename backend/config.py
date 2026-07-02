@@ -40,5 +40,6 @@ class Settings:
     DEFAULT_SCORE_THRESHOLD: float = float(os.getenv("DEFAULT_SCORE_THRESHOLD", "0.7"))
     DEFAULT_CHUNK_SIZE: int = int(os.getenv("DEFAULT_CHUNK_SIZE", "512"))
     DEFAULT_CHUNK_OVERLAP: int = int(os.getenv("DEFAULT_CHUNK_OVERLAP", "50"))
+    FEEDBACK_BOOST_WEIGHT: float = float(os.getenv("FEEDBACK_BOOST_WEIGHT", "0.2"))
 
 settings = Settings()

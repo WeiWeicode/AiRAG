@@ -13,6 +13,7 @@ from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
 from services.rerank_service import RerankService
+from services.feedback_boost_service import FeedbackBoostService
 from models.knowledge_base import KnowledgeBase
 from utils.security import get_current_user
 
@@ -48,18 +49,23 @@ async def search(request: RetrievalRequest):
             query_vector = await EmbeddingService.get_embedding(request.query)
         
         # 2. 向 Qdrant 進行雙路融合檢索、純向量檢索或直接 Scroll
-        if request.params.search_type == "semantic_hybrid":
+        is_semantic_hybrid_family = request.params.search_type in ("semantic_hybrid", "semantic_hybrid_feedback")
+        if is_semantic_hybrid_family:
             raw_results = await QdrantService.search_similar_two_step(
                 collection_name=kb.qdrant_collection_name,
                 query_vector=query_vector,
                 query_text=request.query,
-                search_type=request.params.search_type,
+                search_type="semantic_hybrid",
                 top_k=request.params.top_k,
                 score_threshold=request.params.score_threshold if has_query else 0.0,
                 filter_tags=request.params.filter_tags,
                 filter_filename=request.params.filter_filename,
                 disable_parent_merge=request.params.disable_parent_merge
             )
+            if request.params.search_type == "semantic_hybrid_feedback":
+                raw_results = await FeedbackBoostService.apply_feedback_boost(
+                    raw_results, knowledge_base_id=request.knowledge_base_id
+                )
         else:
             raw_results = await QdrantService.search_similar(
                 collection_name=kb.qdrant_collection_name,
@@ -190,6 +196,12 @@ async def semantic_hybrid_search(request: RetrievalRequest):
         # 2.5 借用 Instruct LLM 對融合後的候選片段做相關性重排序，取前 top_k 筆
         if has_query and raw_results:
             raw_results = await RerankService.rerank(request.query, raw_results, request.params.top_k)
+
+        # 2.6 若為語義混合回饋查詢法，依歷史人工回饋對命中片段做分數加權重排
+        if has_query and raw_results and request.params.search_type == "semantic_hybrid_feedback":
+            raw_results = await FeedbackBoostService.apply_feedback_boost(
+                raw_results, knowledge_base_id=request.knowledge_base_id
+            )
 
         # 3. 包裝為回應格式
         results = []

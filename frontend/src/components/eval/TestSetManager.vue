@@ -177,6 +177,7 @@ onMounted(() => {
             <option value="vector" class="bg-[#111827] text-white">向量搜尋 (Vector Search)</option>
             <option value="hybrid" class="bg-[#111827] text-white">混合搜尋 (Hybrid Search)</option>
             <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合查詢 (Semantic Hybrid Search)</option>
+            <option value="semantic_hybrid_feedback" class="bg-[#111827] text-white">語義混合回饋查詢法 (Semantic Hybrid + Feedback)</option>
           </select>
         </div>
 

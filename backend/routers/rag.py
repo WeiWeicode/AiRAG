@@ -11,6 +11,7 @@ from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
 from services.rerank_service import RerankService
+from services.feedback_boost_service import FeedbackBoostService
 from utils.security import get_current_user
 from config import settings
 
@@ -80,7 +81,7 @@ async def rag_chat_stream(request: ChatRequest):
                     yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
                     
                     # 取得提問向量
-                    if search_type == "semantic_hybrid":
+                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback"):
                         # 先發送進行中事件表示在進行 Instruct 語義分析
                         step_data = {
                             "step": "semantic_analysis",
@@ -168,12 +169,13 @@ async def rag_chat_stream(request: ChatRequest):
                     yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
 
                     # Qdrant 相似度與雙路融合檢索
-                    if search_type == "semantic_hybrid":
+                    feedback_boost_applied = False
+                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback"):
                         raw_results = await QdrantService.search_similar_two_step(
                             collection_name=kb.qdrant_collection_name,
                             query_vector=query_vector,
                             query_text=search_query_text,
-                            search_type=search_type,
+                            search_type="semantic_hybrid",
                             top_k=top_k,
                             score_threshold=score_threshold,
                             filter_tags=filter_tags,
@@ -182,6 +184,12 @@ async def rag_chat_stream(request: ChatRequest):
                         # 借用 Instruct LLM 對融合後的候選片段做相關性重排序，取前 top_k 筆
                         if raw_results:
                             raw_results = await RerankService.rerank(question, raw_results, top_k)
+                        # 語義混合回饋查詢法：依歷史人工回饋對命中片段做分數加權重排
+                        if search_type == "semantic_hybrid_feedback" and raw_results:
+                            raw_results = await FeedbackBoostService.apply_feedback_boost(
+                                raw_results, knowledge_base_id=request.knowledge_base_id
+                            )
+                            feedback_boost_applied = True
                     else:
                         raw_results = await QdrantService.search_similar(
                             collection_name=kb.qdrant_collection_name,
@@ -216,12 +224,14 @@ async def rag_chat_stream(request: ChatRequest):
                         chunk_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
                         context_parts.append(f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{item.get('content', '')}")
                         
-                        score_label = "RRF Score" if search_type in ["hybrid", "semantic_hybrid"] else "Score"
+                        score_label = "RRF Score" if search_type in ["hybrid", "semantic_hybrid", "semantic_hybrid_feedback"] else "Score"
                         retrieved_summary.append(f"[{idx+1}] 來源文件：{meta.get('filename', '未知')} | P.{meta.get('page', '?')} | {score_label}: {item.get('score', 0.0):.4f}\\n內容預覽：{item.get('content', '')[:100]}...")
 
                     if context_parts:
                         context_str = "\n---\n".join(context_parts)
                         search_details = f"檢索模式: {search_type}\\n Collection: {kb.qdrant_collection_name}\\n成功召回 {len(raw_results)} 筆相關段落：\\n\\n" + "\\n\\n".join(retrieved_summary)
+                        if feedback_boost_applied:
+                            search_details += "\\n\\n【已套用歷史回饋加權】依人工標註正確/不正確次數對命中片段分數進行了重排。"
                     else:
                         search_details = "向量檢索完成。沒有找到符合相似度閥值限制的相關資料。"
                     

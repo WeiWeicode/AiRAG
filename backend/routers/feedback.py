@@ -3,18 +3,22 @@ import io
 import json
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from beanie import PydanticObjectId
 
-from models.feedback import Feedback
+from models.feedback import Feedback, FeedbackSourceChunk
 from models.test_dataset import TestDataset, DatasetItem
 from utils.security import get_current_user
 
 logger = logging.getLogger("airag.feedback_router")
 router = APIRouter(prefix="/feedback", tags=["Feedback"], dependencies=[Depends(get_current_user)])
+
+class FeedbackSourceChunkPayload(BaseModel):
+    filename: Optional[str] = None
+    chunk_index: Optional[Any] = None
 
 class FeedbackCreate(BaseModel):
     chat_message_id: str
@@ -24,6 +28,8 @@ class FeedbackCreate(BaseModel):
     note: Optional[str] = None
     question: str
     ai_answer: str
+    source_chunks: Optional[List[FeedbackSourceChunkPayload]] = None
+    knowledge_base_id: Optional[str] = None
 
 class FeedbackItem(BaseModel):
     feedback_id: str
@@ -51,6 +57,13 @@ async def create_feedback(request: FeedbackCreate, current_user: str = Depends(g
     提交回饋標註。
     """
     try:
+        source_chunks = None
+        if request.source_chunks:
+            source_chunks = [
+                FeedbackSourceChunk(filename=sc.filename, chunk_index=sc.chunk_index)
+                for sc in request.source_chunks
+            ]
+
         feedback = Feedback(
             chat_message_id=request.chat_message_id,
             is_correct=request.is_correct,
@@ -59,6 +72,8 @@ async def create_feedback(request: FeedbackCreate, current_user: str = Depends(g
             note=request.note,
             question=request.question,
             ai_answer=request.ai_answer,
+            source_chunks=source_chunks,
+            knowledge_base_id=request.knowledge_base_id,
             created_by=current_user,
             created_at=datetime.utcnow()
         )

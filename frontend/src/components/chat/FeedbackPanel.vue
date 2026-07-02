@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { useFeedbackStore } from '../../stores/feedbackStore'
+import { useParamsStore } from '../../stores/paramsStore'
 
 const props = defineProps({
   isOpen: {
@@ -18,11 +19,16 @@ const props = defineProps({
   content: {
     type: String,
     default: ''
+  },
+  sources: {
+    type: Array,
+    default: () => []
   }
 })
 
 const emit = defineEmits(['close', 'saved'])
 const feedbackStore = useFeedbackStore()
+const paramsStore = useParamsStore()
 
 const isSubmitting = ref(false)
 const selectedErrorTags = ref(new Set())
@@ -73,7 +79,12 @@ const handleSave = async () => {
       error_type,
       note: note.value.trim() || `多選標記: ${errorTypes.join(', ')}`,
       question: props.query,
-      ai_answer: props.content
+      ai_answer: props.content,
+      source_chunks: props.sources.map(s => ({
+        filename: s.metadata?.filename,
+        chunk_index: s.metadata?.chunk_index
+      })),
+      knowledge_base_id: paramsStore.knowledgeBaseId
     })
     
     emit('saved')

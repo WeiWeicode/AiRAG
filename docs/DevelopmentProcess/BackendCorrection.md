@@ -1,5 +1,17 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-07-02 新增語義混合回饋查詢法後端邏輯（人工回饋與標註歷史）
+
+### 修改內容
+1. `backend/models/feedback.py` (修改)：`Feedback` 新增 `source_chunks`（`FeedbackSourceChunk` 內嵌模型：`filename`/`chunk_index`）、`knowledge_base_id` 欄位與對應索引，記錄該次回答引用的檢索來源。
+2. `backend/routers/feedback.py` (修改)：`FeedbackCreate` 與 `create_feedback()` 支援寫入新欄位。
+3. `backend/services/feedback_boost_service.py` (新增)：`FeedbackBoostService.apply_feedback_boost()` 依 `(filename, chunk_index)` 統計歷史回饋正確/不正確次數計算 boost 並重排分數，失敗優雅降級。
+4. `backend/config.py` (修改)：新增 `FEEDBACK_BOOST_WEIGHT`（預設 `0.2`）。
+5. `backend/routers/retrieval.py`、`backend/routers/rag.py`、`backend/routers/evaluation.py` (修改)：三處檢索路由支援新的 `search_type="semantic_hybrid_feedback"`，於既有語義混合流程（Two-Step Hybrid + Rerank）之後套用回饋加權；呼叫 `QdrantService` 時仍固定傳 `"semantic_hybrid"` 字面值，Qdrant 層邏輯不變。
+
+### 對應規劃文件
+詳細功能描述見 `docs/DevelopmentProcess/NewFeatures.md` 2026-07-02「新增語義混合回饋查詢法並補上人工回饋→檢索來源的資料鏈路」條目。
+
 ## 2026-07-02 停用 huggingface_hub 的 agent-harness 偵測遙測（Semantic Search Optimization #8）
 
 ### 問題描述

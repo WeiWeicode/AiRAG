@@ -67,7 +67,7 @@ const handleSearch = async () => {
   transformedQuery.value = ''
   selectedChunkIds.value = []
   
-  if (searchType.value === 'semantic_hybrid') {
+  if (['semantic_hybrid', 'semantic_hybrid_feedback'].includes(searchType.value)) {
     semanticSteps.value = [
       { key: 'semantic_analysis', name: '語義分析', status: 'running', content: '正在發送提問至地端 AI 進行語義分析與結構化轉換...\n原始提問："' + queryText.value.trim() + '"', expanded: true },
       { key: 'vector_search', name: '向量資料查詢', status: 'pending', content: '', expanded: false }
@@ -93,13 +93,14 @@ const handleSearch = async () => {
         filter_filename: filterFilename.value || undefined
       }
     }
-    const response = searchType.value === 'semantic_hybrid'
+    const isSemanticHybridFamily = ['semantic_hybrid', 'semantic_hybrid_feedback'].includes(searchType.value)
+    const response = isSemanticHybridFamily
       ? await retrievalService.semanticHybridSearch(payload)
       : await retrievalService.search(payload)
     results.value = response.results || []
     elapsedMs.value = response.elapsed_ms || 0
-    
-    if (searchType.value === 'semantic_hybrid' && response && semanticSteps.value) {
+
+    if (isSemanticHybridFamily && response && semanticSteps.value) {
       const jsonStr = response.semantic_json ? JSON.stringify(response.semantic_json, null, 2) : '{}'
       const embeddingsInput = response.embeddings_input || queryText.value.trim()
       const vectorPreview = response.query_vector_preview || '無'
@@ -459,6 +460,7 @@ const handleBatchDelete = async () => {
             <option value="vector" class="bg-[#111827] text-white">向量搜尋 (Vector Search)</option>
             <option value="hybrid" class="bg-[#111827] text-white">混合搜尋 (Hybrid Search)</option>
             <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合搜尋 (Semantic Hybrid Search)</option>
+            <option value="semantic_hybrid_feedback" class="bg-[#111827] text-white">語義混合回饋查詢法 (Semantic Hybrid + Feedback)</option>
           </select>
         </div>
 

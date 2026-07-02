@@ -6,7 +6,6 @@ import MessageBubble from './MessageBubble.vue'
 import FeedbackPanel from './FeedbackPanel.vue'
 
 const chatStore = useChatStore()
-const paramsStore = useParamsStore()
 
 const inputMessage = ref('')
 const messageContainer = ref(null)
@@ -16,6 +15,7 @@ const isFeedbackOpen = ref(false)
 const selectedMessageId = ref('')
 const selectedQuery = ref('')
 const selectedContent = ref('')
+const selectedSources = ref([])
 
 const handleSend = async () => {
   const query = inputMessage.value.trim()
@@ -42,7 +42,8 @@ const openFeedbackModal = (messageId) => {
     selectedMessageId.value = messageId
     selectedQuery.value = userMsg ? userMsg.content : ''
     selectedContent.value = assistantMsg.content
-    
+    selectedSources.value = assistantMsg.sources || []
+
     isFeedbackOpen.value = true
   }
 }
@@ -77,43 +78,6 @@ const handleNewChat = () => {
         <div class="flex items-center gap-2">
           <span class="w-2.5 h-2.5 rounded-full bg-[#8b5cf6] animate-pulse"></span>
           <span class="text-sm font-medium text-white/80">對話視窗</span>
-        </div>
-
-        <!-- Search Mode Toggle -->
-        <div class="flex items-center bg-white/5 border border-white/8 rounded-lg p-0.5 ml-2">
-          <button 
-            @click="paramsStore.searchMode = 'vector'"
-            :class="[
-              'px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all',
-              paramsStore.searchMode === 'vector' 
-                ? 'bg-[#8b5cf6] text-white shadow-[0_2px_8px_rgba(139,92,246,0.3)]' 
-                : 'text-[#9ca3af] hover:text-white hover:bg-white/5'
-            ]"
-          >
-            向量查詢
-          </button>
-          <button 
-            @click="paramsStore.searchMode = 'hybrid'"
-            :class="[
-              'px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all',
-              paramsStore.searchMode === 'hybrid' 
-                ? 'bg-[#8b5cf6] text-white shadow-[0_2px_8px_rgba(139,92,246,0.3)]' 
-                : 'text-[#9ca3af] hover:text-white hover:bg-white/5'
-            ]"
-          >
-            混合查詢
-          </button>
-          <button 
-            @click="paramsStore.searchMode = 'semantic_hybrid'"
-            :class="[
-              'px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all',
-              paramsStore.searchMode === 'semantic_hybrid' 
-                ? 'bg-[#8b5cf6] text-white shadow-[0_2px_8px_rgba(139,92,246,0.3)]' 
-                : 'text-[#9ca3af] hover:text-white hover:bg-white/5'
-            ]"
-          >
-            語義混合查詢
-          </button>
         </div>
       </div>
 
@@ -173,11 +137,12 @@ const handleNewChat = () => {
     </div>
 
     <!-- Feedback Modal -->
-    <FeedbackPanel 
+    <FeedbackPanel
       :is-open="isFeedbackOpen"
       :message-id="selectedMessageId"
       :query="selectedQuery"
       :content="selectedContent"
+      :sources="selectedSources"
       @close="isFeedbackOpen = false"
       @saved="isFeedbackOpen = false"
     />

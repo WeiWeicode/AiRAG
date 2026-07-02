@@ -68,7 +68,7 @@ export const useChatStore = defineStore('chat', {
         sources: null,
         thinking: '',
         isThinking: false,
-        steps: paramsStore.searchMode === 'semantic_hybrid' ? [
+        steps: ['semantic_hybrid', 'semantic_hybrid_feedback'].includes(paramsStore.searchMode) ? [
           { key: 'semantic_analysis', name: '語義分析', status: 'pending', content: '', expanded: false },
           { key: 'vector_search', name: '向量資料查詢', status: 'pending', content: '', expanded: false },
           { key: 'llm_thinking', name: '思考中', status: 'pending', content: '', expanded: false },

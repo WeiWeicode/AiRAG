@@ -1,4 +1,38 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
+## 2026-07-02 新增「語義混合回饋查詢法」並補上人工回饋→檢索來源的資料鏈路
+
+### 功能描述
+補完 RPD 4.6「人工回饋與標註歷史」的資料閉環：過去 `Feedback` 只記錄問答文字，並未記錄該次回答引用了哪些檢索片段，導致回饋資料無法回頭影響檢索排序。本次新增後，標註時會一併儲存來源片段（`filename` + `chunk_index`），並新增一種檢索模式 `semantic_hybrid_feedback`（語義混合回饋查詢法），在既有語義混合（Two-Step Hybrid + Instruct 語義分析 + RRF + LLM Rerank）流程最後，依歷史人工回饋對命中片段做分數加權重排。
+
+### 實作內容
+1. **回饋資料模型擴充**：
+   - 修改 `backend/models/feedback.py`：新增內嵌模型 `FeedbackSourceChunk`（`filename`/`chunk_index`），`Feedback` 新增 `source_chunks`、`knowledge_base_id` 欄位，並新增 `source_chunks.filename` 索引。
+   - 修改 `backend/routers/feedback.py`：`FeedbackCreate` 新增對應欄位，`create_feedback()` 寫入時一併儲存。
+2. **前端送出回饋時夾帶來源片段**：
+   - 修改 `frontend/src/components/chat/ChatWindow.vue`：`openFeedbackModal()` 額外取出當次回答的 `sources`，傳給 `FeedbackPanel`。
+   - 修改 `frontend/src/components/chat/FeedbackPanel.vue`：新增 `sources` prop，送出回饋時組出 `source_chunks` 與 `knowledge_base_id`（取自 `paramsStore.knowledgeBaseId`）。
+3. **回饋加權服務**：
+   - 新增 `backend/services/feedback_boost_service.py`：`FeedbackBoostService.apply_feedback_boost()`，依 `(filename, chunk_index)` 統計歷史回饋正確/不正確次數，`boost = (正確-不正確)/(正確+不正確)`，套用 `final_score = score × (1 + FEEDBACK_BOOST_WEIGHT × boost)` 後重新排序；任何錯誤皆優雅降級為保留原排序，比照 `RerankService` 的寫法。
+   - 修改 `backend/config.py`：新增可調參數 `FEEDBACK_BOOST_WEIGHT`（預設 `0.2`）。
+4. **三處檢索路由接上新 search_type**：
+   - 修改 `backend/routers/retrieval.py`（`search()`、`semantic_hybrid_search()`）、`backend/routers/rag.py`（`rag_chat_stream()`）、`backend/routers/evaluation.py`（評估執行迴圈）：`search_type in ("semantic_hybrid", "semantic_hybrid_feedback")` 時走既有語義混合流程，呼叫 Qdrant 服務時固定傳字面值 `"semantic_hybrid"`（Qdrant 層完全不修改），rerank 後若為 `semantic_hybrid_feedback` 則多套用一次 `FeedbackBoostService`。`rag.py` 額外在 SSE `vector_search` step 內容附註「已套用歷史回饋加權」。
+5. **前端新增檢索模式選項**：
+   - 修改 `frontend/src/components/params/RagParamsPanel.vue`、`frontend/src/views/RetrievalTestView.vue`、`frontend/src/components/eval/TestSetManager.vue`：新增「語義混合回饋查詢法 (Semantic Hybrid + Feedback)」選項；`RetrievalTestView.vue` 的 `handleSearch()` 路由判斷（打哪個端點、是否顯示語義分析步驟 UI）一併涵蓋新選項。
+
+### 修改檔案
+- `backend/models/feedback.py`
+- `backend/routers/feedback.py`
+- `backend/services/feedback_boost_service.py`（新增）
+- `backend/config.py`
+- `backend/routers/retrieval.py`
+- `backend/routers/rag.py`
+- `backend/routers/evaluation.py`
+- `frontend/src/components/chat/ChatWindow.vue`
+- `frontend/src/components/chat/FeedbackPanel.vue`
+- `frontend/src/components/params/RagParamsPanel.vue`
+- `frontend/src/views/RetrievalTestView.vue`
+- `frontend/src/components/eval/TestSetManager.vue`
+
 ## 2026-07-01 向量管理頁面新增關聯檔案 (links_to) 管理與顯示功能
 
 ### 功能描述
