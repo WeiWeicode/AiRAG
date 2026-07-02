@@ -53,8 +53,8 @@ curl -N -X POST "http://localhost:8000/api/rag/chat" \
      }'
 ```
 *預期串流內容*：
-* 會先回傳 `event: step` 帶有 `semantic_analysis`（地端語義化 AI 解析提問出的 JSON）與 `retrieval` 召回來源。
-* 隨後以 `event: chunk` 串流輸出對答字元。
+* 會先回傳 `event: step` 帶有 `semantic_analysis`（地端語義化 AI 解析提問出的 JSON）與 `vector_search`（召回來源，語義混合模式下為雙階段關聯檢索）。實際事件欄位為 `step`/`status`/`content`。
+* 隨後以 `event: chunk` 串流輸出對答字元（`type: reasoning|content|done`）。
 
 ### 3.2 測試獨立語義混合檢索 (Semantic Hybrid Search)
 * **API 端點**：`POST /api/retrieval/semantic-hybrid-search`
@@ -159,7 +159,7 @@ curl -X POST "http://localhost:8000/api/database-indexing/ingest" \
          "password": "your_db_password"
        },
        "sql_query": "SELECT ITEM_ID, ITEM_NAME, SPEC FROM dbo.products",
-       "ingestion_mode": "text",
+       "ingestion_mode": "natural_language",
        "one_chunk_per_row": true,
        "table_meaning": "ERP 品號規格對照表",
        "columns_config": {
