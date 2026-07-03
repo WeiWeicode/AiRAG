@@ -44,4 +44,11 @@ class Settings:
     DEFAULT_CHUNK_OVERLAP: int = int(os.getenv("DEFAULT_CHUNK_OVERLAP", "50"))
     FEEDBACK_BOOST_WEIGHT: float = float(os.getenv("FEEDBACK_BOOST_WEIGHT", "0.2"))
 
+    # 語義資料庫查詢法 (Semantic DB Query)
+    AI_DB_QUERY_MAX_ROWS: int = int(os.getenv("AI_DB_QUERY_MAX_ROWS", "50"))
+    AI_DB_QUERY_MAX_CHARS: int = int(os.getenv("AI_DB_QUERY_MAX_CHARS", "4000"))
+    AI_DB_QUERY_PROFILE_SCORE_THRESHOLD: float = float(os.getenv("AI_DB_QUERY_PROFILE_SCORE_THRESHOLD", "0.5"))
+    # 不限定知識庫（全域掃描自動選取）模式下，最多同時執行幾個候選設定檔的查詢並合併結果
+    AI_DB_QUERY_MAX_PROFILES_PER_QUERY: int = int(os.getenv("AI_DB_QUERY_MAX_PROFILES_PER_QUERY", "3"))
+
 settings = Settings()

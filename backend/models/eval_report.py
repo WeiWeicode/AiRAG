@@ -22,6 +22,7 @@ class EvalDetail(BaseModel):
     generated_answer: str
     retrieved_contexts: List[str] = Field(default_factory=list)
     scores: EvalMetrics = Field(default_factory=EvalMetrics)
+    db_query_note: Optional[str] = None  # 語義資料庫查詢法專用：記錄自動選取的設定檔/SQL 或失敗原因
 
 class EvalReport(Document):
     dataset_id: PydanticObjectId

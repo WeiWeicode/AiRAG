@@ -26,6 +26,7 @@ from models.eval_report import EvalReport
 from models.tag import Tag
 from models.class_option import ClassOption
 from models.database_config import DatabaseConfig
+from models.db_query_profile import DBQueryProfile
 
 
 logger = logging.getLogger("airag.mongodb")
@@ -196,7 +197,8 @@ async def init_mongodb():
                 EvalReport,
                 Tag,
                 ClassOption,
-                DatabaseConfig
+                DatabaseConfig,
+                DBQueryProfile
             ]
         )
         logger.info("MongoDB and Beanie ODM initialized successfully.")

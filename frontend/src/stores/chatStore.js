@@ -50,8 +50,7 @@ export const useChatStore = defineStore('chat', {
     },
     async sendQuestion(question) {
       const paramsStore = useParamsStore()
-      const authStore = useAuthStore()
-      
+
       const userMessage = {
         id: 'msg_user_' + Date.now(),
         role: 'user',
@@ -68,7 +67,10 @@ export const useChatStore = defineStore('chat', {
         sources: null,
         thinking: '',
         isThinking: false,
-        steps: ['semantic_hybrid', 'semantic_hybrid_feedback'].includes(paramsStore.searchMode) ? [
+        question,
+        dbQueryCandidates: null,
+        awaitingProfileSelection: false,
+        steps: ['semantic_hybrid', 'semantic_hybrid_feedback', 'semantic_db_query'].includes(paramsStore.searchMode) ? [
           { key: 'semantic_analysis', name: '語義分析', status: 'pending', content: '', expanded: false },
           { key: 'vector_search', name: '向量資料查詢', status: 'pending', content: '', expanded: false },
           { key: 'llm_thinking', name: '思考中', status: 'pending', content: '', expanded: false },
@@ -77,18 +79,38 @@ export const useChatStore = defineStore('chat', {
         created_at: new Date().toISOString()
       }
       this.messages.push(assistantMessage)
-      
+
+      await this._streamChat(question, assistantMessageId)
+    },
+
+    // 語義資料庫查詢法：使用者從候選查詢設定檔清單中選定一個後，帶著 selected_db_profile_id 重新請求，
+    // 沿用同一則 assistant 訊息繼續串流（不新增使用者訊息）。
+    async selectDbQueryProfile(assistantMessageId, profileId) {
+      const msg = this.messages.find(m => m.id === assistantMessageId)
+      if (!msg) return
+      msg.awaitingProfileSelection = false
+      msg.dbQueryCandidates = null
+      await this._streamChat(msg.question, assistantMessageId, profileId)
+    },
+
+    async _streamChat(question, assistantMessageId, selectedDbProfileId) {
+      const paramsStore = useParamsStore()
+      const authStore = useAuthStore()
+
       this.isLoading = true
-      
+
       try {
         const parsedFilterTags = paramsStore.filterTagsString.split(',')
           .map(t => t.trim())
           .filter(t => t.length > 0)
 
+        // 語義資料庫查詢法且勾選「不限定知識庫」時，不帶 knowledge_base_id，讓後端掃描所有知識庫的查詢設定檔
+        const useAutoKb = paramsStore.searchMode === 'semantic_db_query' && paramsStore.dbQueryAutoKb
         const payload = {
           question,
-          knowledge_base_id: paramsStore.knowledgeBaseId,
+          knowledge_base_id: useAutoKb ? null : paramsStore.knowledgeBaseId,
           chat_history: this.messages.slice(0, -2).map(m => ({ role: m.role, content: m.content })),
+          selected_db_profile_id: selectedDbProfileId,
           params: {
             model: paramsStore.model,
             temperature: paramsStore.temperature,
@@ -215,11 +237,16 @@ export const useChatStore = defineStore('chat', {
                   }
                 } else if (currentEvent === 'step') {
                   const msg = this.messages.find(m => m.id === assistantMessageId)
-                  if (msg && msg.steps) {
-                    const stepObj = msg.steps.find(s => s.key === data.step)
-                    if (stepObj) {
-                      stepObj.status = data.status
-                      stepObj.content = data.content
+                  if (msg) {
+                    if (data.step === 'profile_candidates') {
+                      msg.dbQueryCandidates = data.candidates || []
+                      msg.awaitingProfileSelection = true
+                    } else if (msg.steps) {
+                      const stepObj = msg.steps.find(s => s.key === data.step)
+                      if (stepObj) {
+                        stepObj.status = data.status
+                        stepObj.content = data.content
+                      }
                     }
                   }
                 } else if (currentEvent === 'sources') {
@@ -254,7 +281,7 @@ export const useChatStore = defineStore('chat', {
         const msg = this.messages.find(m => m.id === assistantMessageId)
         if (msg) {
           msg.isThinking = false
-          if (msg.steps) {
+          if (msg.steps && !msg.awaitingProfileSelection) {
             msg.steps.forEach(s => {
               if (s.status === 'running' || s.status === 'pending') {
                 s.status = 'success'

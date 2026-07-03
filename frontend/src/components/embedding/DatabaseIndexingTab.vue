@@ -2,8 +2,12 @@
 import { ref, watch, computed, onMounted } from 'vue'
 import { useParamsStore } from '../../stores/paramsStore'
 import databaseIndexingService from '../../services/databaseIndexingService'
+import DBQueryProfileManager from './DBQueryProfileManager.vue'
 
 const paramsStore = useParamsStore()
+
+// 子模式切換：① 將資料庫內容轉向量（既有功能，完全不動）／② AI 查詢設定檔（新增）
+const activeMode = ref('vectorize')
 
 // State
 const dbConfigs = ref([])
@@ -332,6 +336,27 @@ onMounted(() => {
 
 <template>
   <div class="flex flex-col gap-5">
+    <!-- 子模式切換 -->
+    <div class="flex gap-2 bg-white/3 border border-white/8 rounded-xl p-1.5 w-fit">
+      <button
+        @click="activeMode = 'vectorize'"
+        class="px-4 py-2 text-xs font-semibold rounded-lg transition-all"
+        :class="activeMode === 'vectorize' ? 'bg-[#8b5cf6] text-white' : 'text-[#9ca3af] hover:text-white'"
+      >
+        ① 將資料庫內容轉向量
+      </button>
+      <button
+        @click="activeMode = 'profile'"
+        class="px-4 py-2 text-xs font-semibold rounded-lg transition-all"
+        :class="activeMode === 'profile' ? 'bg-[#8b5cf6] text-white' : 'text-[#9ca3af] hover:text-white'"
+      >
+        ② AI 查詢設定檔
+      </button>
+    </div>
+
+    <DBQueryProfileManager v-if="activeMode === 'profile'" />
+
+    <template v-else>
     <!-- Connection Settings Card -->
     <div class="bg-[#111827]/70 border border-white/8 rounded-2xl p-5 backdrop-blur-md flex flex-col gap-4">
       <div class="flex justify-between items-center border-b border-white/5 pb-3">
@@ -618,6 +643,7 @@ onMounted(() => {
         </div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 

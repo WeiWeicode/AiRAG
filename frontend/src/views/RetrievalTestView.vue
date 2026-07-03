@@ -3,12 +3,21 @@ import { ref, watch, computed } from 'vue'
 import { useParamsStore } from '../stores/paramsStore'
 import KnowledgeBaseSelector from '../components/common/KnowledgeBaseSelector.vue'
 import retrievalService from '../services/retrievalService'
+import aiDbQueryService from '../services/aiDbQueryService'
 import api from '../services/api'
 
 const paramsStore = useParamsStore()
 
 // Local retrieval settings
 const searchType = ref('vector') // vector | hybrid
+
+// 語義資料庫查詢法 (Semantic DB Query) 專用狀態：兩段式流程，先列候選設定檔，使用者選定後才執行 SQL
+// 「不限定知識庫」模式下可能同時執行多個設定檔（例如問題橫跨附件與文章兩張表），故用陣列儲存結果
+const DB_QUERY_MAX_AUTO_PROFILES = 3
+const dbQueryCandidates = ref([])
+const dbQueryResults = ref([])
+const isMatchingProfiles = ref(false)
+const isExecutingDbQuery = ref(false)
 const hnswEfSearch = ref(128)
 const queryText = ref('')
 const isSearching = ref(false)
@@ -58,15 +67,77 @@ const toggleSelectAll = () => {
   }
 }
 
+const handleSemanticDbQuerySearch = async () => {
+  isSearching.value = true
+  isMatchingProfiles.value = true
+  results.value = []
+  dbQueryCandidates.value = []
+  dbQueryResults.value = []
+  try {
+    const res = await aiDbQueryService.matchProfiles({
+      question: queryText.value.trim(),
+      // 「不限定知識庫」勾選時不帶 knowledge_base_id，讓後端掃描所有知識庫的查詢設定檔
+      knowledge_base_id: paramsStore.dbQueryAutoKb ? undefined : paramsStore.knowledgeBaseId
+    })
+    const candidates = res.candidates || []
+    if (!candidates.length) {
+      alert('查無對應的資料庫查詢設定檔，請先於「資料庫匯入向量化」頁面建立查詢設定檔。')
+      return
+    }
+    if (paramsStore.dbQueryAutoKb) {
+      // 不限定知識庫時，沒有預設範圍可供使用者判斷取捨；問題可能同時橫跨多個表格/設定檔
+      // （例如同時問到附件與文章），因此依序執行分數最高的前幾個候選並合併結果，不列出候選讓使用者選
+      isMatchingProfiles.value = false
+      const topCandidates = candidates.slice(0, DB_QUERY_MAX_AUTO_PROFILES)
+      for (const candidate of topCandidates) {
+        await handleSelectDbProfile(candidate, { keepExisting: true })
+      }
+      return
+    }
+    dbQueryCandidates.value = candidates
+  } catch (error) {
+    alert(error.response?.data?.detail || '比對查詢設定檔失敗')
+  } finally {
+    isMatchingProfiles.value = false
+    isSearching.value = false
+  }
+}
+
+const handleSelectDbProfile = async (candidate, { keepExisting = false } = {}) => {
+  isExecutingDbQuery.value = true
+  if (!keepExisting) {
+    dbQueryResults.value = []
+  }
+  try {
+    const res = await aiDbQueryService.executeQuery({
+      question: queryText.value.trim(),
+      profile_id: candidate.profile_id,
+      max_rows: paramsStore.dbQueryMaxRows || undefined,
+      max_chars: paramsStore.dbQueryMaxChars || undefined
+    })
+    dbQueryResults.value = [...dbQueryResults.value, res]
+    dbQueryCandidates.value = []
+  } catch (error) {
+    alert(error.response?.data?.detail || '執行查詢失敗')
+  } finally {
+    isExecutingDbQuery.value = false
+  }
+}
+
 const handleSearch = async () => {
   if (!queryText.value.trim()) return
-  
+
+  if (searchType.value === 'semantic_db_query') {
+    await handleSemanticDbQuerySearch()
+    return
+  }
+
   isSearching.value = true
   results.value = []
   originalQuery.value = ''
   transformedQuery.value = ''
   selectedChunkIds.value = []
-  
+
   if (['semantic_hybrid', 'semantic_hybrid_feedback'].includes(searchType.value)) {
     semanticSteps.value = [
       { key: 'semantic_analysis', name: '語義分析', status: 'running', content: '正在發送提問至地端 AI 進行語義分析與結構化轉換...\n原始提問："' + queryText.value.trim() + '"', expanded: true },
@@ -328,8 +399,54 @@ const handleBatchDelete = async () => {
           </div>
         </div>
 
+        <!-- Semantic DB Query: 候選設定檔選取 / 執行結果 -->
+        <div v-if="searchType === 'semantic_db_query'" class="flex-grow overflow-y-auto flex flex-col gap-4">
+          <div v-if="isMatchingProfiles" class="h-40 flex items-center justify-center text-[#9ca3af] text-sm">
+            正在語義理解問題並比對查詢設定檔...
+          </div>
+          <div v-else-if="isExecutingDbQuery" class="h-40 flex items-center justify-center text-[#9ca3af] text-sm">
+            已選定查詢設定檔，正在產生 SQL 並查詢資料庫...
+          </div>
+          <div v-else-if="dbQueryResults.length > 0" class="flex flex-col gap-3">
+            <div v-if="dbQueryResults.length > 1" class="text-xs font-semibold text-white/70">
+              已自動選擇 {{ dbQueryResults.length }} 個相關設定檔，分別查詢後合併結果：
+            </div>
+            <div v-for="(r, idx) in dbQueryResults" :key="idx" class="bg-white/2 border border-white/8 rounded-xl p-4 flex flex-col gap-3">
+              <div class="text-xs font-semibold text-white">
+                已選定設定檔：{{ r.profile_name }}（查得 {{ r.row_count }} 筆，耗時 {{ r.elapsed_ms }} ms）
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <span class="text-[11px] text-[#9ca3af]">產生的 SQL</span>
+                <pre class="bg-black/20 border border-white/5 p-3 rounded text-[11px] text-[#a78bfa] overflow-x-auto whitespace-pre-wrap font-mono">{{ r.generated_sql }}</pre>
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <span class="text-[11px] text-[#9ca3af]">查詢結果內容（將交給主模型總結）</span>
+                <pre class="bg-black/20 border border-white/5 p-3 rounded text-[11px] text-[#9ca3af] overflow-x-auto whitespace-pre-wrap font-mono max-h-96">{{ r.context_text }}</pre>
+              </div>
+            </div>
+          </div>
+          <div v-else-if="dbQueryCandidates.length > 0" class="flex flex-col gap-2">
+            <div class="text-xs font-semibold text-white/70 mb-1">找到以下候選查詢設定檔，請選擇其中一個以繼續查詢：</div>
+            <button
+              v-for="c in dbQueryCandidates"
+              :key="c.profile_id"
+              @click="handleSelectDbProfile(c)"
+              class="text-left bg-white/2 border border-white/8 hover:border-[#8b5cf6]/50 hover:bg-white/4 rounded-xl p-4 transition-all"
+            >
+              <div class="flex justify-between items-center">
+                <span class="text-xs font-semibold text-white">{{ c.name }}</span>
+                <span class="bg-[#10b981]/15 text-[#10b981] font-semibold font-display px-2 py-0.5 rounded text-[10px]">Score: {{ c.score.toFixed(4) }}</span>
+              </div>
+              <div class="text-[11px] text-[#9ca3af] mt-1">表格: {{ c.table_name }}｜{{ c.table_purpose }}</div>
+            </button>
+          </div>
+          <div v-else class="h-40 flex items-center justify-center text-[#6b7280] text-sm">
+            請輸入問題以搜尋對應的資料庫查詢設定檔
+          </div>
+        </div>
+
         <!-- Results Scroll Area -->
-        <div class="flex-grow overflow-y-auto flex flex-col gap-4">
+        <div v-else class="flex-grow overflow-y-auto flex flex-col gap-4">
           <div v-if="isSearching" class="h-40 flex items-center justify-center text-[#9ca3af] text-sm gap-2">
             <!-- Simple loading spinner -->
             <svg class="animate-spin h-5 w-5 text-[#8b5cf6]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -461,7 +578,26 @@ const handleBatchDelete = async () => {
             <option value="hybrid" class="bg-[#111827] text-white">混合搜尋 (Hybrid Search)</option>
             <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合搜尋 (Semantic Hybrid Search)</option>
             <option value="semantic_hybrid_feedback" class="bg-[#111827] text-white">語義混合回饋查詢法 (Semantic Hybrid + Feedback)</option>
+            <option value="semantic_db_query" class="bg-[#111827] text-white">語義資料庫查詢法 (Semantic DB Query)</option>
           </select>
+        </div>
+
+        <!-- Semantic DB Query 專用參數 -->
+        <div v-if="searchType === 'semantic_db_query'" class="flex flex-col gap-3 border-t border-white/8 pt-4">
+          <label class="flex items-center gap-2 text-xs text-[#9ca3af] cursor-pointer">
+            <input type="checkbox" v-model="paramsStore.dbQueryAutoKb" class="rounded bg-white/5 border-white/10 text-[#8b5cf6] cursor-pointer" />
+            不限定知識庫（讓 AI 自動掃描所有知識庫並判斷使用哪個查詢設定檔）
+          </label>
+          <div class="flex flex-col gap-1.5">
+            <label class="text-[11px] text-[#9ca3af]">查詢筆數上限 (Max Rows)</label>
+            <input v-model.number="paramsStore.dbQueryMaxRows" type="number" min="1" placeholder="預設 50"
+              class="bg-white/5 border border-white/8 rounded-lg text-white px-3 py-2 text-xs focus:outline-none focus:border-[#8b5cf6]" />
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <label class="text-[11px] text-[#9ca3af]">結果字數上限 (Max Chars)</label>
+            <input v-model.number="paramsStore.dbQueryMaxChars" type="number" min="1" placeholder="預設 4000"
+              class="bg-white/5 border border-white/8 rounded-lg text-white px-3 py-2 text-xs focus:outline-none focus:border-[#8b5cf6]" />
+          </div>
         </div>
 
         <!-- efSearch Slider -->

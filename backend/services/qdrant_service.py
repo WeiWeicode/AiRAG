@@ -287,10 +287,18 @@ class QdrantService:
                     )
                 )
             
-            query_filter = None
-            if must_conditions:
-                query_filter = models.Filter(must=must_conditions)
-            
+            # 排除語義資料庫查詢法 (Semantic DB Query) 的查詢設定檔向量，避免混入一般文件檢索結果。
+            # 既有資料的 source 欄位從未出現過此值，此條件對既有查詢結果零影響。
+            query_filter = models.Filter(
+                must=must_conditions if must_conditions else None,
+                must_not=[
+                    models.FieldCondition(
+                        key="source",
+                        match=models.MatchValue(value="db_query_profile")
+                    )
+                ]
+            )
+
             if search_type in ["hybrid", "semantic_hybrid"] and query_vector is not None and query_text is not None and query_text.strip():
                 try:
                     from services.sparse_embedding_service import SparseEmbeddingService
@@ -545,7 +553,15 @@ class QdrantService:
                     models.FieldCondition(key="filename", match=models.MatchAny(any=all_links)),
                     models.FieldCondition(key="custom_id", match=models.MatchAny(any=all_links))
                 ]
-                scroll_filter = models.Filter(should=should_conditions)
+                scroll_filter = models.Filter(
+                    should=should_conditions,
+                    must_not=[
+                        models.FieldCondition(
+                            key="source",
+                            match=models.MatchValue(value="db_query_profile")
+                        )
+                    ]
+                )
                 
                 points = []
                 # 情況 A：若啟用 Hybrid / Semantic Hybrid，且有向量與查詢文字，則進行帶 Filter 的混合檢索
@@ -934,6 +950,150 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Failed to update links_to by filename '{filename}' in collection '{collection_name}': {e}")
             raise e
+
+    @classmethod
+    async def upsert_db_query_profile(
+        cls,
+        collection_name: str,
+        profile_id: str,
+        composed_description: str,
+        dense_vector: List[float],
+        knowledge_base_id: str,
+        table_name: str,
+        existing_point_id: Optional[str] = None,
+        vector_size: int = 4096,
+        is_default: bool = False
+    ) -> str:
+        """
+        寫入/更新一個「語義資料庫查詢法」查詢設定檔向量。
+        與一般文件 Chunk 存在同一個 Collection，但 payload.source 固定為 "db_query_profile"，
+        並在 search_similar()/search_similar_two_step() 中被 must_not 排除，不會混入一般文件檢索結果。
+        """
+        client = cls.get_client()
+        from datetime import datetime
+        await cls.create_collection(collection_name, vector_size=vector_size)
+
+        from services.sparse_embedding_service import SparseEmbeddingService
+        sparse_vector = SparseEmbeddingService.get_sparse_vector(composed_description)
+
+        point_id = existing_point_id or str(uuid.uuid4())
+        payload = {
+            "content": composed_description,
+            "filename": f"DB_QUERY_PROFILE_{table_name}",
+            "source": "db_query_profile",
+            "profile_id": profile_id,
+            "knowledge_base_id": knowledge_base_id,
+            "table_name": table_name,
+            "is_default": is_default,
+            "created_at": datetime.utcnow().isoformat()
+        }
+
+        point = models.PointStruct(
+            id=point_id,
+            vector={
+                "": dense_vector,
+                "sparse-text": sparse_vector
+            },
+            payload=payload
+        )
+
+        try:
+            await client.upsert(collection_name=collection_name, points=[point])
+        except Exception as e:
+            error_str = str(e)
+            if "sparse-text" in error_str:
+                logger.warning("Fallback: upserting db query profile point with dense vector only.")
+                await client.upsert(
+                    collection_name=collection_name,
+                    points=[models.PointStruct(id=point_id, vector=dense_vector, payload=payload)]
+                )
+            else:
+                logger.error(f"Failed to upsert db query profile point to Qdrant: {e}")
+                raise e
+
+        cls.invalidate_metadata_cache(collection_name)
+        return point_id
+
+    @classmethod
+    async def delete_db_query_profile_point(cls, collection_name: str, point_id: str) -> None:
+        """
+        刪除指定查詢設定檔對應的 Qdrant point。
+        """
+        try:
+            await cls.delete_points(collection_name, [point_id])
+        except Exception as e:
+            logger.error(f"Failed to delete db query profile point '{point_id}': {e}")
+
+    @classmethod
+    async def search_db_query_profiles(
+        cls,
+        collection_name: str,
+        query_text: str,
+        query_vector: List[float],
+        knowledge_base_id: str,
+        score_threshold: float,
+        limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        在指定 Collection 中，僅針對 source == "db_query_profile" 的查詢設定檔向量做 Hybrid RRF 搜尋，
+        並依 knowledge_base_id 過濾範圍。回傳分數 >= score_threshold 的候選清單（依分數排序）。
+        """
+        client = cls.get_client()
+        try:
+            exists = await client.collection_exists(collection_name)
+            if not exists:
+                return []
+
+            profile_filter = models.Filter(
+                must=[
+                    models.FieldCondition(key="source", match=models.MatchValue(value="db_query_profile")),
+                    models.FieldCondition(key="knowledge_base_id", match=models.MatchValue(value=knowledge_base_id))
+                ]
+            )
+
+            fetch_limit = max(limit * 3, 10)
+            try:
+                from services.sparse_embedding_service import SparseEmbeddingService
+                query_sparse = SparseEmbeddingService.get_sparse_vector(query_text)
+
+                response = await client.query_points(
+                    collection_name=collection_name,
+                    prefetch=[
+                        models.Prefetch(query=query_vector, using="", limit=fetch_limit, filter=profile_filter),
+                        models.Prefetch(query=query_sparse, using="sparse-text", limit=fetch_limit, filter=profile_filter)
+                    ],
+                    query=models.FusionQuery(fusion=models.Fusion.RRF),
+                    limit=fetch_limit
+                )
+                points = response.points
+            except Exception as he:
+                logger.warning(f"Profile hybrid search failed, falling back to pure vector search: {he}")
+                response = await client.query_points(
+                    collection_name=collection_name,
+                    query=query_vector,
+                    limit=fetch_limit,
+                    query_filter=profile_filter
+                )
+                points = response.points
+
+            results = []
+            for p in points:
+                score = getattr(p, "score", 0.0) or 0.0
+                if score < score_threshold:
+                    continue
+                payload = p.payload or {}
+                results.append({
+                    "profile_id": payload.get("profile_id"),
+                    "table_name": payload.get("table_name"),
+                    "content": payload.get("content", ""),
+                    "score": score
+                })
+
+            results.sort(key=lambda x: x["score"], reverse=True)
+            return results[:limit]
+        except Exception as e:
+            logger.error(f"Failed to search db query profiles in collection '{collection_name}': {e}")
+            return []
 
     @classmethod
     async def get_by_parent_id(cls, collection_name: str, parent_id: str) -> List[Dict[str, Any]]:

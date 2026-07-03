@@ -67,7 +67,40 @@ const paramsStore = useParamsStore()
         <option value="hybrid" class="bg-[#111827] text-white">混合查詢 (Hybrid Search)</option>
         <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合查詢 (Semantic Hybrid Search)</option>
         <option value="semantic_hybrid_feedback" class="bg-[#111827] text-white">語義混合回饋查詢法 (Semantic Hybrid + Feedback)</option>
+        <option value="semantic_db_query" class="bg-[#111827] text-white">語義資料庫查詢法 (Semantic DB Query)</option>
       </select>
+    </div>
+
+    <!-- Semantic DB Query 專用參數：筆數/字數上限（可調整覆寫全域預設值） -->
+    <div v-if="paramsStore.searchMode === 'semantic_db_query'" class="flex flex-col gap-3 border-t border-white/8 pt-4">
+      <label class="flex items-center gap-2 text-xs text-[#9ca3af] cursor-pointer">
+        <input
+          type="checkbox"
+          v-model="paramsStore.dbQueryAutoKb"
+          class="rounded bg-white/5 border-white/10 text-[#8b5cf6] focus:ring-[#8b5cf6]/50 cursor-pointer"
+        />
+        不限定知識庫（讓 AI 自動掃描所有知識庫並判斷使用哪個查詢設定檔）
+      </label>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-[11px] text-[#9ca3af]">查詢筆數上限 (Max Rows)</label>
+        <input
+          v-model.number="paramsStore.dbQueryMaxRows"
+          type="number"
+          min="1"
+          placeholder="預設 50"
+          class="bg-white/5 border border-white/8 rounded-lg text-white px-3 py-2 text-xs focus:outline-none focus:border-[#8b5cf6]"
+        />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-[11px] text-[#9ca3af]">結果字數上限 (Max Chars)</label>
+        <input
+          v-model.number="paramsStore.dbQueryMaxChars"
+          type="number"
+          min="1"
+          placeholder="預設 4000"
+          class="bg-white/5 border border-white/8 rounded-lg text-white px-3 py-2 text-xs focus:outline-none focus:border-[#8b5cf6]"
+        />
+      </div>
     </div>
   </div>
 </template>

@@ -396,6 +396,9 @@ const handleExport = async (format) => {
                   <div class="font-bold text-white">Q: {{ item.question }}</div>
                   <div class="text-[#9ca3af]"><strong class="text-purple-400">Gen:</strong> {{ item.generated_answer }}</div>
                   <div class="text-[#6b7280]"><strong class="text-emerald-500">GT:</strong> {{ item.ground_truth }}</div>
+                  <div v-if="item.db_query_note" class="text-[10px] text-amber-400/80">
+                    <strong>DB Query:</strong> {{ item.db_query_note }}
+                  </div>
                 </td>
                 <td class="py-4 text-center px-2">
                   <span class="px-2 py-0.5 rounded border font-semibold font-display text-[10px]" :class="getScoreColor(item.scores.faithfulness)">

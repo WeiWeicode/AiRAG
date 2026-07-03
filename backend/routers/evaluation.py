@@ -247,8 +247,37 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
             yield f"event: progress\ndata: {json.dumps({'index': idx + 1, 'question': item.question}, ensure_ascii=False)}\n\n"
 
             retrieved_contexts = []
-            # A. 向量檢索
-            if kb:
+            db_query_note = None
+            # A. 向量檢索 / 語義資料庫查詢法
+            if search_type == "semantic_db_query":
+                # 評估流程為批次自動化執行，沒有真人可以中途選候選設定檔，
+                # 採用「自動取分數最高的候選（Top-1）」並在報告中標記為自動選取，非人工確認。
+                if kb:
+                    try:
+                        from services.ai_db_query_service import AIDBQueryService, AIDBQueryError
+                        match_result = await AIDBQueryService.match_profiles(
+                            question=item.question, knowledge_base_id=str(kb.id)
+                        )
+                        candidates = match_result["candidates"]
+                        if candidates:
+                            top_candidate = candidates[0]
+                            exec_result = await AIDBQueryService.execute(
+                                question=item.question, profile_id=top_candidate["profile_id"]
+                            )
+                            retrieved_contexts = [exec_result["context_text"]]
+                            db_query_note = (
+                                f"自動選取設定檔「{exec_result['profile_name']}」（非人工確認），"
+                                f"SQL: {exec_result['generated_sql']}"
+                            )
+                        else:
+                            db_query_note = "查無對應的資料庫查詢設定檔"
+                    except AIDBQueryError as e:
+                        logger.error(f"Semantic DB query failed for question '{item.question}': {e}")
+                        db_query_note = f"語義資料庫查詢法執行失敗：{e}"
+                    except Exception as se:
+                        logger.error(f"Semantic DB query failed for question '{item.question}': {se}")
+                        db_query_note = f"語義資料庫查詢法執行失敗：{se}"
+            elif kb:
                 try:
                     is_semantic_hybrid_family = search_type in ("semantic_hybrid", "semantic_hybrid_feedback")
                     if is_semantic_hybrid_family:
@@ -304,7 +333,18 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
             # B. 生成對答
             generated_answer = ""
             try:
-                if context_str:
+                if search_type == "semantic_db_query" and context_str:
+                    # 語義資料庫查詢法專用：內容是資料庫查詢結果，不套用文件引用格式規則，避免模型過度保守判定無關
+                    system_prompt = (
+                        "你是一個專業的資料庫問答助理。以下「資料庫查詢結果」是依照使用者問題實際從資料庫執行 SQL 查詢後取得的真實資料，"
+                        "請直接根據這些資料回答使用者的問題。\n"
+                        "規則：\n"
+                        "1. 只要查詢結果中有任何一筆資料合理對應使用者問題描述的對象（即使欄位用詞與使用者問法不完全一致），就應該根據該筆資料直接回答，不要因為用詞不完全相同就判定無關。\n"
+                        "2. 只有在查詢結果完全是空的、或所有資料列明顯都與問題無關時，才回答『知識庫沒有相關資訊。』，不要編造查詢結果中沒有的內容。\n"
+                        "3. 保持回答清晰、專業且符合邏輯。\n\n"
+                        f"【資料庫查詢結果】\n{context_str}"
+                    )
+                elif context_str:
                     system_prompt = (
                         "你檔案分享專業的 RAG 智慧對話助理。請根據以下提供的「參考資料」回答使用者的問題。\n"
                         "規則：\n"
@@ -387,7 +427,8 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
                 "question": item.question,
                 "ground_truth": item.ground_truth,
                 "generated_answer": generated_answer,
-                "scores": scores
+                "scores": scores,
+                "db_query_note": db_query_note
             }
             details.append(
                 EvalDetail(
@@ -400,7 +441,8 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
                         answer_relevancy=scores["relevancy"],
                         context_precision=scores["precision"],
                         context_recall=scores["recall"]
-                    )
+                    ),
+                    db_query_note=db_query_note
                 )
             )
 
@@ -455,7 +497,8 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
                         'relevancy': d.scores.answer_relevancy,
                         'precision': d.scores.context_precision,
                         'recall': d.scores.context_recall
-                    }
+                    },
+                    'db_query_note': d.db_query_note
                 } for d in details
             ]
         }
@@ -492,7 +535,8 @@ async def get_report(report_id: str):
                         "relevancy": d.scores.answer_relevancy,
                         "precision": d.scores.context_precision,
                         "recall": d.scores.context_recall
-                    }
+                    },
+                    "db_query_note": d.db_query_note
                 } for d in report.details
             ]
         }

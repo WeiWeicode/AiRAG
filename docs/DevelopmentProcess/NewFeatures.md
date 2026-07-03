@@ -1,4 +1,146 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
+## 2026-07-03 語義資料庫查詢法新增「必定查詢」設定檔標記，作為問題語意不明確時的兜底機制
+
+### 功能描述
+實測發現：當使用者問題與任何查詢設定檔都無明顯語意關聯時（例如問「Tiptop相關資訊」，但目前設定檔都是知識庫文章/附件用途），AI 依語意判斷會回傳「與任何設定檔都無關」，導致直接查無設定檔而不查詢。但某些設定檔（例如通用文章庫）用途夠廣泛，即使 AI 判斷不出明確關聯，仍值得嘗試查詢一次。新增「必定查詢」標記：使用者可在建立/編輯查詢設定檔時勾選此選項，勾選後不論 AI 的語意選擇結果為何，此設定檔都會被強制加入候選查詢清單。
+
+### 實作內容
+1. `backend/models/db_query_profile.py`：`DBQueryProfile` 新增 `is_default: bool = False` 欄位。
+2. `backend/schemas/ai_db_query.py`：`DBQueryProfileCreate`/`DBQueryProfileResponse` 新增 `is_default` 欄位。
+3. `backend/services/qdrant_service.py`：`upsert_db_query_profile()` 新增 `is_default` 參數，寫入 Qdrant payload（新增 `is_default` key）。
+4. `backend/routers/ai_db_query.py`：建立/更新設定檔時讀取並傳遞 `is_default` 至 MongoDB 與 Qdrant。
+5. `backend/services/ai_db_query_service.py`：`match_profiles()` 於取得 AI 選擇結果後，額外將目錄中標記 `is_default=True` 且未被選中的設定檔強制加入候選清單最前面，並於 `selection_reason` 註明是被強制加入；即使 AI 判斷「與任何設定檔都無關」，只要有設定檔標記為必定查詢，仍會產生候選並繼續執行查詢，不會直接判定查無設定檔。
+6. `frontend/src/components/embedding/DBQueryProfileManager.vue`：新增「設為必定查詢設定檔」checkbox（建立/編輯表單），已建立的設定檔清單於標記為必定查詢者旁顯示「必定查詢」徽章。
+
+### 修改檔案
+- `backend/models/db_query_profile.py`
+- `backend/schemas/ai_db_query.py`
+- `backend/services/qdrant_service.py`
+- `backend/routers/ai_db_query.py`
+- `backend/services/ai_db_query_service.py`
+- `frontend/src/components/embedding/DBQueryProfileManager.vue`
+
+## 2026-07-03 語義資料庫查詢法改為「先提供完整設定檔清單，由 AI 直接判斷選用哪幾個」取代向量相似度門檻篩選
+
+### 功能描述
+延續同日「不限定知識庫」多設定檔合併查詢的調整，使用者實測後回報：即使已支援多設定檔合併，實際結果仍只選到 1 個設定檔（例如問題同時涉及「附件」與「文章」，卻只查了附件表），原因是向量相似度門檻/排序本質上是個粗略的量化篩選機制，容易讓語意上明顯相關但分數略低的設定檔被排除。使用者建議「在使用語義 AI 之前，先提供目前有的設定檔給語義 AI，讓語義 AI 自己判斷使用哪幾個」。
+本次採納此建議，將設定檔選擇機制從「向量相似度門檻/Top-K 排序」改為「先列出目前所有查詢設定檔的完整清單（名稱/表格/用途），交給地端 Instruct AI 直接依問題語意判斷需要用到哪幾個設定檔（可複選、可 0 個）」，從根本上避免量化門檻造成的漏選問題。
+
+### 實作內容
+1. `backend/services/ai_db_query_service.py`：
+   - 移除 `_rewrite_question_for_profile_match()`（向量檢索用的問題重寫，不再需要）。
+   - 新增 `_select_relevant_profiles_from_catalog()`：把候選範圍內（指定知識庫或全部知識庫）的 `DBQueryProfile` 完整清單提供給 Instruct AI，要求以 JSON 回傳 `selected_profile_ids`（可複選）與 `reason`（選擇理由），防幻想規則要求只能選清單中確實存在的 id。
+   - `match_profiles()` 改為直接從 MongoDB 撈取候選範圍內的 `DBQueryProfile` 清單（不再呼叫 `QdrantService.search_db_query_profiles()`），依 AI 選擇結果組裝候選清單（`score` 欄位改為依 AI 回傳順序的遞減示意分數，非向量相似度）。
+2. `backend/schemas/ai_db_query.py`、`backend/routers/ai_db_query.py`：`MatchProfilesResponse.embeddings_input` 更名為 `selection_reason`（欄位語意已改變，不再是向量檢索輸入文字，而是 AI 的選擇理由）。
+3. `backend/routers/rag.py`：語義分析步驟顯示的結構化 JSON 改為 `{"original_question", "scope", "selected_profiles", "selection_reason"}`，取代原本的 `embeddings_input`。
+4. Profile 向量寫入機制（`QdrantService.upsert_db_query_profile()`／建立與更新設定檔時寫入 Qdrant）維持不變（仍可供向量管理頁面檢視、未來可能的擴充使用），僅選擇邏輯不再讀取這些向量；`QdrantService.search_db_query_profiles()` 暫時保留但未被呼叫。
+
+### 修改檔案
+- `backend/services/ai_db_query_service.py`
+- `backend/schemas/ai_db_query.py`
+- `backend/routers/ai_db_query.py`
+- `backend/routers/rag.py`
+- `docs/DevelopmentProcess/SemanticDatabaseQueryPlan.md`（補充架構異動說明）
+
+## 2026-07-03 語義資料庫查詢法「不限定知識庫」模式支援自動執行多個候選設定檔並合併結果
+
+### 功能描述
+實測發現「不限定知識庫」模式原本只會自動選擇分數最高的**單一**候選設定檔執行查詢，當使用者問題同時橫跨多張表格/設定檔時（例如同時問到「附件」與「文章」，分屬 attachments/articles 兩個查詢設定檔），只查了其中一個表格，導致漏答。改為依分數排序依序執行前 N 個（預設 3 個，`AI_DB_QUERY_MAX_PROFILES_PER_QUERY`）候選設定檔，各自產生 SQL 並查詢後合併結果再交給主模型總結；僅有 1 個候選時行為不變。此變更僅影響「不限定知識庫」的自動選取路徑，指定知識庫時使用者手動選擇單一候選的既有兩段式流程不受影響。
+
+### 實作內容
+1. `backend/config.py`：新增 `AI_DB_QUERY_MAX_PROFILES_PER_QUERY`（預設 3）。
+2. `backend/routers/rag.py`：`_run_execute()` 改為累加 `context_str`/`sources`（而非覆寫），使其可被呼叫多次；`_run_semantic_db_query()` 的 `global_scan` 分支改為依序對前 N 個候選呼叫 `_run_execute()`。
+3. `frontend/src/views/RetrievalTestView.vue`：`dbQueryResult`（單一物件）改為 `dbQueryResults`（陣列），「不限定知識庫」時對前 3 個候選依序呼叫執行並合併顯示每個設定檔各自的 SQL 與查詢結果。
+
+### 修改檔案
+- `backend/config.py`
+- `backend/routers/rag.py`
+- `frontend/src/views/RetrievalTestView.vue`
+
+## 2026-07-03 語義資料庫查詢法新增「不限定知識庫」跨知識庫自動掃描模式
+
+### 功能描述
+延續同日新增的「語義資料庫查詢法」，補上使用者的追加需求：允許不預先指定目標知識庫，改由 AI 掃描**所有**知識庫的查詢設定檔並自動判斷要用哪一個。因為此模式沒有預設範圍可供使用者判斷取捨，決定採「直接自動選分數最高的候選」而非列出候選讓使用者選（與指定知識庫時的既有兩段式選取流程並存，兩者依是否指定知識庫自動切換，互不影響）。
+
+### 實作內容
+1. **後端**：
+   - `backend/services/ai_db_query_service.py`：`AIDBQueryService.match_profiles()` 的 `knowledge_base_id` 改為選填；未提供時改為列舉所有 `KnowledgeBase`，逐一呼叫 `QdrantService.search_db_query_profiles()` 後合併排序，取全域分數最高的候選清單。
+   - `backend/schemas/ai_db_query.py`：`MatchProfilesRequest.knowledge_base_id` 改為 `Optional[str]`。
+   - `backend/routers/rag.py`：`_run_semantic_db_query()` 移除「必須指定知識庫」的硬性檢查；新增 `global_scan` 判斷，若未指定知識庫且找到候選，直接自動選分數最高者並繼續執行 SQL（不送出 `profile_candidates` 事件、不中斷等待選擇），語義分析的 JSON 內容一併標註 `scope`（"所有知識庫（不限定）" 或 "指定知識庫"）供使用者辨識目前是哪種模式。
+2. **前端**：
+   - `frontend/src/stores/paramsStore.js`：新增 `dbQueryAutoKb` 狀態。
+   - `frontend/src/components/params/RagParamsPanel.vue`、`frontend/src/views/RetrievalTestView.vue`：語義資料庫查詢法參數區新增「不限定知識庫」checkbox。
+   - `frontend/src/stores/chatStore.js`：勾選後對話請求改送 `knowledge_base_id: null`。
+   - `frontend/src/views/RetrievalTestView.vue` 的 `handleSemanticDbQuerySearch()`：勾選後不顯示候選選取 UI，取得候選清單後直接呼叫 `handleSelectDbProfile()` 自動執行分數最高者。
+
+### 修改檔案
+- `backend/services/ai_db_query_service.py`
+- `backend/schemas/ai_db_query.py`
+- `backend/routers/rag.py`
+- `frontend/src/stores/paramsStore.js`
+- `frontend/src/components/params/RagParamsPanel.vue`
+- `frontend/src/views/RetrievalTestView.vue`
+- `frontend/src/stores/chatStore.js`
+
+## 2026-07-03 新增「語義資料庫查詢法」，讓 AI 自動判斷資料庫查詢設定檔、產生 SQL 並查詢既有關聯式資料庫
+
+### 功能描述
+新增一種全新的檢索模式 `semantic_db_query`（語義資料庫查詢法），使用者可先在「資料庫匯入向量化」頁面建立「查詢設定檔」（描述某個資料庫連線下某張表格與各欄位的用途），系統會將設定檔組成自然語言描述並向量化。之後在 RAG 對話測試、向量搜尋測試、準確度評估中選擇此查詢法時，AI 會先語義理解問題、比對出候選查詢設定檔（列出讓使用者選取，而非自動猜測），使用者選定後才由地端 Instruct AI 產生唯讀 SQL、執行查詢（套用筆數/字數上限與逐欄位截斷），最後把查詢結果交給主模型（vLLM）統整成答案。全程完全新增，不修改既有 `vector`/`hybrid`/`semantic_hybrid`/`semantic_hybrid_feedback` 四種查詢法與既有「資料庫匯入向量化」（DB → 向量長期存放）功能的任何行為。詳細規劃見 `docs/DevelopmentProcess/SemanticDatabaseQueryPlan.md`。
+
+### 實作內容
+1. **查詢設定檔資料模型與向量儲存**：
+   - 新增 `backend/models/db_query_profile.py`：`DBQueryProfile` Document（含 `database_config_id`/`knowledge_base_id`/`table_name`/`columns`（每欄位可選填 `max_length` 截斷長度）/`composed_description`/`qdrant_point_id`），已註冊進 `backend/models/mongodb.py` 的 `document_models`。
+   - Profile 向量依使用者需求存進**選定 KnowledgeBase 的既有 Qdrant collection**（而非獨立 collection），payload 新增 `source: "db_query_profile"`。為避免混入既有文件檢索結果，修改 `backend/services/qdrant_service.py` 的 `search_similar()`/`search_similar_two_step()`，加上一條**加法式** `must_not: source == "db_query_profile"` 過濾條件——既有資料從未出現此值，對既有四種查詢法零行為影響。另新增獨立方法 `upsert_db_query_profile()`/`delete_db_query_profile_point()`/`search_db_query_profiles()`，不共用、不修改既有 `upsert_chunks`/`search_similar` 方法本體。
+2. **核心查詢流程 Service**：
+   - 新增 `backend/services/ai_db_query_service.py`：`AIDBQueryService.match_profiles()`（語義理解 + Profile 向量比對，回傳候選清單供使用者選取，找不到候選時明確回報而非亂猜）、`AIDBQueryService.execute()`（依選定設定檔讓 Instruct AI 產生唯讀 SQL、重用 `database_indexing.py` 既有的 `validate_sql_query()`/`get_db_connection()`、套用筆數/字數上限與逐欄位自訂截斷、將結果文字化）。任一階段失敗皆拋出 `AIDBQueryError` 附明確原因，不靜默降級。
+3. **新 API Router**：
+   - 新增 `backend/routers/ai_db_query.py`（`/api/ai-db-query`）：查詢設定檔 CRUD、`list-tables`/`list-columns`（純 schema 探索，供前端下拉選單）、兩段式查詢執行 `match-profiles`/`execute`。已掛載至 `backend/main.py`。
+   - 新增 `backend/schemas/ai_db_query.py`。
+4. **設定值**：
+   - 修改 `backend/config.py`：新增 `AI_DB_QUERY_MAX_ROWS`（預設 50）、`AI_DB_QUERY_MAX_CHARS`（預設 4000）、`AI_DB_QUERY_PROFILE_SCORE_THRESHOLD`（預設 0.5）。
+5. **三處測試頁面整合（加法式，不改既有分支邏輯）**：
+   - 修改 `backend/routers/rag.py`：新增 `_run_semantic_db_query()` 分支，`search_type == "semantic_db_query"` 時走此流程。採兩階段 SSE 串流——第一次請求僅回傳候選設定檔清單（新增 SSE `step: "profile_candidates"`）後即結束串流；使用者選定後帶 `selected_db_profile_id` 重新呼叫同一端點才繼續產生 SQL、查詢、交給主模型總結。
+   - 修改 `backend/routers/evaluation.py` 與 `backend/models/eval_report.py`：批次評估流程無真人可選候選，自動取分數最高候選（Top-1）執行，新增 `EvalDetail.db_query_note` 欄位標記「自動選取、非人工確認」或失敗原因。
+   - 檢索測試頁不經過 `/api/retrieval/search`，前端直接呼叫 `ai_db_query` router 的 `match-profiles`/`execute`（回應格式與一般 chunk 檢索不同）。
+6. **前端：新增查詢設定檔管理 UI**：
+   - 新增 `frontend/src/services/aiDbQueryService.js`。
+   - 新增 `frontend/src/components/embedding/DBQueryProfileManager.vue`：可選取資料庫連線設定檔、表格（呼叫 `list-tables`）、欄位（呼叫 `list-columns`，可設定啟用/意義/截斷長度），即時預覽自動組合的自然語言描述，並列出/編輯/刪除現有設定檔。
+   - 修改 `frontend/src/components/embedding/DatabaseIndexingTab.vue`：新增子模式切換（① 將資料庫內容轉向量【既有功能不動】／② AI 查詢設定檔【新增】），既有向量化流程完整保留於 `v-else` 區塊。
+7. **前端：三處測試頁面新增查詢法選項**：
+   - 修改 `frontend/src/components/params/RagParamsPanel.vue`、`frontend/src/views/RetrievalTestView.vue`、`frontend/src/components/eval/TestSetManager.vue`：新增「語義資料庫查詢法 (Semantic DB Query)」選項，並提供筆數/字數上限輸入框（`frontend/src/stores/paramsStore.js` 新增 `dbQueryMaxRows`/`dbQueryMaxChars`）。
+   - `RetrievalTestView.vue` 新增候選設定檔選取 UI 與 SQL/查詢結果顯示區塊（`handleSemanticDbQuerySearch()`/`handleSelectDbProfile()`）。
+   - 修改 `frontend/src/stores/chatStore.js`：抽出共用的 `_streamChat()`，新增 `selectDbQueryProfile()` action 供使用者選定候選後沿用同一則 assistant 訊息繼續串流；`step` 事件新增對 `profile_candidates` 的處理。
+   - 修改 `frontend/src/components/chat/MessageBubble.vue`/`ChatWindow.vue`：新增候選查詢設定檔選取區塊與 `select-db-profile` 事件轉發。
+   - 修改 `frontend/src/views/EvaluationView.vue`：評估明細列表新增 `db_query_note` 顯示。
+8. **文件同步**：更新 `docs/03_API_CONTRACT.md`（新增第 13 節）、`docs/04_DB_SCHEMA.md`（新增 `db_query_profiles` collection 與 `source` 欄位新值說明）。
+
+### 修改檔案
+- `backend/models/db_query_profile.py`（新增）
+- `backend/models/mongodb.py`
+- `backend/models/eval_report.py`
+- `backend/schemas/ai_db_query.py`（新增）
+- `backend/services/ai_db_query_service.py`（新增）
+- `backend/services/qdrant_service.py`
+- `backend/routers/ai_db_query.py`（新增）
+- `backend/routers/rag.py`
+- `backend/routers/evaluation.py`
+- `backend/config.py`
+- `backend/main.py`
+- `frontend/src/services/aiDbQueryService.js`（新增）
+- `frontend/src/components/embedding/DBQueryProfileManager.vue`（新增）
+- `frontend/src/components/embedding/DatabaseIndexingTab.vue`
+- `frontend/src/components/params/RagParamsPanel.vue`
+- `frontend/src/views/RetrievalTestView.vue`
+- `frontend/src/components/eval/TestSetManager.vue`
+- `frontend/src/stores/paramsStore.js`
+- `frontend/src/stores/chatStore.js`
+- `frontend/src/components/chat/MessageBubble.vue`
+- `frontend/src/components/chat/ChatWindow.vue`
+- `frontend/src/views/EvaluationView.vue`
+- `docs/03_API_CONTRACT.md`
+- `docs/04_DB_SCHEMA.md`
+- `docs/DevelopmentProcess/SemanticDatabaseQueryPlan.md`（規劃文件，先前新增）
+
 ## 2026-07-02 新增可切換的本地 Embedding API 風格，支援居家 Ollama / LM Studio 取代地端部署
 
 ### 功能描述

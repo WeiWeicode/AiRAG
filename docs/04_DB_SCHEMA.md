@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.3（依實際程式碼校正）
+* **文件版本**：V 1.4（依實際程式碼校正）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-02
+* **更新日期**：2026-07-03
 * **資料庫類型**：
   * **應用資料庫**：MongoDB（對話紀錄、設定、測試集、評估報告、回饋標註、資料庫連線設定、標籤與類別選項、Prompt 測試歷史紀錄）
   * **既有知識庫 / 自訂 DB**：SQL Server & Oracle Database（唯讀連線，存取既有的文章與表單欄位等資料）
@@ -213,6 +213,28 @@
 { "_id": "ObjectId", "name": "string (Unique 索引)", "created_at": "ISODate" }
 ```
 
+### 3.9a db_query_profiles — 語義資料庫查詢法之查詢設定檔【新增，2026-07-03】
+```json
+{
+  "_id": "ObjectId",
+  "name": "string",
+  "database_config_id": "string (關聯 database_configs._id)",
+  "knowledge_base_id": "string (關聯 knowledge_bases._id，決定 Profile 向量實際存放的 Qdrant collection)",
+  "platform_description": "string",
+  "table_name": "string",
+  "table_purpose": "string",
+  "columns": [
+    { "column_name": "string", "enabled": true, "meaning": "string", "max_length": "int | null (大型欄位如 nvarchar(max) 的自訂截斷長度)" }
+  ],
+  "is_default": "bool (2026-07-03 新增；必定查詢：問題與任何設定檔都無明顯關聯時，此設定檔仍會被強制加入候選查詢清單)",
+  "composed_description": "string (自動組合的自然語言描述，即拿去 embedding 的文字)",
+  "qdrant_point_id": "string | null",
+  "created_by": "string | null",
+  "created_at": "ISODate", "updated_at": "ISODate"
+}
+```
+索引：`knowledge_base_id`、`database_config_id`。
+
 ### 3.12 prompt_test_records — Prompt 測試歷史與結果
 ```json
 {
@@ -265,7 +287,7 @@
   "chunk_index": 0,
   "token_count": 128,
   "char_count": 450,
-  "source": "upload | database | json_semantic",
+  "source": "upload | database | json_semantic | db_query_profile (2026-07-03 新增，語義資料庫查詢法的查詢設定檔向量)",
   "tags": ["標籤1", "標籤2"],
   "class": ["類別1"],
   "links_to": ["關聯檔名或 Point ID"],
@@ -286,6 +308,8 @@
 > `parent_content`、`type` 兩個欄位在檢索程式碼中會被防禦性讀取（`payload.get(...)`），但目前的寫入程式碼路徑中**找不到明確的寫入來源**，可能僅存在於語義 JSON 匯入路徑或歷史遺留資料，撰寫新功能時不應假設其必然存在。
 
 **`links_to` 用途**：由 `POST /api/retrieval/knowledge-bases/{id}/files/update-links` 批次寫入（見 `03_API_CONTRACT.md` §4.6），或於向量化時直接帶入。是 §5 雙階段關聯檢索（Two-Step Hybrid Retrieval）的核心欄位——第一階段召回的 Point 若帶有 `links_to`，第二階段會據此在 `filename`/`custom_id` 命中的關聯點位中做進一步的語意/混合搜尋。
+
+**`source == "db_query_profile"` 的隔離規則**【新增，2026-07-03】：`QdrantService.search_similar()`/`search_similar_two_step()` 固定加上 `must_not: source == "db_query_profile"` 過濾條件，因此語義資料庫查詢法的 Profile 向量雖與一般文件 Chunk 共存於同一個 KnowledgeBase collection，但永遠不會出現在 `vector`/`hybrid`/`semantic_hybrid`/`semantic_hybrid_feedback` 這四種既有查詢法的結果中；反之，`QdrantService.search_db_query_profiles()` 只搜尋 `source == "db_query_profile"` 的點位。
 
 ### 4.3 向量索引與檢索策略
 * **HNSW 索引**：對密集向量做餘弦相似度 (Cosine) 索引，`m=16`、`ef_construct=100`。

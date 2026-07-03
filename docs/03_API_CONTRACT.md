@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.2（依實際程式碼校正）
+* **文件版本**：V 1.3（依實際程式碼校正）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-02
+* **更新日期**：2026-07-03
 * **Base URL**：`http://<host>:8000/api`
 * **認證方式**：JWT Bearer Token（除 `/api/auth/login` 外，所有 API 皆掛載於各 router 的 `Depends(get_current_user)`，須帶 `Authorization: Bearer <token>`）
 
@@ -459,3 +459,34 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
 ```json
 { "detail": "錯誤訊息描述", "error_code": "ERROR_CODE", "timestamp": "2026-07-02T10:00:00Z" }
 ```
+
+---
+
+## 13. 語義資料庫查詢法 API (Semantic DB Query)【新增，2026-07-03】
+
+新增的檢索模式，讓 AI 依自然語言問題自動比對「查詢設定檔」、產生唯讀 SQL、查詢既有關聯式資料庫，並將結果交給主模型總結。完全獨立於既有 `vector`/`hybrid`/`semantic_hybrid`/`semantic_hybrid_feedback` 四種查詢法，兩者互不影響。
+
+### 13.1 查詢設定檔 (DB Query Profile) CRUD
+
+* `GET /api/ai-db-query/profiles?knowledge_base_id=` — 列出指定知識庫下的查詢設定檔。
+* `POST /api/ai-db-query/profiles` — 建立設定檔。**Request Body**：`{"name", "database_config_id", "knowledge_base_id", "platform_description", "table_name", "table_purpose", "columns": [{"column_name", "enabled", "meaning", "max_length"}], "is_default" (選填，預設 false)}`。`is_default`（2026-07-03 新增）標記此設定檔為「必定查詢」：問題與任何設定檔都無明顯語意關聯時，此設定檔仍會被強制加入候選查詢清單，作為兜底機制。建立時會自動組合自然語言描述文字並產生向量，寫入 `knowledge_base_id` 對應 Qdrant collection（payload `source: "db_query_profile"`，並帶入 `is_default`）。
+* `PUT /api/ai-db-query/profiles/{profile_id}` — 更新設定檔（全欄位覆寫，重新產生向量）。
+* `DELETE /api/ai-db-query/profiles/{profile_id}` — 刪除設定檔（同步刪除 Mongo 紀錄與 Qdrant point）。
+
+**Response（`DBQueryProfileResponse`）**：`{"id", "name", "database_config_id", "knowledge_base_id", "platform_description", "table_name", "table_purpose", "columns", "is_default", "composed_description"}`。
+
+### 13.2 資料庫 Schema 探索（供前端下拉選單使用）
+
+* `POST /api/ai-db-query/list-tables` — **Request**：`{"config_id"}`。**Response**：`{"tables": ["articles", ...]}`（SQL Server 讀 `INFORMATION_SCHEMA.TABLES`，Oracle 讀 `USER_TABLES`，純 schema 查詢不撈資料）。
+* `POST /api/ai-db-query/list-columns` — **Request**：`{"config_id", "table_name"}`。**Response**：`{"columns": ["id", "title", ...]}`。
+
+### 13.3 兩段式查詢執行
+
+* `POST /api/ai-db-query/match-profiles` — 第 1-2 步：語義理解 + Profile 選擇。**Request**：`{"question", "knowledge_base_id" (選填), "score_threshold" (選填，目前未使用，保留供未來擴充), "limit" (預設 5)}`。`knowledge_base_id` 留空代表「不限定知識庫」，會將所有知識庫的查詢設定檔清單一併提供給 AI 判斷。**選擇機制（2026-07-03 由向量相似度門檻改版）**：後端會撈取候選範圍內（指定知識庫或全部知識庫）目前所有查詢設定檔的完整清單（名稱/表格/用途），交給地端 Instruct AI 依問題語意直接判斷需要用到哪幾個設定檔（可複選、可 0 個），而非依向量相似度分數門檻篩選——避免問題橫跨多張表格時只選到其中一個。標記 `is_default: true` 的設定檔（2026-07-03 新增）不論 AI 判斷結果為何，一律會被強制加入候選清單最前面，作為問題語意不明確時的兜底機制。**Response**：`{"candidates": [{"profile_id", "name", "table_name", "table_purpose", "score"}], "selection_reason"}`；`score` 為依 AI 回傳順序的遞減示意分數（非向量相似度），`selection_reason` 為 AI 說明為何選擇/不選擇這些設定檔的簡短理由；`candidates` 為空代表查無對應設定檔，前端應明確告知使用者，不可自動假設。**呼叫端行為**：指定 `knowledge_base_id` 時列出候選讓使用者選取；未指定（不限定知識庫）時因無預設範圍可供人工判斷取捨，呼叫端會依序執行前 `AI_DB_QUERY_MAX_PROFILES_PER_QUERY`（預設 3）個候選並合併結果（`rag.py`/`RetrievalTestView.vue` 皆採此邏輯）。
+* `POST /api/ai-db-query/execute` — 第 3-5 步：使用者從候選中選定一個後才呼叫。**Request**：`{"question", "profile_id", "max_rows" (選填，預設 `AI_DB_QUERY_MAX_ROWS`), "max_chars" (選填，預設 `AI_DB_QUERY_MAX_CHARS`)}`。**Response**：`{"profile_id", "profile_name", "generated_sql", "row_count", "context_text", "elapsed_ms"}`。SQL 產生時會被要求對文字欄位使用 `LIKE '%關鍵字%'` 模糊比對並以 `OR` 串接多個關鍵字/欄位（而非 `=` 完全比對疊加 `AND`），並盡量 `SELECT` 完整的啟用欄位而非單一欄位，以提高命中率與後續摘要判斷相關性所需的上下文；產生後一律重跑既有 `validate_sql_query()`（只准 `SELECT`/`WITH`），執行失敗或驗證失敗回 400，不重試硬猜。
+
+### 13.4 三處測試整合方式
+
+* `POST /api/rag/chat`：`params.search_type = "semantic_db_query"` 時走此查詢法。**兩階段串流**：第一次請求（未帶 `selected_db_profile_id`）在指定知識庫時僅回傳 SSE `step: "profile_candidates"` 事件（`content.candidates`）後即結束串流，前端顯示候選清單，使用者選定後帶 `selected_db_profile_id` 重新呼叫同一端點才會真正產生 SQL、查詢並讓主模型總結；未指定知識庫（不限定知識庫）時則在同一次請求中依序對前 N 個候選產生 SQL、查詢、合併結果後直接交給主模型總結，不中斷等待選擇。摘要階段使用專屬於 `semantic_db_query` 的 System Prompt（強調內容是真實資料庫查詢結果、不套用文件段落引用格式），與其餘四種查詢法的摘要 Prompt 分開、互不影響。
+* `GET/POST` 檢索測試頁：前端直接呼叫 13.3 的 `match-profiles`/`execute`，不經過 `/api/retrieval/search`（回應格式與一般 chunk 檢索不同）。
+* `POST /api/evaluation/run`：`params.search_type = "semantic_db_query"` 時，因批次評估無真人可選候選，自動取 AI 選擇結果中排序最高的候選（Top-1）執行，`EvalDetail.db_query_note` 會標記「自動選取設定檔（非人工確認）」或失敗原因。

@@ -10,7 +10,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['dislike'])
+const emit = defineEmits(['dislike', 'select-db-profile'])
 
 const likeState = ref(null) // null | 'like' | 'dislike'
 
@@ -114,8 +114,25 @@ const toggleThinking = () => {
           </div>
         </div>
 
-        <!-- Thinking Process Accordion (Fallback) -->
-        <div v-else-if="message.thinking || message.isThinking" class="mb-3 border border-white/10 rounded-xl bg-white/5 overflow-hidden">
+        <!-- 語義資料庫查詢法：候選查詢設定檔選取 -->
+        <div v-if="message.awaitingProfileSelection && message.dbQueryCandidates?.length" class="mb-4 flex flex-col gap-2">
+          <div class="text-[10px] text-white/40 font-semibold uppercase tracking-wider mb-1">找到以下候選查詢設定檔，請選擇其中一個以繼續查詢</div>
+          <button
+            v-for="c in message.dbQueryCandidates"
+            :key="c.profile_id"
+            @click="emit('select-db-profile', message.id, c.profile_id)"
+            class="text-left border border-white/10 hover:border-purple-500/40 rounded-xl bg-white/3 hover:bg-white/5 px-4 py-2.5 transition-all"
+          >
+            <div class="flex justify-between items-center">
+              <span class="text-xs font-semibold text-white">{{ c.name }}</span>
+              <span class="text-[10px] text-emerald-400 font-display">Score: {{ c.score.toFixed(4) }}</span>
+            </div>
+            <div class="text-[11px] text-white/50 mt-0.5">表格: {{ c.table_name }}｜{{ c.table_purpose }}</div>
+          </button>
+        </div>
+
+        <!-- Thinking Process Accordion (Fallback，只在沒有結構化 steps 列表時顯示，避免與 steps 內的「思考中」步驟重複) -->
+        <div v-if="!(message.steps && message.steps.length > 0) && (message.thinking || message.isThinking)" class="mb-3 border border-white/10 rounded-xl bg-white/5 overflow-hidden">
           <button 
             @click="toggleThinking"
             class="w-full flex items-center justify-between px-4 py-2.5 text-xs text-white/60 hover:text-white/90 hover:bg-white/5 transition-all focus:outline-none"

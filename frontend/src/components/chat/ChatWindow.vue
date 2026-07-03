@@ -68,6 +68,10 @@ onMounted(() => {
 const handleNewChat = () => {
   chatStore.clearMessages()
 }
+
+const handleSelectDbProfile = (assistantMessageId, profileId) => {
+  chatStore.selectDbQueryProfile(assistantMessageId, profileId)
+}
 </script>
 
 <template>
@@ -99,11 +103,12 @@ const handleNewChat = () => {
       ref="messageContainer"
       class="flex-grow p-6 overflow-y-auto flex flex-col gap-5"
     >
-      <MessageBubble 
-        v-for="msg in chatStore.messages" 
-        :key="msg.id" 
+      <MessageBubble
+        v-for="msg in chatStore.messages"
+        :key="msg.id"
         :message="msg"
         @dislike="openFeedbackModal"
+        @select-db-profile="handleSelectDbProfile"
       />
     </div>
 

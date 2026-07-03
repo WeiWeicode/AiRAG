@@ -36,6 +36,155 @@ class ChatRequest(BaseModel):
     knowledge_base_id: Optional[str] = None
     chat_history: Optional[List[ChatHistoryItem]] = None
     params: Optional[ChatParams] = None
+    # 語義資料庫查詢法 (search_type == "semantic_db_query") 專用：
+    # 第一次請求不帶此欄位時，僅回傳候選查詢設定檔清單並暫停；
+    # 使用者選定候選後，前端帶著此欄位重新呼叫，才會實際產生 SQL 並查詢資料庫。
+    selected_db_profile_id: Optional[str] = None
+
+async def _run_semantic_db_query(request: "ChatRequest", question: str, result: dict):
+    """
+    語義資料庫查詢法的執行分支（不影響既有 vector/hybrid/semantic_hybrid* 查詢法的邏輯）：
+    - 若未指定 knowledge_base_id（不限定知識庫）：掃描所有知識庫的查詢設定檔，找到候選後直接
+      自動選擇分數最高者繼續執行，不中斷等待使用者選擇（沒有預設範圍可供人工判斷取捨）。
+    - 若指定 knowledge_base_id 且請求未帶 selected_db_profile_id：執行第 1-2 步（語義理解 + Profile 比對），
+      回傳候選清單事件並要求前端暫停等待使用者選擇。
+    - 若已帶 selected_db_profile_id：執行第 3-5 步（SQL 產生、驗證、執行、結果整理），
+      回傳 context_str/sources 供後續共用的主模型總結步驟繼續使用。
+    這是一個 async generator，每個階段完成就立即 yield SSE 事件字串（而非累積到最後才一次回傳），
+    確保等待較久的 LLM/資料庫呼叫期間，前端能即時看到對應步驟已切換為「執行中」動畫，而不是整段卡在 pending。
+    由於 async generator 不能用帶值的 return，context_str/sources/should_stop 透過呼叫端傳入的
+    可變 result dict 回傳（呼叫端在 `async for` 迭代完成後讀取 result 內容）。
+    """
+    from services.ai_db_query_service import AIDBQueryService, AIDBQueryError
+    context_str = ""
+    sources = []
+    result["should_stop"] = True
+
+    selected_profile_id = request.selected_db_profile_id
+    global_scan = not bool(request.knowledge_base_id)
+
+    # 已執行完成的設定檔查詢明細區塊。前端對同 key 的 step 事件是「覆蓋」而非累加，
+    # 因此每次 success 事件都必須帶「到目前為止所有已執行設定檔」的完整彙整，
+    # 否則執行多個設定檔時，後一個的內容會把前一個蓋掉，畫面上只剩最後一筆 SQL。
+    executed_blocks = []
+
+    async def _run_execute(profile_id: str, block_header: str = "", prefix_note: str = ""):
+        # 累加而非覆寫 context_str/sources，讓「不限定知識庫」模式可依序執行多個設定檔並合併結果
+        nonlocal context_str
+        running_line = (
+            f"{block_header} 正在產生 SQL 並查詢資料庫..."
+            if block_header else "已選定查詢設定檔，正在產生 SQL 並查詢資料庫..."
+        )
+        if prefix_note:
+            running_line = f"{prefix_note}\n{running_line}"
+        running_content = "\n\n".join(executed_blocks + [running_line]) if executed_blocks else running_line
+        yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'running', 'content': running_content}, ensure_ascii=False)}\n\n"
+
+        exec_result = await AIDBQueryService.execute(question=question, profile_id=profile_id)
+        piece = exec_result["context_text"]
+        context_str = f"{context_str}\n\n{piece}" if context_str else piece
+        sources.append({
+            "chunk_id": exec_result["profile_id"],
+            "content": piece,
+            "metadata": {
+                "filename": f"DB_QUERY_PROFILE_{exec_result['profile_name']}",
+                "generated_sql": exec_result["generated_sql"]
+            },
+            "score": 1.0
+        })
+        header = block_header or f"已選定設定檔：{exec_result['profile_name']}"
+        block = (
+            f"{header}\n"
+            f"產生的 SQL：\n```sql\n{exec_result['generated_sql']}\n```\n"
+            f"查得 {exec_result['row_count']} 筆資料，耗時 {exec_result['elapsed_ms']}ms"
+        )
+        executed_blocks.append(block)
+        success_content = "\n\n".join(executed_blocks)
+        yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': success_content}, ensure_ascii=False)}\n\n"
+
+    try:
+        if not selected_profile_id:
+            # 第 1 步：語義理解 —— 先完整跑完並明確標記 success，再進入第 2 步，避免前端誤以為兩步同時在跑
+            analysis_running = f'正在取得目前所有查詢設定檔清單，交給地端 AI 判斷需要用到哪幾個...\n原始提問："{question}"'
+            yield f"event: step\ndata: {json.dumps({'step': 'semantic_analysis', 'status': 'running', 'content': analysis_running}, ensure_ascii=False)}\n\n"
+
+            match_result = await AIDBQueryService.match_profiles(question=question, knowledge_base_id=request.knowledge_base_id)
+            candidates = match_result["candidates"]
+            selection_reason = match_result["selection_reason"]
+
+            analysis_json = {
+                "original_question": question,
+                "scope": "所有知識庫（不限定）" if global_scan else "指定知識庫",
+                "selected_profiles": [c["name"] for c in candidates],
+                "selection_reason": selection_reason
+            }
+            json_str = json.dumps(analysis_json, indent=2, ensure_ascii=False)
+            analysis_success = (
+                f"【地端 AI 語義分析結果】\n"
+                f"結構化 JSON：\n```json\n{json_str}\n```"
+            )
+            yield f"event: step\ndata: {json.dumps({'step': 'semantic_analysis', 'status': 'success', 'content': analysis_success}, ensure_ascii=False)}\n\n"
+
+            # 第 2 步：Profile 選擇結果彙整 —— 待第 1 步完全結束後才開始
+            yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'running', 'content': '正在依語義判斷結果彙整候選查詢設定檔...'}, ensure_ascii=False)}\n\n"
+
+            if not candidates:
+                yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'failed', 'content': '查無對應的資料庫查詢設定檔，請先於「資料庫匯入向量化」頁面建立查詢設定檔。'}, ensure_ascii=False)}\n\n"
+                yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': '很抱歉，找不到符合此問題的資料庫查詢設定檔。'}, ensure_ascii=False)}\n\n"
+                yield f"event: sources\ndata: {json.dumps({'sources': []}, ensure_ascii=False)}\n\n"
+                yield f"event: chunk\ndata: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                return
+
+            candidate_lines = "\n".join(
+                f"[{i + 1}] {c['name']}（表格: {c['table_name']}, Score: {c['score']:.4f}）"
+                for i, c in enumerate(candidates)
+            )
+            vector_search_success_content = f"找到 {len(candidates)} 個候選查詢設定檔：\n{candidate_lines}"
+            yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': vector_search_success_content}, ensure_ascii=False)}\n\n"
+
+            if global_scan:
+                # 不限定知識庫時，沒有預設範圍可供使用者判斷取捨；問題可能同時橫跨多個表格/設定檔
+                # （例如同時問到「附件」與「文章」），因此依序執行 AI 選出的前 N 個候選並合併結果，
+                # 而非只取單一設定檔，避免漏答問題中涉及的其他表格。
+                selected_profiles = candidates[:settings.AI_DB_QUERY_MAX_PROFILES_PER_QUERY]
+                total = len(selected_profiles)
+                if total == 1:
+                    auto_note = f"未指定知識庫，AI 已自動選擇設定檔：{selected_profiles[0]['name']}（自動選取，非人工確認）"
+                else:
+                    selected_names = "、".join(c["name"] for c in selected_profiles)
+                    auto_note = (
+                        f"未指定知識庫，AI 已自動選擇 {total} 個相關設定檔：{selected_names}"
+                        f"（自動選取，非人工確認，將分別查詢後合併結果）"
+                    )
+                for idx, candidate in enumerate(selected_profiles):
+                    block_header = f"【設定檔 {idx + 1}/{total}：{candidate['name']}】" if total > 1 else ""
+                    async for evt in _run_execute(
+                        candidate["profile_id"],
+                        block_header=block_header,
+                        prefix_note=auto_note if idx == 0 else ""
+                    ):
+                        yield evt
+                result["context_str"] = context_str
+                result["sources"] = sources
+                result["should_stop"] = False
+                return
+
+            yield f"event: step\ndata: {json.dumps({'step': 'profile_candidates', 'status': 'success', 'content': '請選擇其中一個候選查詢設定檔以繼續查詢：', 'candidates': candidates}, ensure_ascii=False)}\n\n"
+            yield f"event: chunk\ndata: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+            return
+
+        # 第 3-5 步：使用者已選定候選設定檔（指定知識庫時的兩段式流程），
+        # semantic_analysis 已於第一次請求中標記 success，這裡只需接續 vector_search
+        async for evt in _run_execute(selected_profile_id):
+            yield evt
+        result["context_str"] = context_str
+        result["sources"] = sources
+        result["should_stop"] = False
+    except AIDBQueryError as e:
+        yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'failed', 'content': str(e)}, ensure_ascii=False)}\n\n"
+        yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': f'查詢失敗：{str(e)}'}, ensure_ascii=False)}\n\n"
+        yield f"event: sources\ndata: {json.dumps({'sources': []}, ensure_ascii=False)}\n\n"
+        yield f"event: chunk\ndata: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
 async def rag_chat_stream(request: ChatRequest):
     question = request.question
@@ -66,7 +215,15 @@ async def rag_chat_stream(request: ChatRequest):
     context_str = ""
     
     # 1. 如果有指定知識庫，執行向量檢索獲取 Context
-    if request.knowledge_base_id:
+    if search_type == "semantic_db_query":
+        db_query_result = {}
+        async for evt in _run_semantic_db_query(request, question, db_query_result):
+            yield evt
+        context_str = db_query_result.get("context_str", "")
+        sources = db_query_result.get("sources", [])
+        if db_query_result.get("should_stop", True):
+            return
+    elif request.knowledge_base_id:
         try:
             kb_id = PydanticObjectId(request.knowledge_base_id)
             kb = await KnowledgeBase.get(kb_id)
@@ -255,7 +412,19 @@ async def rag_chat_stream(request: ChatRequest):
     yield f"event: step\ndata: {json.dumps({'step': 'conclusion', 'status': 'pending', 'content': ''}, ensure_ascii=False)}\n\n"
 
     # 2. 構建 System Prompt 與 Messages
-    if context_str:
+    if search_type == "semantic_db_query" and context_str:
+        # 語義資料庫查詢法專用總結 Prompt：內容是資料庫查詢結果（非文件段落），不需要段落引用格式，
+        # 避免既有文件引用格式的規則誤導模型過度保守地判定「查無相關資訊」。
+        system_prompt = (
+            "你是一個專業的資料庫問答助理。以下「資料庫查詢結果」是依照使用者問題實際從資料庫執行 SQL 查詢後取得的真實資料，"
+            "請直接根據這些資料回答使用者的問題。\n"
+            "規則：\n"
+            "1. 只要查詢結果中有任何一筆資料合理對應使用者問題描述的對象（即使欄位用詞與使用者問法不完全一致），就應該根據該筆資料直接回答，不要因為用詞不完全相同就判定無關。\n"
+            "2. 只有在查詢結果完全是空的、或所有資料列明顯都與問題無關時，才回答『知識庫沒有相關資訊。』，不要編造查詢結果中沒有的內容。\n"
+            "3. 保持回答清晰、專業且符合邏輯，可視需要簡述用了哪張表格或欄位得出結論。\n\n"
+            f"【資料庫查詢結果】\n{context_str}"
+        )
+    elif context_str:
         system_prompt = (
             "你是一個專業的 RAG 智慧對話助理。請根據以下提供的「參考資料」回答使用者的問題。\n"
             "規則：\n"
