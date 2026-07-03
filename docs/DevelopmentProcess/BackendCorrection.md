@@ -1,5 +1,21 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-07-03 RAG 對話新增 repetition/frequency penalty 與重複輸出偵測（防止地端 LLM 無限迴圈重複同一句話）
+
+### 問題描述
+使用者回報地端 vLLM（Qwen3.6-35B-A3B-FP8）在 RAG 對話串流中出現無限重複同一句話（例如反覆輸出同一段 SQL 註解）的退化現象。查證 `backend/services/llm_service.py` 的 `chat_completion()` 呼叫 vLLM OpenAI-compatible endpoint 時只帶 `temperature`/`max_tokens`，未設定任何抑制重複的參數，且串流層完全沒有中斷機制。
+
+### 修改內容
+1. `backend/config.py` (修改)：新增 `DEFAULT_REPETITION_PENALTY`（預設 `1.1`）、`DEFAULT_FREQUENCY_PENALTY`（預設 `0`），可用環境變數覆蓋。
+2. `backend/services/llm_service.py` (修改)：`chat_completion()` 新增 `repetition_penalty`/`frequency_penalty` 參數（預設 `None` 不帶入 payload，避免影響 `query_rewrite`/`hyde_generation` 等既有呼叫端行為），有值時寫入送給 vLLM 的 payload。
+3. `backend/routers/rag.py` (修改)：
+   - `ChatParams` schema 新增 `repetition_penalty`/`frequency_penalty` 欄位，比照既有 `temperature`/`max_tokens` 的 optional-override 模式，預設吃 `config.py` 的值。
+   - `rag_chat_stream()` 呼叫 `LLMService.chat_completion` 時傳入上述兩個參數。
+   - 串流迴圈新增重複輸出偵測安全網：累積已輸出內容，若最近 25 字的片段在累積內容中連續出現達 4 次，主動中斷串流並附加系統提示訊息，避免 penalty 參數未完全生效時仍無限迴圈下去。
+
+### 對應規劃文件
+無獨立規劃文件，需求與方案討論於對話中確認（分三層：後端 penalty 參數 → 串流層重複偵測 → 前端可調參數/停止按鈕；本次僅完成前兩層）。
+
 ## 2026-07-02 新增語義混合回饋查詢法後端邏輯（人工回饋與標註歷史）
 
 ### 修改內容

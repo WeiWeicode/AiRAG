@@ -26,6 +26,8 @@ class ChatParams(BaseModel):
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    repetition_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
     top_k: Optional[int] = None
     score_threshold: Optional[float] = None
     filter_tags: Optional[List[str]] = None
@@ -194,9 +196,11 @@ async def rag_chat_stream(request: ChatRequest):
     top_k = 13
     score_threshold = 0.65
     max_tokens = 1024
+    repetition_penalty = settings.DEFAULT_REPETITION_PENALTY
+    frequency_penalty = settings.DEFAULT_FREQUENCY_PENALTY
     filter_tags = None
     search_type = "vector"
-    
+
     if request.params:
         if request.params.temperature is not None:
             temperature = request.params.temperature
@@ -206,6 +210,10 @@ async def rag_chat_stream(request: ChatRequest):
             score_threshold = request.params.score_threshold
         if request.params.max_tokens is not None:
             max_tokens = request.params.max_tokens
+        if request.params.repetition_penalty is not None:
+            repetition_penalty = request.params.repetition_penalty
+        if request.params.frequency_penalty is not None:
+            frequency_penalty = request.params.frequency_penalty
         if request.params.filter_tags is not None:
             filter_tags = request.params.filter_tags
         if request.params.search_type is not None:
@@ -457,9 +465,16 @@ async def rag_chat_stream(request: ChatRequest):
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            repetition_penalty=repetition_penalty,
+            frequency_penalty=frequency_penalty,
             stream=True
         )
-        
+
+        # 重複輸出偵測：即使 repetition_penalty 未能完全避免，也要能主動中斷無限迴圈
+        accumulated_content = ""
+        repeat_ngram_size = 25
+        repeat_trigger_count = 4
+
         async for raw_chunk in vllm_stream:
             try:
                 chunk_data = json.loads(raw_chunk)
@@ -472,6 +487,15 @@ async def rag_chat_stream(request: ChatRequest):
                         yield f"event: chunk\ndata: {json.dumps({'type': 'reasoning', 'content': reasoning_chunk}, ensure_ascii=False)}\n\n"
                     if content_chunk:
                         yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': content_chunk}, ensure_ascii=False)}\n\n"
+
+                        accumulated_content += content_chunk
+                        if len(accumulated_content) >= repeat_ngram_size * repeat_trigger_count:
+                            tail = accumulated_content[-repeat_ngram_size:]
+                            if accumulated_content.count(tail) >= repeat_trigger_count:
+                                logger.warning("Detected repeated generation loop, aborting stream early.")
+                                warning_msg = "\n\n[系統提示] 偵測到模型重複輸出相同內容，已自動中斷生成。"
+                                yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': warning_msg}, ensure_ascii=False)}\n\n"
+                                break
             except Exception as parse_e:
                 logger.error(f"Error parsing SSE chunk: {raw_chunk}, error: {parse_e}")
     except Exception as llm_e:

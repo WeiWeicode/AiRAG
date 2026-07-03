@@ -10,8 +10,10 @@ class LLMService:
     async def chat_completion(
         cls, 
         messages: List[Dict[str, str]], 
-        temperature: float = 0.7, 
+        temperature: float = 0.7,
         max_tokens: int = 1024,
+        repetition_penalty: float = None,
+        frequency_penalty: float = None,
         stream: bool = False
     ) -> Any:
         """
@@ -26,6 +28,11 @@ class LLMService:
             "max_tokens": max_tokens,
             "stream": stream
         }
+        # repetition_penalty / frequency_penalty 用於抑制地端模型重複輸出同一句話（無限迴圈）
+        if repetition_penalty is not None:
+            payload["repetition_penalty"] = repetition_penalty
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
         
         try:
             client = httpx.AsyncClient(timeout=60.0)

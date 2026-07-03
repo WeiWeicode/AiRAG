@@ -43,6 +43,9 @@ class Settings:
     DEFAULT_CHUNK_SIZE: int = int(os.getenv("DEFAULT_CHUNK_SIZE", "512"))
     DEFAULT_CHUNK_OVERLAP: int = int(os.getenv("DEFAULT_CHUNK_OVERLAP", "50"))
     FEEDBACK_BOOST_WEIGHT: float = float(os.getenv("FEEDBACK_BOOST_WEIGHT", "0.2"))
+    # 防止地端 LLM 重複輸出同一句話（無限迴圈）
+    DEFAULT_REPETITION_PENALTY: float = float(os.getenv("DEFAULT_REPETITION_PENALTY", "1.1"))
+    DEFAULT_FREQUENCY_PENALTY: float = float(os.getenv("DEFAULT_FREQUENCY_PENALTY", "0"))
 
     # 語義資料庫查詢法 (Semantic DB Query)
     AI_DB_QUERY_MAX_ROWS: int = int(os.getenv("AI_DB_QUERY_MAX_ROWS", "50"))
