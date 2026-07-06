@@ -6,9 +6,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台 (AiRAG Internal Testing Platform)
-* **文件版本**：V 1.1 (最新更新)
+* **文件版本**：V 1.2 (最新更新)
 * **建立日期**：2026-06-18
-* **更新日期**：2026-06-30
+* **更新日期**：2026-07-06
 * **目標受眾**：AI 工程師、後端工程師、產品經理、QA 測試人員
 
 ## 2. 專案概述
@@ -41,8 +41,9 @@
 * **功能細節**：
   * **對話介面**：支援多輪對話 (Chat History)，支援 Markdown 渲染與程式碼高亮。
   * **參數設定面板**：設定 LLM Model (Qwen3.6-35B-A3B-FP8)、Temperature、Top-P、Max Tokens。
-  * **RAG 參數設定**：可調整 Knowledge Base (知識庫) 選擇、Top-K (檢索數量)、Score Threshold (相似度閾值)。
-  * **查詢模式切換**：提供 `vector` (純向量查詢)、`hybrid` (雙路混合查詢) 與 `semantic_hybrid` (語義混合查詢) 三種檢索模式。
+  * **RAG 參數設定**：可調整 Knowledge Base (知識庫) 選擇、Top-K (檢索數量，1~50)、Score Threshold (相似度閾值)、分批摘要門檻 (Context Summarize Threshold)。
+  * **查詢模式切換**：提供 `vector` (純向量查詢)、`hybrid` (雙路混合查詢)、`semantic_hybrid` (語義混合查詢)、`semantic_hybrid_feedback` (語義混合回饋查詢法) 與 `semantic_db_query` (語義資料庫查詢法) 五種檢索模式。
+  * **上下文長度保護（Map-Reduce 分批摘要）**：當 Top-K 設定過高或命中片段內容過長，導致檢索出的上下文總 token 數超過使用者可調整的門檻（預設 50,000）時，系統會自動以 Bin-Packing 分組並遞迴呼叫 LLM 進行 Map（分批摘要）→ Reduce（合併整理），避免直接把過長內容送進主模型觸發 HTTP 400 錯誤；整個分批過程會即時顯示於步驟折疊面板，且「參考文檔引用」面板會顯示每個 Chunk 的 Token 數與本次檢索的 Token 總計/分批次數。
   * **語義混合查詢工作流**：
     * 當使用 `semantic_hybrid` 時，原始提問先發送至地端 Instruct 語義化 AI（Qwen3VL-8B-Instruct）轉換為語義結構化 JSON（包含 `embeddings_input` 密集向量輸入與 `sparse_keywords` 稀疏關鍵字）。
     * 將此 JSON 用於密集向量生成與 FastEmbed 稀疏關鍵字生成，執行兩路融合檢索。

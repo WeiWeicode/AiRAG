@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.1 (最新更新)
+* **文件版本**：V 1.2 (最新更新)
 * **建立日期**：2026-06-18
-* **更新日期**：2026-06-30
+* **更新日期**：2026-07-06
 * **說明**：本指南為開發人員及 QA 測試工程師提供實用的 API 測試腳本與 cURL 指令，用以獨立驗證系統新舊端點。
 * **基本設定**：
   * API Base URL: `http://localhost:8000/api`
@@ -55,6 +55,29 @@ curl -N -X POST "http://localhost:8000/api/rag/chat" \
 *預期串流內容*：
 * 會先回傳 `event: step` 帶有 `semantic_analysis`（地端語義化 AI 解析提問出的 JSON）與 `vector_search`（召回來源，語義混合模式下為雙階段關聯檢索）。實際事件欄位為 `step`/`status`/`content`。
 * 隨後以 `event: chunk` 串流輸出對答字元（`type: reasoning|content|done`）。
+* `event: sources` 內每個 chunk 會附帶 `token_count`，並新增 `context_summary`（總計 token 數、是否觸發分批摘要、切分次數/輪數）。
+
+### 3.1a 測試 Map-Reduce 分批摘要（Context 超長保護）
+把 `top_k` 調高、`context_summarize_trigger_tokens` 調低，較容易在測試環境中人為觸發分批摘要（不需要真的準備超大知識庫）：
+```bash
+curl -N -X POST "http://localhost:8000/api/rag/chat" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "question": "列出所有相關內容並詳細說明",
+       "knowledge_base_id": "649c12e4f5b9d3118c8bcf2f",
+       "chat_history": [],
+       "params": {
+         "search_type": "semantic_hybrid",
+         "top_k": 50,
+         "context_summarize_trigger_tokens": 2000
+       }
+     }'
+```
+*預期串流內容*：若召回的上下文 token 總數超過 `context_summarize_trigger_tokens`（此例故意調到很低的 2000 以方便觸發），會看到多個
+`context_summarize_r1_batch_1`、`context_summarize_r1_batch_2`...、`context_summarize_r1_reduce` 等動態 `event: step`，
+`content` 附帶分批的原始內容與整理結果；若某批呼叫 LLM 失敗，會看到 `context_summarize_error`（`status: failed`），
+但串流仍會正常走到 `llm_thinking`/`conclusion`/`sources`/`chunk: done`，不會中斷。詳見 `docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md`。
 
 ### 3.2 測試獨立語義混合檢索 (Semantic Hybrid Search)
 * **API 端點**：`POST /api/retrieval/semantic-hybrid-search`

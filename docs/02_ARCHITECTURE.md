@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.2（依實際程式碼校正）
+* **文件版本**：V 1.3（依實際程式碼校正）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-02
+* **更新日期**：2026-07-06
 * **對應 PRD**：01_RPD.md
 
 > 本版本已對照 `backend/`、`frontend/src/` 實際目錄與 `docs/DevelopmentProcess/*.md` 修改紀錄校正專案結構與核心資料流，移除前一版文件中尚未實作的檔案（`middleware/`、`eval_service.py`、`feedback_service.py`、`prompt_engine.py`、`helpers.py`），並補上 2026-07-01 新增的雙階段關聯檢索（Two-Step Hybrid Retrieval）與知識庫關聯地圖機制。
@@ -295,6 +295,10 @@ graph TD
   - **一般文件段落**：使用專用 Map 提示詞，強制要求模型保留來源標記格式（例如 `[文件名] 段落: #段落編號`），便於最終生成回答時進行引用標註。
   - **資料庫查詢結果 (`semantic_db_query`)**：使用專用資料庫摘要提示詞，以保留 `表格/欄位` 的脈絡為重點，去除非相關或空欄位，避免過度保守判定「查無相關資訊」。
 - **SSE 事件回報**：摘要執行過程會發送多個 `event: step` 事件（如 `context_summarize_r1_batch_1`、`context_summarize_r1_reduce`），並帶有進度與內容預覽以提升使用者體驗。
+- **失敗降級**：若 Map/Reduce 過程中呼叫 LLM 失敗（例如地端 vLLM 逾時），會發出 `context_summarize_error` 的 `failed` 步驟並記錄錯誤，但改用原始未摘要的檢索內容繼續完成整輪回答，不會中斷整個 SSE 串流。
+- **Token 統計輸出**：`token_counter.count_tokens()`（基於 `tiktoken` 的 `cl100k_base` 編碼，為近似值，非 Qwen 原生 tokenizer）會計算每個檢索片段的 token 數，隨最終 `event: sources` 一併回傳 `token_count`（逐 chunk）與 `context_summary`（總計 token 數、是否觸發摘要、分批次數/輪數），供前端「參考文檔引用」面板顯示，詳見 `03_API_CONTRACT.md` §3.1。
+- **門檻可調**：前端「RAG 功能測試」頁可透過 `context_summarize_trigger_tokens` 參數覆寫預設門檻（`config.py` 的 `DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS`，預設 50,000）。
+- 詳細規劃與實作記錄見 `docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md`。
 
 ### 5.3 步驟進度 SSE 發送事件
 `/api/rag/chat` 對話串流中，後端依序透過 `event: step` 回傳處理進度，實際欄位為 `step` / `status` / `content`：

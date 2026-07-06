@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.3（依實際程式碼校正）
+* **文件版本**：V 1.4（依實際程式碼校正）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-03
+* **更新日期**：2026-07-06
 * **Base URL**：`http://<host>:8000/api`
 * **認證方式**：JWT Bearer Token（除 `/api/auth/login` 外，所有 API 皆掛載於各 router 的 `Depends(get_current_user)`，須帶 `Authorization: Bearer <token>`）
 
@@ -29,7 +29,7 @@
 ## 3. RAG 功能測試 API (§4.1)
 
 ### 3.1 POST `/api/rag/chat` — RAG 對話（SSE 串流）
-**描述**：端到端 RAG 對話，支援 `vector`、`hybrid`、`semantic_hybrid` 三種模式。當 `search_type == "semantic_hybrid"` 時，實際呼叫的是**雙階段關聯檢索** `search_similar_two_step`（見 `02_ARCHITECTURE.md` §5.1），而非單純的雙路混合搜尋。
+**描述**：端到端 RAG 對話，支援 `vector`、`hybrid`、`semantic_hybrid`、`semantic_hybrid_feedback`、`semantic_db_query` 五種模式。當 `search_type` 為 `semantic_hybrid`/`semantic_hybrid_feedback` 時，實際呼叫的是**雙階段關聯檢索** `search_similar_two_step`（見 `02_ARCHITECTURE.md` §5.1），而非單純的雙路混合搜尋。
 
 **Request Body**：
 ```json
@@ -61,7 +61,12 @@
   event: step
   data: {"step": "semantic_analysis", "status": "running | success | failed", "content": "..."}
   ```
-  `step` 依序為 `semantic_analysis` → `vector_search` → `llm_thinking` → `conclusion`；`status` 為 `running`、`success`、`failed` 或（`conclusion` 步驟固定送出一次）`pending`。
+  固定步驟依序為 `semantic_analysis` → `vector_search` → （視情況插入分批摘要步驟，見下） → `llm_thinking` → `conclusion`；`status` 為 `running`、`success`、`failed` 或（`conclusion` 步驟固定送出一次）`pending`。
+  **分批摘要（Map-Reduce Context Summary）動態步驟**：當檢索出的上下文 token 數超過 `context_summarize_trigger_tokens` 門檻時，會在 `vector_search` 之後、`llm_thinking` 之前動態插入以下步驟（筆數依實際分批數量而定，非固定）：
+  * `context_summarize_r{N}_batch_{i}`：第 N 輪第 i 批的分批整理，`content` 附帶 `label` 欄位（如「第 1 輪・分批整理 1/3（3 個區塊，約 45000 tokens）」）與原始內容/整理結果預覽。
+  * `context_summarize_r{N}_reduce`：第 N 輪把多份分批摘要合併成一份的步驟。
+  * `context_summarize_error`：分批摘要過程中若呼叫 LLM 失敗（例如逾時），會發出此 `status: "failed"` 步驟並降級為使用原始未摘要內容繼續回答，不會中斷整個串流。
+  * 未觸發分批摘要時（多數情況），這些步驟完全不會出現，行為與未加入此功能前相同。詳見 `docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md`。
 * **`event: chunk`** — LLM 輸出：
   ```
   event: chunk
@@ -79,11 +84,20 @@
           "chunk_index": 0, "tags": ["string"], "class": ["string"],
           "links_to": ["string"]
         },
-        "score": 0.85
+        "score": 0.85,
+        "token_count": 512
       }
-    ]
+    ],
+    "context_summary": {
+      "total_tokens": 45000,
+      "batch_count": 0,
+      "rounds": 0,
+      "was_summarized": false,
+      "threshold_tokens": 50000
+    }
   }
   ```
+  `token_count`（各 chunk）與 `context_summary`（本次檢索的 token 總計與分批摘要統計）為新增欄位。`context_summary.batch_count`/`rounds` 只有在觸發分批摘要時才會大於 0；未觸發時 `was_summarized` 固定為 `false`。
 
 ### 3.2 GET `/api/rag/history` — 取得對話歷史 **[Stub]**
 固定回傳 `{"total": 0, "items": []}`，不查詢資料庫，目前尚未串接任何 `chat_sessions` 持久化邏輯。
