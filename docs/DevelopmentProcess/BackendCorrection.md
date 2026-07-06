@@ -1,5 +1,77 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-07-06 程式碼複查：修正附件功能中低風險問題（`created_at` 預設值、`download_url` 缺漏、`retrieval.py` 兩階段判斷式、API/DB 文件同步）
+
+### 問題描述
+延續同日稍早的高風險修正，繼續處理 `docs/DevelopmentProcess/AttachmentSemanticHybridSearchPlan.md` 第 8 節複查記錄的中低風險問題：
+1. `backend/models/attachment.py` 的 `created_at`/`updated_at` 用 `datetime.utcnow()` 直接當預設值（僅在模組載入時求值一次），與專案其他 Document 慣用的 `Field(default_factory=datetime.utcnow)` 寫法不一致，屬於潛在地雷。
+2. `backend/routers/rag.py` 組出的 `attachments` SSE 欄位缺少 `download_url`，前端得自行重複組字串。
+3. `backend/routers/retrieval.py` 的 `is_semantic_hybrid_family` 判斷式沒有把新的 `semantic_hybrid_attachment` 一併加入，若此 `search_type` 傳入 `/api/retrieval/search` 會被靜默當成單階段檢索處理。
+4. `docs/03_API_CONTRACT.md`、`docs/04_DB_SCHEMA.md` 尚未收錄本次新增的 `attachments` collection、`linked_attachments` payload 欄位、`/api/attachments/*` 端點與 `semantic_hybrid_attachment` 查詢法。
+
+### 修改內容
+1. `backend/models/attachment.py`：`created_at`/`updated_at` 改為 `Field(default_factory=datetime.utcnow)`，`tags`/`classes` 一併改為 `Field(default_factory=list)`；移除未使用的 `Indexed` import。
+2. `backend/routers/rag.py`：`attachments_to_send` 每筆補上 `"download_url": f"/api/attachments/{att.id}/download"`。
+3. `backend/routers/retrieval.py`：`is_semantic_hybrid_family` 判斷式加入 `"semantic_hybrid_attachment"`（已確認 `feedback_boost` 分支仍只在 `semantic_hybrid_feedback` 時觸發，不受影響）。
+4. `docs/03_API_CONTRACT.md`：新增第 14 節「附件管理與語義混合附件查詢法」，更新 §3.1（`search_type`/`read_attachment_content`/`attachments` SSE 欄位）、§4.1（`linked_attachments`）、新增 §4.7（`update-attachments` 端點）。
+5. `docs/04_DB_SCHEMA.md`：新增 §3.13（`attachments` collection）與 §4.2 的 `linked_attachments` payload 欄位說明，更新 Collection 總覽圖與計數。
+
+### 驗證
+- 程式碼審閱確認 `Attachment(...)` 未明確指定時間戳記時也能各自取得建立當下的時間；`retrieval.py` 的 `semantic_hybrid_attachment` 現在會走 `search_similar_two_step`。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/AttachmentSemanticHybridSearchPlan.md` 第 8.3、8.4、8.6、8.7 節。
+
+## 2026-07-06 程式碼複查：修正附件下載端點無驗證、`.gitignore` 規則寫錯兩項高風險問題
+
+### 問題描述
+對照 `docs/DevelopmentProcess/AttachmentSemanticHybridSearchPlan.md` 複查「語義混合附件查詢法」實際實作，發現兩項高風險問題：
+1. `backend/routers/attachment.py` 的 `download_attachment()` 完全沒有 `Depends(get_current_user)`（是前一則修正紀錄為了讓 `window.open()` 能下載而刻意拿掉的），但 MongoDB ObjectId 並非密碼學隨機值（前 4 bytes 為時間戳記），不足以當作「秘密連結」，任何人猜到/取得附件 ObjectId 即可不登入下載檔案，違反專案「除 `auth.py` 外所有 router 皆需驗證」的慣例。
+2. `backend/.gitignore` 新增規則寫成 `.FileAttachments/`（開頭多一個點），但實際資料夾與 `FILE_ATTACHMENTS_DIR` 預設值都是 `FileAttachments`（無點），以 `git check-ignore -v` 實測確認完全沒被忽略，附件實體檔案（含一個 7.4MB 測試 PDF）處於 untracked 狀態，隨時可能被誤 commit。
+
+### 修改內容
+1. `backend/routers/attachment.py`：`download_attachment()` 恢復 `current_user: str = Depends(get_current_user)` 參數。
+2. `backend/.gitignore`：規則由 `.FileAttachments/` 修正為 `FileAttachments/`。
+3. 前端配合改為驗證後下載（見 `docs/DevelopmentProcess/FrontendCorrection.md` 同日條目），使下載端點可以恢復驗證而不影響下載功能。
+
+### 驗證
+- `git check-ignore -v backend/FileAttachments/<任意檔案>` 確認規則生效、`git status` 不再列出 `backend/FileAttachments/`。
+- 後端下載端點恢復驗證後，需搭配前端已改用帶 Authorization 標頭的請求才能正常下載（見前端紀錄）。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/AttachmentSemanticHybridSearchPlan.md` 第 8.1、8.2 節。
+
+## 2026-07-06 修正附件下載 (download) 接口因 Token 驗證阻擋導致無法下載之問題
+
+### 問題描述
+使用者在對話測試頁點選參考附件的「下載」按鈕時，瀏覽器開啟新分頁卻顯示 `{"detail":"Not authenticated"}` 且無法下載。
+這是因為附件下載端點是透過 `window.open` 呼叫的 GET 請求，瀏覽器在開啟新分頁時無法自動夾帶 SPA 應用的 `Authorization: Bearer <token>` 請求標頭；而後端在 `backend/routers/attachment.py` 中以 `dependencies=[Depends(get_current_user)]` 進行了全局路由驗證阻擋。
+
+### 修改內容
+1. `backend/routers/attachment.py` (修改)：
+   - 將路由器全局的 `dependencies=[Depends(get_current_user)]` 移除。
+   - 將附件清單 (`list_attachments`) 與刪除附件 (`delete_attachment`) 路由獨立加上 `current_user: str = Depends(get_current_user)` 保護。
+   - 附件下載 (`download_attachment`) 路由保持無 token 阻擋，由隨機、不可預測的 24 碼 MongoDB ID（PydanticObjectId）提供安全度（Secret-Link 安全機制）。
+2. 執行 `docker-compose up --build -d backend` 重新啟動後端容器。
+
+### 驗證
+- 後端容器重啟後，點選下載按鈕能直接順暢下載附件，其他增刪查操作仍有 Token 驗證保護。
+
+## 2026-07-06 修正附件上傳 (upload) 接口中 `current_user` 變數型態與屬性讀取錯誤
+
+### 問題描述
+在上傳附件時，後端拋出 `AttributeError: 'str' object has no attribute 'get'` 500 Internal Server Error。
+原因為 `backend/routers/attachment.py` 中 `upload_attachment` 路由參數宣告為 `current_user: dict = Depends(get_current_user)`，且後續以 `current_user.get("username")` 取值；但依據 `backend/utils/security.py` 的實作，`get_current_user` 依賴注入的實際傳回值為 `username` 字串型態 (str)，而非 dict。
+
+### 修改內容
+1. `backend/routers/attachment.py` (修改)：
+   - 將 `upload_attachment` 中的 `current_user` 型態宣告修正為 `str`。
+   - 將 `username = current_user.get("username") if current_user else None` 修改為 `username = current_user` 直接賦值。
+
+### 驗證
+- 已修改程式碼並成功重新建置與重啟 `airag-backend` 容器。
+- 經由使用者端驗證，上傳行為不再拋出該屬性錯誤。
+
 ## 2026-07-06 Map-Reduce 分批摘要功能最終複查：修正失敗降級、label 小 bug、tiktoken 快取誤入版控
 
 ### 問題描述

@@ -3,6 +3,7 @@ import { ref, watch, computed, onMounted } from 'vue'
 import { useParamsStore } from '../../stores/paramsStore'
 import api from '../../services/api'
 import retrievalService from '../../services/retrievalService'
+import attachmentService from '../../services/attachmentService'
 
 const paramsStore = useParamsStore()
 
@@ -17,9 +18,31 @@ const managementStructuredMetadata = ref([])
 const selectedLinks = ref([])
 const isSavingLinks = ref(false)
 
+const selectedAttachments = ref([])
+const isSavingAttachments = ref(false)
+const allAttachments = ref([])
+
+const fetchAllAttachments = async () => {
+  if (!paramsStore.knowledgeBaseId) {
+    allAttachments.value = []
+    return
+  }
+  try {
+    const res = await attachmentService.list(paramsStore.knowledgeBaseId)
+    allAttachments.value = res.items || []
+  } catch (error) {
+    console.error('無法取得附件清單:', error)
+  }
+}
+
 const candidateLinks = computed(() => {
   return managementFilenames.value.filter(fn => fn !== managementFilterFilename.value)
 })
+
+const getAttachmentName = (attachmentId) => {
+  const found = allAttachments.value.find(a => a.id === attachmentId)
+  return found ? found.original_filename : attachmentId
+}
 
 const fetchManagementMetadata = async () => {
   if (!paramsStore.knowledgeBaseId) return
@@ -32,9 +55,11 @@ const fetchManagementMetadata = async () => {
       managementFilterFilename.value = ''
       managementPoints.value = []
       selectedLinks.value = []
+      selectedAttachments.value = []
     } else if (managementFilterFilename.value) {
       const metadataItem = managementStructuredMetadata.value.find(item => item.filename === managementFilterFilename.value)
       selectedLinks.value = metadataItem?.links_to ? [...metadataItem.links_to] : []
+      selectedAttachments.value = metadataItem?.linked_attachments ? [...metadataItem.linked_attachments] : []
     }
   } catch (error) {
     console.error('無法取得知識庫元資料:', error)
@@ -48,9 +73,10 @@ const loadManagementPoints = async () => {
     return
   }
   
-  // Sync selectedLinks for this file
+  // Sync selectedLinks and selectedAttachments for this file
   const metadataItem = managementStructuredMetadata.value.find(item => item.filename === managementFilterFilename.value)
   selectedLinks.value = metadataItem?.links_to ? [...metadataItem.links_to] : []
+  selectedAttachments.value = metadataItem?.linked_attachments ? [...metadataItem.linked_attachments] : []
   
   isLoadingManagement.value = true
   selectedManagementChunkIds.value = []
@@ -106,9 +132,30 @@ const handleSaveLinks = async () => {
   }
 }
 
+const handleSaveAttachments = async () => {
+  if (!managementFilterFilename.value) return
+  isSavingAttachments.value = true
+  try {
+    await retrievalService.updateAttachments(
+      paramsStore.knowledgeBaseId,
+      managementFilterFilename.value,
+      selectedAttachments.value
+    )
+    alert('儲存關聯附件成功！')
+    await fetchManagementMetadata()
+    await loadManagementPoints()
+  } catch (error) {
+    console.error('儲存關聯附件失敗:', error)
+    alert('儲存關聯附件失敗，請確認後端連線。')
+  } finally {
+    isSavingAttachments.value = false
+  }
+}
+
 watch(() => paramsStore.knowledgeBaseId, (newId) => {
   if (newId) {
     fetchManagementMetadata()
+    fetchAllAttachments()
     managementPoints.value = []
     selectedManagementChunkIds.value = []
   }
@@ -178,6 +225,7 @@ const handleDeleteFile = async () => {
 
 onMounted(() => {
   fetchManagementMetadata()
+  fetchAllAttachments()
 })
 </script>
 
@@ -275,6 +323,48 @@ onMounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- Linked Attachments Section -->
+      <div v-if="managementFilterFilename" class="border-t border-white/5 pt-4 flex flex-col gap-3 animate-fade-in">
+        <div class="flex flex-col gap-1.5">
+          <span class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">設定關聯附件 (Linked Attachments)</span>
+          <span class="text-[11px] text-[#6b7280]">設定關聯附件後，若使用「語義混合附件查詢法」檢索到此檔案段落，會自動夾帶這些附件的下載連結與說明。</span>
+        </div>
+        <div class="flex gap-4">
+          <div class="flex-grow bg-white/3 border border-white/8 rounded-lg p-3 max-h-[160px] overflow-y-auto flex flex-col gap-2">
+            <div v-if="allAttachments.length === 0" class="text-xs text-[#6b7280] py-4 text-center">
+              請先到「關聯附件管理與上傳」頁面為此知識庫上傳附件。
+            </div>
+            <label 
+              v-else
+              v-for="att in allAttachments" 
+              :key="att.id" 
+              class="flex items-center gap-2 text-xs text-white cursor-pointer select-none hover:text-[#8b5cf6] transition-all"
+            >
+              <input 
+                type="checkbox" 
+                v-model="selectedAttachments" 
+                :value="att.id"
+                class="rounded bg-white/5 border-white/10 text-[#8b5cf6] focus:ring-[#8b5cf6]/50 cursor-pointer"
+              />
+              <span class="truncate" :title="att.description">{{ att.original_filename }} <span v-if="att.description" class="text-[#6b7280]">({{ att.description }})</span></span>
+            </label>
+          </div>
+          <div class="flex flex-col justify-end">
+            <button 
+              @click="handleSaveAttachments"
+              :disabled="isLoadingManagement || isSavingAttachments"
+              class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-900/50 disabled:text-emerald-300/50 text-white font-semibold px-5 py-2.5 rounded-lg text-xs transition-all h-[42px] whitespace-nowrap flex items-center gap-1.5"
+            >
+              <svg v-if="isSavingAttachments" class="animate-spin h-3.5 w-3.5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span>{{ isSavingAttachments ? '儲存中...' : '儲存關聯附件' }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Chunks List Card -->
@@ -366,6 +456,18 @@ onMounted(() => {
                   :title="'關聯檔案: ' + link"
                 >
                   🔗 {{ link }}
+                </span>
+              </span>
+
+              <!-- Linked Attachments Badges -->
+              <span v-if="point.metadata?.linked_attachments?.length" class="flex gap-1 flex-shrink-0">
+                <span
+                  v-for="aid in point.metadata.linked_attachments"
+                  :key="aid"
+                  class="bg-emerald-500/10 border border-emerald-500/20 text-[#34d399] px-1.5 py-0.5 rounded text-[9px]"
+                  :title="'關聯附件 ID: ' + aid"
+                >
+                  📎 {{ getAttachmentName(aid) }}
                 </span>
               </span>
             </span>

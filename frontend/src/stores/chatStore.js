@@ -120,7 +120,8 @@ export const useChatStore = defineStore('chat', {
             score_threshold: paramsStore.scoreThreshold,
             filter_tags: parsedFilterTags.length > 0 ? parsedFilterTags : undefined,
             search_type: paramsStore.searchMode,
-            context_summarize_trigger_tokens: paramsStore.contextSummarizeThreshold || undefined
+            context_summarize_trigger_tokens: paramsStore.contextSummarizeThreshold || undefined,
+            read_attachment_content: paramsStore.readAttachmentContent
           }
         }
 
@@ -262,6 +263,7 @@ export const useChatStore = defineStore('chat', {
                   if (msg) {
                     msg.sources = data.sources
                     msg.contextSummary = data.context_summary || null
+                    msg.attachments = data.attachments || null
                   }
                 }
               } catch (e) {

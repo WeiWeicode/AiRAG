@@ -35,6 +35,7 @@ class ChatParams(BaseModel):
     filter_tags: Optional[List[str]] = None
     search_type: Optional[str] = "vector"
     context_summarize_trigger_tokens: Optional[int] = None
+    read_attachment_content: Optional[bool] = False
 
 class ChatRequest(BaseModel):
     question: str
@@ -45,6 +46,20 @@ class ChatRequest(BaseModel):
     # 第一次請求不帶此欄位時，僅回傳候選查詢設定檔清單並暫停；
     # 使用者選定候選後，前端帶著此欄位重新呼叫，才會實際產生 SQL 並查詢資料庫。
     selected_db_profile_id: Optional[str] = None
+
+def _get_attachment_effective_text(att) -> tuple:
+    """
+    語義混合附件查詢法：取得附件實際餵給 AI 的文字內容與來源說明。
+    優先使用上傳時自動解析出的檔案實際內容（extracted_content）；
+    僅在自動解析失敗或不支援該檔案格式時，才退回使用者填寫的備註（description）；
+    兩者皆無則回報無可讀取內容，不假裝有內容可讀。
+    """
+    if att.extracted_content:
+        return att.extracted_content, "自動擷取檔案實際內容"
+    if att.description:
+        note = f"（無法自動擷取此檔案格式的內容：{att.extraction_error}，改用使用者填寫的備註）" if att.extraction_error else "（使用者填寫的備註，未提供自動擷取內容）"
+        return att.description, note
+    return None, "（此附件無可讀取的內容：自動擷取失敗且未填寫備註）"
 
 async def _run_semantic_db_query(request: "ChatRequest", question: str, result: dict):
     """
@@ -205,6 +220,7 @@ async def rag_chat_stream(request: ChatRequest):
     filter_tags = None
     search_type = "vector"
     context_summarize_trigger_tokens = settings.DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS
+    read_attachment_content = False
 
     if request.params:
         if request.params.temperature is not None:
@@ -225,8 +241,12 @@ async def rag_chat_stream(request: ChatRequest):
             search_type = request.params.search_type
         if request.params.context_summarize_trigger_tokens is not None:
             context_summarize_trigger_tokens = request.params.context_summarize_trigger_tokens
+        if request.params.read_attachment_content is not None:
+            read_attachment_content = request.params.read_attachment_content
 
     sources = []
+    attachments_to_send = []
+    attachments_data = []
     context_str = ""
     context_summary = {
         "total_tokens": 0,
@@ -260,7 +280,7 @@ async def rag_chat_stream(request: ChatRequest):
                     yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
                     
                     # 取得提問向量
-                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback"):
+                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment"):
                         # 先發送進行中事件表示在進行 Instruct 語義分析
                         step_data = {
                             "step": "semantic_analysis",
@@ -349,7 +369,7 @@ async def rag_chat_stream(request: ChatRequest):
 
                     # Qdrant 相似度與雙路融合檢索
                     feedback_boost_applied = False
-                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback"):
+                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment"):
                         raw_results = await QdrantService.search_similar_two_step(
                             collection_name=kb.qdrant_collection_name,
                             query_vector=query_vector,
@@ -369,6 +389,31 @@ async def rag_chat_stream(request: ChatRequest):
                                 raw_results, knowledge_base_id=request.knowledge_base_id
                             )
                             feedback_boost_applied = True
+
+                        # 語義混合附件查詢法：收集並查詢關聯附件
+                        if search_type == "semantic_hybrid_attachment" and raw_results:
+                            attachment_ids = []
+                            for item in raw_results:
+                                meta = item.get("metadata", {})
+                                linked_atts = meta.get("linked_attachments") or []
+                                for aid in linked_atts:
+                                    if aid and aid not in attachment_ids:
+                                        attachment_ids.append(aid)
+
+                            from models.attachment import Attachment
+                            for aid in attachment_ids:
+                                try:
+                                    att = await Attachment.get(PydanticObjectId(aid))
+                                    if att:
+                                        attachments_data.append(att)
+                                        attachments_to_send.append({
+                                            "id": str(att.id),
+                                            "original_filename": att.original_filename,
+                                            "description": att.description,
+                                            "download_url": f"/api/attachments/{att.id}/download"
+                                        })
+                                except Exception as att_err:
+                                    logger.warning(f"Failed to fetch attachment {aid}: {att_err}")
                     else:
                         raw_results = await QdrantService.search_similar(
                             collection_name=kb.qdrant_collection_name,
@@ -395,7 +440,8 @@ async def rag_chat_stream(request: ChatRequest):
                                 "chunk_index": meta.get("chunk_index"),
                                 "tags": meta.get("tags", []),
                                 "class": meta.get("class", []),
-                                "links_to": meta.get("links_to", [])
+                                "links_to": meta.get("links_to", []),
+                                "linked_attachments": meta.get("linked_attachments", [])
                             },
                             "score": item.get("score", 0.0),
                             "token_count": count_tokens(item.get("content", ""))
@@ -404,7 +450,7 @@ async def rag_chat_stream(request: ChatRequest):
                         chunk_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
                         context_parts.append(f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{item.get('content', '')}")
                         
-                        score_label = "RRF Score" if search_type in ["hybrid", "semantic_hybrid", "semantic_hybrid_feedback"] else "Score"
+                        score_label = "RRF Score" if search_type in ["hybrid", "semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment"] else "Score"
                         retrieved_summary.append(f"[{idx+1}] 來源文件：{meta.get('filename', '未知')} | P.{meta.get('page', '?')} | {score_label}: {item.get('score', 0.0):.4f}\\n內容預覽：{item.get('content', '')[:100]}...")
 
                     if context_parts:
@@ -416,6 +462,24 @@ async def rag_chat_stream(request: ChatRequest):
                         search_details = "向量檢索完成。沒有找到符合相似度閥值限制的相關資料。"
                     
                     yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': search_details}, ensure_ascii=False)}\n\n"
+
+                    # 語義混合附件查詢法：若勾選「AI 讀取附件內容」且確實找到關聯附件，
+                    # 送出獨立的擷取步驟讓使用者親眼確認 AI 實際讀到了哪些附件、讀到什麼實際內容
+                    # （優先使用上傳時自動解析出的檔案實際內容，而非使用者填寫的備註，見 _get_attachment_effective_text）
+                    if search_type == "semantic_hybrid_attachment" and read_attachment_content and attachments_data:
+                        extraction_running = f"正在讀取 {len(attachments_data)} 個關聯附件的實際內容..."
+                        yield f"event: step\ndata: {json.dumps({'step': 'attachment_extraction', 'status': 'running', 'content': extraction_running, 'label': '擷取附件內容'}, ensure_ascii=False)}\n\n"
+
+                        extraction_parts = []
+                        for idx, att in enumerate(attachments_data):
+                            att_text, source_note = _get_attachment_effective_text(att)
+                            att_token_count = count_tokens(att_text or "")
+                            display_text = att_text if att_text else "（無可讀取的內容）"
+                            extraction_parts.append(
+                                f"[{idx+1}] {att.original_filename}（Tokens: {att_token_count}）{source_note}\n內容：\n{display_text}"
+                            )
+                        extraction_success = f"已讀取 {len(attachments_data)} 個關聯附件的實際內容：\n\n" + "\n\n".join(extraction_parts)
+                        yield f"event: step\ndata: {json.dumps({'step': 'attachment_extraction', 'status': 'success', 'content': extraction_success, 'label': '擷取附件內容'}, ensure_ascii=False)}\n\n"
 
                 except Exception as inner_e:
                     logger.error(f"Failed to perform vector search or embedding for RAG: {inner_e}")
@@ -432,7 +496,12 @@ async def rag_chat_stream(request: ChatRequest):
 
     # 1.5. 如果需要，對檢索出的上下文進行 Map-Reduce 分批摘要
     if context_str:
-        context_summary["total_tokens"] = sum(s.get("token_count", 0) for s in sources)
+        att_tokens = 0
+        if search_type == "semantic_hybrid_attachment" and read_attachment_content:
+            for att in attachments_data:
+                att_text, _ = _get_attachment_effective_text(att)
+                att_tokens += count_tokens(att_text or "")
+        context_summary["total_tokens"] = sum(s.get("token_count", 0) for s in sources) + att_tokens
 
         blocks = []
         is_db = (search_type == "semantic_db_query")
@@ -450,6 +519,14 @@ async def rag_chat_stream(request: ChatRequest):
                 text = f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{src.get('content', '')}"
                 label = f"{meta.get('filename', '未知')} {chunk_idx_str}"
                 blocks.append({"text": text, "label": label})
+            
+            # 語義混合附件查詢法：若啟用讀取附件內容，將附件的實際內容（優先自動擷取，見 _get_attachment_effective_text）作為額外區塊加入
+            if search_type == "semantic_hybrid_attachment" and read_attachment_content:
+                for att in attachments_data:
+                    att_text, _ = _get_attachment_effective_text(att)
+                    text = f"【關聯附件：{att.original_filename} | 實際內容】\n{att_text or '無可讀取的內容'}"
+                    label = f"附件: {att.original_filename}"
+                    blocks.append({"text": text, "label": label})
 
         if blocks:
             summarize_result = {}
@@ -560,7 +637,7 @@ async def rag_chat_stream(request: ChatRequest):
         yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': error_msg}, ensure_ascii=False)}\n\n"
 
     # 4. 傳送 sources 事件與 done 事件給前端
-    yield f"event: sources\ndata: {json.dumps({'sources': sources, 'context_summary': context_summary}, ensure_ascii=False)}\n\n"
+    yield f"event: sources\ndata: {json.dumps({'sources': sources, 'context_summary': context_summary, 'attachments': attachments_to_send}, ensure_ascii=False)}\n\n"
     yield f"event: chunk\ndata: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
 @router.post("/chat")

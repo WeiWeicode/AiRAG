@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.4（依實際程式碼校正）
+* **文件版本**：V 1.5（依實際程式碼校正）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-03
+* **更新日期**：2026-07-06（新增 `attachments` collection 與 `linked_attachments` Qdrant payload 欄位）
 * **資料庫類型**：
   * **應用資料庫**：MongoDB（對話紀錄、設定、測試集、評估報告、回饋標註、資料庫連線設定、標籤與類別選項、Prompt 測試歷史紀錄）
   * **既有知識庫 / 自訂 DB**：SQL Server & Oracle Database（唯讀連線，存取既有的文章與表單欄位等資料）
@@ -32,6 +32,9 @@
 │  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐       │
 │  │     tags     │  │class_options │  │prompt_test_records │       │
 │  └──────────────┘  └──────────────┘  └────────────────────┘       │
+│  ┌──────────────┐  ┌──────────────┐                               │
+│  │db_query_profiles│ │ attachments │                              │
+│  └──────────────┘  └──────────────┘                               │
 └───────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────┐     ┌─────────────────────┐
@@ -41,7 +44,7 @@
 └─────────────────────┘     └─────────────────────┘
 ```
 
-12 個 MongoDB Collection 皆透過 `backend/models/mongodb.py` 的 `init_beanie()` 註冊：`AppConfig`、`KnowledgeBase`、`PromptTemplate`、`PromptTestRecord`、`ChatSession`、`ChatMessage`、`Feedback`、`TestDataset`、`EvalReport`、`Tag`、`ClassOption`、`DatabaseConfig`。應用程式啟動時會自動 seed：
+14 個 MongoDB Collection 皆透過 `backend/models/mongodb.py` 的 `init_beanie()` 註冊：`AppConfig`、`KnowledgeBase`、`PromptTemplate`、`PromptTestRecord`、`ChatSession`、`ChatMessage`、`Feedback`、`TestDataset`、`EvalReport`、`Tag`、`ClassOption`、`DatabaseConfig`、`DBQueryProfile`、`Attachment`（2026-07-06 新增，見第 3.13 節）。應用程式啟動時會自動 seed：
 * 若尚無知識庫，建立一個預設知識庫並同步建立對應 Qdrant collection。
 * 若尚無測試集，寫入 2 筆預設 `TestDataset`。
 * 若尚無 Prompt 範本，寫入「預設 RAG 助手」與「嚴格知識問答」兩筆內建範本。
@@ -253,6 +256,28 @@
 ```
 索引：`created_at`。
 
+### 3.13 attachments — 附件 metadata（語義混合附件查詢法）【新增，2026-07-06】
+```json
+{
+  "_id": "ObjectId",
+  "knowledge_base_id": "string (關聯 knowledge_bases._id)",
+  "original_filename": "string (使用者上傳時的原始檔名，可能含中文/特殊字元)",
+  "stored_filename": "string (落地於 FILE_ATTACHMENTS_DIR 的重新編碼檔名，格式為 {uuid4().hex}{副檔名})",
+  "description": "string (使用者填寫的備註，僅供顯示參考；2026-07-06 起不再是 AI 讀取附件內容的主要來源)",
+  "extracted_content": "string | null (2026-07-06 新增；上傳時自動用 DocumentParser.parse_file() 解析出的檔案實際文字內容，AI 讀取附件內容時優先使用此欄位)",
+  "extraction_error": "string | null (2026-07-06 新增；自動解析失敗原因，例如不支援的檔案格式；失敗不影響附件上傳/下載，僅代表 AI 讀取附件內容時會退回使用 description)",
+  "tags": ["string"],
+  "classes": ["string"],
+  "content_type": "string | null",
+  "size": "int (位元組)",
+  "created_by": "string | null",
+  "created_at": "ISODate", "updated_at": "ISODate"
+}
+```
+索引：`knowledge_base_id`、`-created_at`。
+> 附件**不會**寫入 Qdrant 做向量搜尋，僅存這裡的 metadata + 磁碟實體檔案（`backend/FileAttachments/`，`stored_filename` 為實際檔名）。附件與已向量化文件的關聯存放在 Qdrant Point payload 的 `linked_attachments` 欄位（見 4.2 節），而非這個 collection 本身；刪除附件（`DELETE /api/attachments/{id}`）不會級聯清除其他文件 Point 上對此 id 的參照。
+> `extracted_content`／`extraction_error` 為 2026-07-06 修正新增（見 `docs/DevelopmentProcess/NewFeatures.md` 同日條目）：此修正前上傳的既有附件沒有 `extracted_content`，AI 讀取附件內容時會自動退回 `description`；需重新上傳該檔案才會補上實際解析內容。
+
 ---
 
 ## 4. Qdrant 向量資料庫設計
@@ -308,6 +333,8 @@
 > `parent_content`、`type` 兩個欄位在檢索程式碼中會被防禦性讀取（`payload.get(...)`），但目前的寫入程式碼路徑中**找不到明確的寫入來源**，可能僅存在於語義 JSON 匯入路徑或歷史遺留資料，撰寫新功能時不應假設其必然存在。
 
 **`links_to` 用途**：由 `POST /api/retrieval/knowledge-bases/{id}/files/update-links` 批次寫入（見 `03_API_CONTRACT.md` §4.6），或於向量化時直接帶入。是 §5 雙階段關聯檢索（Two-Step Hybrid Retrieval）的核心欄位——第一階段召回的 Point 若帶有 `links_to`，第二階段會據此在 `filename`/`custom_id` 命中的關聯點位中做進一步的語意/混合搜尋。
+
+**`linked_attachments` 用途**【新增，2026-07-06】：內容為 `attachments` collection（見 3.13 節）的 `Attachment._id` 字串清單。與 `links_to` 不同的是，這個欄位**不會**在 `backend/routers/embedding.py` 的向量化寫入路徑時自動帶入，只會透過 `POST /api/retrieval/knowledge-bases/{id}/files/update-attachments`（見 `03_API_CONTRACT.md` §4.7）事後批次覆蓋指定檔名底下所有 Point 的這個欄位；未呼叫過此端點的既有 Point 不會有這個 key（`get_unique_metadata()`／檢索程式碼皆以 `payload.get("linked_attachments", [])` 防禦性讀取，缺欄位時視為空陣列，不影響既有資料）。是「語義混合附件查詢法」（`search_type == "semantic_hybrid_attachment"`）的核心欄位——命中片段若帶有 `linked_attachments`，`backend/routers/rag.py` 會據此查詢 `attachments` collection 並在回答中附上附件下載點（可選擇是否讓 AI 讀取附件描述內容），詳見 `03_API_CONTRACT.md` 第 14 節。
 
 **`source == "db_query_profile"` 的隔離規則**【新增，2026-07-03】：`QdrantService.search_similar()`/`search_similar_two_step()` 固定加上 `must_not: source == "db_query_profile"` 過濾條件，因此語義資料庫查詢法的 Profile 向量雖與一般文件 Chunk 共存於同一個 KnowledgeBase collection，但永遠不會出現在 `vector`/`hybrid`/`semantic_hybrid`/`semantic_hybrid_feedback` 這四種既有查詢法的結果中；反之，`QdrantService.search_db_query_profiles()` 只搜尋 `source == "db_query_profile"` 的點位。
 

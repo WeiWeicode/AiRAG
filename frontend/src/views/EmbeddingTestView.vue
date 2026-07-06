@@ -6,9 +6,10 @@ import BatchIndexingTab from '../components/embedding/BatchIndexingTab.vue'
 import DatabaseIndexingTab from '../components/embedding/DatabaseIndexingTab.vue'
 import SemanticJSONTab from '../components/embedding/SemanticJSONTab.vue'
 import VectorManagementTab from '../components/embedding/VectorManagementTab.vue'
+import AttachmentManagerTab from '../components/embedding/AttachmentManagerTab.vue'
 
 // Tab state
-const activeTab = ref('indexing') // indexing | batch_indexing | database_indexing | semantic_json | management
+const activeTab = ref('indexing') // indexing | batch_indexing | database_indexing | semantic_json | management | attachment_management
 </script>
 
 <template>
@@ -63,6 +64,15 @@ const activeTab = ref('indexing') // indexing | batch_indexing | database_indexi
         >
           已向量化資料管理與刪除
         </button>
+        <button 
+          @click="activeTab = 'attachment_management'" 
+          :class="[
+            'text-sm font-semibold pb-1.5 border-b-2 transition-all',
+            activeTab === 'attachment_management' ? 'text-[#a78bfa] border-[#8b5cf6]' : 'text-[#9ca3af] border-transparent hover:text-white'
+          ]"
+        >
+          關聯附件管理與上傳
+        </button>
       </div>
 
       <!-- Tab Content Components -->
@@ -71,6 +81,7 @@ const activeTab = ref('indexing') // indexing | batch_indexing | database_indexi
       <DatabaseIndexingTab v-else-if="activeTab === 'database_indexing'" />
       <SemanticJSONTab v-else-if="activeTab === 'semantic_json'" />
       <VectorManagementTab v-else-if="activeTab === 'management'" />
+      <AttachmentManagerTab v-else-if="activeTab === 'attachment_management'" />
     </div>
 
     <!-- Right Side Config & Chunks Preview -->

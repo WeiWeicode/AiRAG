@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.4（依實際程式碼校正）
+* **文件版本**：V 1.5（依實際程式碼校正）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-06
+* **更新日期**：2026-07-06（新增第 14 節「附件管理與語義混合附件查詢法」）
 * **Base URL**：`http://<host>:8000/api`
 * **認證方式**：JWT Bearer Token（除 `/api/auth/login` 外，所有 API 皆掛載於各 router 的 `Depends(get_current_user)`，須帶 `Authorization: Bearer <token>`）
 
@@ -29,7 +29,7 @@
 ## 3. RAG 功能測試 API (§4.1)
 
 ### 3.1 POST `/api/rag/chat` — RAG 對話（SSE 串流）
-**描述**：端到端 RAG 對話，支援 `vector`、`hybrid`、`semantic_hybrid`、`semantic_hybrid_feedback`、`semantic_db_query` 五種模式。當 `search_type` 為 `semantic_hybrid`/`semantic_hybrid_feedback` 時，實際呼叫的是**雙階段關聯檢索** `search_similar_two_step`（見 `02_ARCHITECTURE.md` §5.1），而非單純的雙路混合搜尋。
+**描述**：端到端 RAG 對話，支援 `vector`、`hybrid`、`semantic_hybrid`、`semantic_hybrid_feedback`、`semantic_hybrid_attachment`、`semantic_db_query` 六種模式。當 `search_type` 為 `semantic_hybrid`/`semantic_hybrid_feedback`/`semantic_hybrid_attachment` 時，實際呼叫的是**雙階段關聯檢索** `search_similar_two_step`（見 `02_ARCHITECTURE.md` §5.1），而非單純的雙路混合搜尋。`semantic_hybrid_attachment`（語義混合附件查詢法，2026-07-06 新增）另見第 14 節。
 
 **Request Body**：
 ```json
@@ -47,12 +47,13 @@
     "top_k": 13,
     "score_threshold": 0.65,
     "filter_tags": ["string"],
-    "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_db_query",
-    "context_summarize_trigger_tokens": 50000
+    "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_hybrid_attachment | semantic_db_query",
+    "context_summarize_trigger_tokens": 50000,
+    "read_attachment_content": false
   }
 }
 ```
-> 注意：`params` 內**沒有** `top_p` 欄位（此為前一版文件的錯誤）。上方數值為程式碼中未帶入時使用的預設值。
+> 注意：`params` 內**沒有** `top_p` 欄位（此為前一版文件的錯誤）。上方數值為程式碼中未帶入時使用的預設值。`read_attachment_content`（2026-07-06 新增）僅在 `search_type == "semantic_hybrid_attachment"` 時有意義，見第 14 節。
 
 **Response**：`text/event-stream` (SSE)，事件如下（實際欄位為 `step` / `status` / `content`，並非 `event` / `detail`）：
 
@@ -61,12 +62,13 @@
   event: step
   data: {"step": "semantic_analysis", "status": "running | success | failed", "content": "..."}
   ```
-  固定步驟依序為 `semantic_analysis` → `vector_search` → （視情況插入分批摘要步驟，見下） → `llm_thinking` → `conclusion`；`status` 為 `running`、`success`、`failed` 或（`conclusion` 步驟固定送出一次）`pending`。
-  **分批摘要（Map-Reduce Context Summary）動態步驟**：當檢索出的上下文 token 數超過 `context_summarize_trigger_tokens` 門檻時，會在 `vector_search` 之後、`llm_thinking` 之前動態插入以下步驟（筆數依實際分批數量而定，非固定）：
+  固定步驟依序為 `semantic_analysis` → `vector_search` → （視情況插入 `attachment_extraction`，見下） → （視情況插入分批摘要步驟，見下） → `llm_thinking` → `conclusion`；`status` 為 `running`、`success`、`failed` 或（`conclusion` 步驟固定送出一次）`pending`。
+  **`attachment_extraction`（擷取附件內容）動態步驟【新增，2026-07-06】**：僅當 `search_type == "semantic_hybrid_attachment"` 且 `params.read_attachment_content == true` 且本次確實找到關聯附件時，會在 `vector_search` 之後、分批摘要判斷之前插入此步驟，`content` 逐一列出每個關聯附件的檔名、Token 數與**實際餵給 AI 的文字內容**，讓使用者能親眼確認 AI 實際讀取了哪些附件內容。此文字內容優先取自附件上傳時自動解析出的檔案實際內容（`Attachment.extracted_content`），僅在該檔案格式無法自動解析時才會退回使用者填寫的備註（`description`），並在內容旁註明來源（見第 14.1/14.3 節）；未勾選 `read_attachment_content` 或無關聯附件時完全不會出現。
+  **分批摘要（Map-Reduce Context Summary）動態步驟**：當檢索出的上下文 token 數超過 `context_summarize_trigger_tokens` 門檻時，會在 `vector_search`（或 `attachment_extraction`，若有）之後、`llm_thinking` 之前動態插入以下步驟（筆數依實際分批數量而定，非固定）：
   * `context_summarize_r{N}_batch_{i}`：第 N 輪第 i 批的分批整理，`content` 附帶 `label` 欄位（如「第 1 輪・分批整理 1/3（3 個區塊，約 45000 tokens）」）與原始內容/整理結果預覽。
   * `context_summarize_r{N}_reduce`：第 N 輪把多份分批摘要合併成一份的步驟。
   * `context_summarize_error`：分批摘要過程中若呼叫 LLM 失敗（例如逾時），會發出此 `status: "failed"` 步驟並降級為使用原始未摘要內容繼續回答，不會中斷整個串流。
-  * 未觸發分批摘要時（多數情況），這些步驟完全不會出現，行為與未加入此功能前相同。詳見 `docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md`。
+  * 未觸發分批摘要時（多數情況），這些步驟完全不會出現，行為與未加入此功能前相同。詳見 `docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md`。`semantic_hybrid_attachment` 模式下，關聯附件的內容說明也會被當作額外區塊併入同一套 Bin-Packing/Map-Reduce 機制，共用同一個門檻與步驟事件，不需另外的門檻設定。
 * **`event: chunk`** — LLM 輸出：
   ```
   event: chunk
@@ -82,7 +84,7 @@
         "metadata": {
           "filename": "string", "page": 1, "section": "string",
           "chunk_index": 0, "tags": ["string"], "class": ["string"],
-          "links_to": ["string"]
+          "links_to": ["string"], "linked_attachments": ["string"]
         },
         "score": 0.85,
         "token_count": 512
@@ -94,10 +96,18 @@
       "rounds": 0,
       "was_summarized": false,
       "threshold_tokens": 50000
-    }
+    },
+    "attachments": [
+      {
+        "id": "string",
+        "original_filename": "string",
+        "description": "string",
+        "download_url": "/api/attachments/{id}/download"
+      }
+    ]
   }
   ```
-  `token_count`（各 chunk）與 `context_summary`（本次檢索的 token 總計與分批摘要統計）為新增欄位。`context_summary.batch_count`/`rounds` 只有在觸發分批摘要時才會大於 0；未觸發時 `was_summarized` 固定為 `false`。
+  `token_count`（各 chunk）與 `context_summary`（本次檢索的 token 總計與分批摘要統計）為新增欄位。`context_summary.batch_count`/`rounds` 只有在觸發分批摘要時才會大於 0；未觸發時 `was_summarized` 固定為 `false`。`metadata.linked_attachments` 與最外層 `attachments`（2026-07-06 新增）僅在 `search_type == "semantic_hybrid_attachment"` 且命中片段帶有關聯附件時才會非空，其餘四種查詢法固定為空陣列，見第 14 節。
 
 ### 3.2 GET `/api/rag/history` — 取得對話歷史 **[Stub]**
 固定回傳 `{"total": 0, "items": []}`，不查詢資料庫，目前尚未串接任何 `chat_sessions` 持久化邏輯。
@@ -137,7 +147,8 @@
       "metadata": {
         "filename": "string", "page": 1, "section": "string", "chunk_index": 0,
         "tags": ["string"], "class": ["string"], "parent_id": "string",
-        "function_name": "string", "type": "string", "links_to": ["string"]
+        "function_name": "string", "type": "string", "links_to": ["string"],
+        "linked_attachments": ["string"]
       },
       "score": 0.95,
       "distance": 0.05
@@ -152,6 +163,8 @@
 }
 ```
 錯誤：`400` 無效的 `knowledge_base_id` 格式、`404` 知識庫不存在、`500` 檢索失敗。
+
+> `linked_attachments`（2026-07-06 新增）為 Point payload 的 `linked_attachments` 欄位透傳，內容為關聯的 `Attachment._id` 清單，見第 14 節。`search_type` 傳入 `semantic_hybrid_attachment` 時，此端點也會走雙階段關聯檢索（`search_similar_two_step`），但**不會**額外查詢 `Attachment` collection 或回傳附件下載資訊——附件的查詢與下載資訊組裝僅實作於 `POST /api/rag/chat`，此端點只透傳 `linked_attachments` id 陣列本身。
 
 ### 4.2 POST `/api/retrieval/semantic-hybrid-search` — 獨立語義混合搜尋
 **描述**：與 `/search` 相同的 Request/Response 結構，但伺服器端強制 `search_type="semantic_hybrid"`，並會實際填入 `semantic_json`、`embeddings_input`、`sparse_keywords`、`query_vector_preview`、`vector_size` 欄位。
@@ -199,6 +212,18 @@
 **Response 200**：
 ```json
 { "message": "成功更新檔案 'string' 的關聯檔案", "updated_count": 12 }
+```
+
+### 4.7 POST `/api/retrieval/knowledge-bases/{knowledge_base_id}/files/update-attachments` — 更新檔案關聯附件 (`linked_attachments`)【新增，2026-07-06】
+**描述**：比照 4.6 的 `update-links`，批次將指定檔案（`filename`）底下所有向量點的 `linked_attachments` payload 欄位覆蓋為指定的 `Attachment._id` 清單，供「語義混合附件查詢法」使用。詳見第 14 節。
+
+**Request Body**：
+```json
+{ "filename": "string", "attachment_ids": ["string"] }
+```
+**Response 200**：
+```json
+{ "message": "成功更新檔案 'string' 的關聯附件", "updated_count": 12 }
 ```
 
 ---
@@ -505,3 +530,40 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
 * `POST /api/rag/chat`：`params.search_type = "semantic_db_query"` 時走此查詢法。**兩階段串流**：第一次請求（未帶 `selected_db_profile_id`）在指定知識庫時僅回傳 SSE `step: "profile_candidates"` 事件（`content.candidates`）後即結束串流，前端顯示候選清單，使用者選定後帶 `selected_db_profile_id` 重新呼叫同一端點才會真正產生 SQL、查詢並讓主模型總結；未指定知識庫（不限定知識庫）時則在同一次請求中依序對前 N 個候選產生 SQL、查詢、合併結果後直接交給主模型總結，不中斷等待選擇。摘要階段使用專屬於 `semantic_db_query` 的 System Prompt（強調內容是真實資料庫查詢結果、不套用文件段落引用格式），與其餘四種查詢法的摘要 Prompt 分開、互不影響。
 * `GET/POST` 檢索測試頁：前端直接呼叫 13.3 的 `match-profiles`/`execute`，不經過 `/api/retrieval/search`（回應格式與一般 chunk 檢索不同）。
 * `POST /api/evaluation/run`：`params.search_type = "semantic_db_query"` 時，因批次評估無真人可選候選，自動取 AI 選擇結果中排序最高的候選（Top-1）執行，`EvalDetail.db_query_note` 會標記「自動選取設定檔（非人工確認）」或失敗原因。
+
+---
+
+## 14. 附件管理與語義混合附件查詢法 (Attachment / Semantic Hybrid Attachment Search)【新增，2026-07-06】
+
+新增的檢索模式 `semantic_hybrid_attachment`，讓使用者可上傳附件檔案並關聯到已向量化的文件；語義混合檢索命中該文件時，自動在回答中附上附件下載點，並可選擇讓 AI 讀取附件的**實際內容**納入摘要。附件本身**不**寫入 Qdrant 做向量搜尋，僅存 MongoDB metadata + 磁碟實體檔案（`backend/FileAttachments/`），詳細規劃見 `docs/DevelopmentProcess/AttachmentSemanticHybridSearchPlan.md`。完全獨立於既有 `vector`/`hybrid`/`semantic_hybrid`/`semantic_hybrid_feedback`/`semantic_db_query` 五種查詢法，互不影響。
+
+### 14.1 附件 CRUD 與下載
+
+* `POST /api/attachments/upload`（multipart/form-data）— **Request**：`file`（檔案本體）、`knowledge_base_id`、`description`（選填，使用者填寫的備註，僅供顯示參考）、`tags`（選填，逗號分隔字串）、`classes`（選填，逗號分隔字串）。上傳時：
+  1. 以 `{uuid4().hex}{副檔名}` 重新編碼實體檔名落地於 `FILE_ATTACHMENTS_DIR`（預設 `FileAttachments/`），原始檔名完整保留於 MongoDB 供下載還原。
+  2. **自動解析檔案實際內容**（2026-07-06 新增）：呼叫與 `POST /api/embedding/upload` 共用的 `DocumentParser.parse_file()`（支援 PDF/DOCX/DOC/DOTX/TXT/MD/4GL/4FD），成功則存入 `Attachment.extracted_content`；失敗（例如上傳了目前不支援解析的格式，如 xlsx/pptx/圖片）則記錄 `Attachment.extraction_error`，**不會**中斷上傳，附件仍可正常儲存與下載，AI 讀取附件內容時會改用 `description` 備援（見 14.3 節）。
+
+  **Response**（`AttachmentResponse`）：`{"id", "knowledge_base_id", "original_filename", "description", "has_extracted_content", "extraction_error", "tags", "classes", "content_type", "size", "created_by", "created_at", "updated_at"}`。`has_extracted_content`（布林值）表示是否已成功自動解析出檔案實際內容；為節省清單回應大小，`extracted_content` 全文本身**不會**透過此 API 回傳。
+* `GET /api/attachments?knowledge_base_id=` — 列出指定知識庫的附件清單。**Response**：`{"items": [AttachmentResponse, ...], "total": N}`。
+* `DELETE /api/attachments/{id}` — 刪除附件的 MongoDB 紀錄與磁碟實體檔案。**不會**級聯清除其他文件 chunk 上 `linked_attachments` 欄位裡對此 id 的參照；`POST /api/rag/chat` 於 `semantic_hybrid_attachment` 模式讀取附件時，對已不存在的 id 會靜默略過（記錄 warning log，不中斷串流）。**Response**：`{"status": "success", "message": "..."}`。
+* `GET /api/attachments/{id}/download` — 下載附件實體檔案，回應為 `FileResponse`（`Content-Disposition: attachment`，非 ASCII 檔名以 RFC 5987 `filename*=UTF-8''...` 編碼還原原始檔名）。**此端點與其他附件端點一樣需要 `Authorization: Bearer <token>`**；前端因無法透過 `window.open()` 夾帶此標頭，改用 `api.get(url, {responseType:'blob'})` 取得檔案後以 `URL.createObjectURL` + 暫時 `<a download>` 觸發下載（見 `frontend/src/services/attachmentService.js` 的 `download()`）。
+
+### 14.2 文件↔附件關聯
+
+比照既有 `links_to`（檔案↔檔案關聯）機制新增 `linked_attachments`（檔案↔附件關聯）：
+
+* `POST /api/retrieval/knowledge-bases/{knowledge_base_id}/files/update-attachments`（見 §4.7）將指定檔案（`filename`）底下所有向量點的 `linked_attachments` payload 欄位批次覆蓋為指定的 `Attachment._id` 清單。
+* `GET /api/knowledge-bases/{id}/metadata` 回傳的 `structured_metadata` 每筆項目新增 `linked_attachments: List[str]`（比照既有 `links_to` 的彙整方式）。
+* Qdrant Point 的 `metadata.linked_attachments`／`RetrievalMetadata.linked_attachments` 見 §4.1 說明。
+
+### 14.3 RAG 對話整合
+
+`POST /api/rag/chat`：`params.search_type = "semantic_hybrid_attachment"` 時：
+1. 檢索邏輯與 `semantic_hybrid` 完全相同（`search_similar_two_step` + `RerankService.rerank`），差異僅在於檢索完成後，收集命中片段 `linked_attachments` 中出現過的所有附件 id（去重），查詢對應的 `Attachment` MongoDB 紀錄。
+2. 不論 `params.read_attachment_content` 是否勾選，找到的附件一律會放進最終 `event: sources` 的 `attachments` 陣列（見 §3.1），提供 `original_filename`/`description`/`download_url` 供前端顯示下載點。
+3. 若 `params.read_attachment_content` 為 `true`：
+   - 對每個附件呼叫 `_get_attachment_effective_text()`（`backend/routers/rag.py`）取得**實際餵給 AI 的文字**：優先使用上傳時自動解析出的 `extracted_content`；只有在該檔案格式無法自動解析（`extraction_error` 非空）時才退回 `description` 備註；兩者皆無則明確標示無可讀取內容，不假裝有內容可讀（2026-07-06 修正——先前版本誤用 `description` 作為主要來源，見 `docs/DevelopmentProcess/NewFeatures.md` 同日條目）。
+   - 先送出 `attachment_extraction` 這組 SSE step（見 §3.1），逐一列出本次找到的每個附件的檔名、Token 數與上述實際內容，並註明內容來源（自動擷取或退回備註），讓使用者能親眼確認 AI 實際讀取了哪些附件內容（純顯示用途，不影響回答內容）。
+   - 再把每筆附件的實際內容當作一個摘要區塊，併入既有的 Map-Reduce 分批摘要機制（`ContextSummarizerService.maybe_summarize`，與 `context_summarize_trigger_tokens` 共用同一套門檻與 SSE 步驟事件，見 §3.1 分批摘要說明），使其內容能影響最終回答。
+   為 `false` 時完全不會送出 `attachment_extraction` 步驟，附件內容也不會進入 LLM context，只作為下載點呈現。
+4. 目前僅 `POST /api/rag/chat` 實作了「附件查詢＋內容摘要」的完整流程。`POST /api/retrieval/search`（§4.1）雖然 `search_type` 傳入 `semantic_hybrid_attachment` 時也會走雙階段關聯檢索，但**不會**額外查詢 `Attachment` collection 或組出 `attachments`/下載資訊；`POST /api/evaluation/run` 與檢索測試頁目前尚未串接此查詢法。

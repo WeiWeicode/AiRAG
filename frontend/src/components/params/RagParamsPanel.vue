@@ -67,8 +67,24 @@ const paramsStore = useParamsStore()
         <option value="hybrid" class="bg-[#111827] text-white">混合查詢 (Hybrid Search)</option>
         <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合查詢 (Semantic Hybrid Search)</option>
         <option value="semantic_hybrid_feedback" class="bg-[#111827] text-white">語義混合回饋查詢法 (Semantic Hybrid + Feedback)</option>
+        <option value="semantic_hybrid_attachment" class="bg-[#111827] text-white">語義混合附件查詢法 (Semantic Hybrid + Attachment)</option>
         <option value="semantic_db_query" class="bg-[#111827] text-white">語義資料庫查詢法 (Semantic DB Query)</option>
       </select>
+    </div>
+
+    <!-- Semantic Hybrid Attachment 專用參數：AI 讀取附件內容 -->
+    <div v-if="paramsStore.searchMode === 'semantic_hybrid_attachment'" class="flex flex-col gap-3 border-t border-white/8 pt-4 animate-fade-in">
+      <label class="flex items-center gap-2 text-xs text-white cursor-pointer select-none">
+        <input
+          type="checkbox"
+          v-model="paramsStore.readAttachmentContent"
+          class="rounded bg-white/5 border-white/10 text-[#8b5cf6] focus:ring-[#8b5cf6]/50 cursor-pointer"
+        />
+        AI 讀取附件內容 (AI Read Attachment Content)
+      </label>
+      <div class="text-[10px] text-[#9ca3af] leading-relaxed">
+        勾選後，AI 將會在對話時讀取關聯附件的「描述與說明」併入上下文摘要，作為回答的依據。
+      </div>
     </div>
 
     <!-- Context Summarize Threshold -->

@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import StreamRenderer from './StreamRenderer.vue'
 import SourceChunks from './SourceChunks.vue'
+import attachmentService from '../../services/attachmentService'
 
 const props = defineProps({
   message: {
@@ -35,6 +36,15 @@ const handleDislike = () => {
 const isThinkingExpanded = ref(true)
 const toggleThinking = () => {
   isThinkingExpanded.value = !isThinkingExpanded.value
+}
+
+const downloadAttachment = async (id, filename) => {
+  try {
+    await attachmentService.download(id, filename)
+  } catch (error) {
+    console.error('下載附件失敗:', error)
+    alert('下載附件失敗，請確認後端連線。')
+  }
 }
 </script>
 
@@ -173,6 +183,43 @@ const toggleThinking = () => {
 
         <!-- Citation references -->
         <SourceChunks v-if="message.sources && message.sources.length > 0" :sources="message.sources" :context-summary="message.contextSummary" />
+
+        <!-- Attachment references -->
+        <div v-if="message.attachments && message.attachments.length > 0" class="mt-4 flex flex-col gap-2">
+          <div class="text-[11px] font-bold text-[#a78bfa] uppercase tracking-wider flex items-center gap-1.5 select-none">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+            </svg>
+            相關參考附件 ({{ message.attachments.length }})
+          </div>
+          <div class="flex flex-col gap-2">
+            <div 
+              v-for="att in message.attachments" 
+              :key="att.id"
+              class="bg-white/3 border border-white/8 rounded-xl p-3 hover:bg-white/5 hover:border-white/12 transition-all flex justify-between items-center gap-4"
+            >
+              <div class="flex flex-col gap-1 min-w-0">
+                <span class="text-xs font-semibold text-white truncate" :title="att.original_filename">
+                  📂 {{ att.original_filename }}
+                </span>
+                <p v-if="att.description" class="text-[11px] text-[#9ca3af] leading-relaxed whitespace-pre-wrap">
+                  {{ att.description }}
+                </p>
+              </div>
+              <button 
+                @click="downloadAttachment(att.id, att.original_filename)"
+                class="flex-shrink-0 bg-[#8b5cf6] hover:bg-[#a78bfa] text-white p-1.5 rounded-lg transition-all flex items-center justify-center cursor-pointer"
+                title="下載附件"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
 
         <!-- Feedback buttons (only for assistant responses) -->
         <div v-if="message.role === 'assistant' && message.id !== 'welcome'" class="mt-2.5 flex gap-2">

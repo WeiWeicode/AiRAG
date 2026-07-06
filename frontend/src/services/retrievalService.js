@@ -31,6 +31,13 @@ export default {
       links_to: linksTo
     })
     return response.data
+  },
+  async updateAttachments(knowledgeBaseId, filename, attachmentIds) {
+    const response = await api.post(`/api/retrieval/knowledge-bases/${knowledgeBaseId}/files/update-attachments`, {
+      filename: filename,
+      attachment_ids: attachmentIds
+    })
+    return response.data
   }
 }
 

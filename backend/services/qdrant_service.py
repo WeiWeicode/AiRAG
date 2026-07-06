@@ -429,7 +429,8 @@ class QdrantService:
                         "parent_chunk_index_range": payload.get("parent_chunk_index_range"),
                         "function_name": payload.get("function_name"),
                         "type": payload.get("type"),
-                        "links_to": payload.get("links_to", [])
+                        "links_to": payload.get("links_to", []),
+                        "linked_attachments": payload.get("linked_attachments", [])
                     },
                     "score": score,
                     "distance": 1.0 - score
@@ -667,7 +668,8 @@ class QdrantService:
                             "parent_chunk_index_range": payload.get("parent_chunk_index_range"),
                             "function_name": payload.get("function_name"),
                             "type": payload.get("type"),
-                            "links_to": payload.get("links_to", [])
+                            "links_to": payload.get("links_to", []),
+                            "linked_attachments": payload.get("linked_attachments", [])
                         },
                         "score": score,
                         "distance": 1.0 - score,
@@ -795,11 +797,11 @@ class QdrantService:
             tags = set()
             structured_map = {}
             
-            # 捲動取得點，僅需要 filename、tags、class 與 links_to 欄位，加快效率
+            # 捲動取得點，僅需要 filename、tags、class、links_to 與 linked_attachments 欄位，加快效率
             scroll_result = await client.scroll(
                 collection_name=collection_name,
                 limit=10000,
-                with_payload=["filename", "tags", "class", "links_to"],
+                with_payload=["filename", "tags", "class", "links_to", "linked_attachments"],
                 with_vectors=False
             )
             
@@ -814,7 +816,8 @@ class QdrantService:
                             "filename": fn,
                             "classes": set(),
                             "tags": set(),
-                            "links_to": set()
+                            "links_to": set(),
+                            "linked_attachments": set()
                         }
                     
                     # class
@@ -836,6 +839,11 @@ class QdrantService:
                     l_list = payload.get("links_to")
                     if isinstance(l_list, list):
                         structured_map[fn]["links_to"].update([l for l in l_list if l])
+
+                    # linked_attachments
+                    la_list = payload.get("linked_attachments")
+                    if isinstance(la_list, list):
+                        structured_map[fn]["linked_attachments"].update([la for la in la_list if la])
             
             structured_list = []
             for fn, data in structured_map.items():
@@ -843,7 +851,8 @@ class QdrantService:
                     "filename": fn,
                     "class": sorted(list(data["classes"])),
                     "tags": sorted(list(data["tags"])),
-                    "links_to": sorted(list(data["links_to"]))
+                    "links_to": sorted(list(data["links_to"])),
+                    "linked_attachments": sorted(list(data["linked_attachments"]))
                 })
                 
             result = {
@@ -949,6 +958,44 @@ class QdrantService:
             return count
         except Exception as e:
             logger.error(f"Failed to update links_to by filename '{filename}' in collection '{collection_name}': {e}")
+            raise e
+
+    @classmethod
+    async def update_attachments_by_filename(cls, collection_name: str, filename: str, attachment_ids: List[str]) -> int:
+        """
+        更新指定 Collection 中所有匹配該檔案名稱的 Points 的 linked_attachments 欄位，並回傳更新的數量。
+        """
+        client = cls.get_client()
+        try:
+            # 1. 先 Scroll 獲取該 filename 的所有點以取得 ID
+            scroll_result = await client.scroll(
+                collection_name=collection_name,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="filename",
+                            match=models.MatchValue(value=filename)
+                        )
+                    ]
+                ),
+                limit=10000,  # 預期單個檔案的 Chunks 不會超過 10000
+                with_payload=False,
+                with_vectors=False
+            )
+            points = scroll_result[0]
+            count = len(points)
+            
+            if count > 0:
+                point_ids = [p.id for p in points]
+                await client.set_payload(
+                    collection_name=collection_name,
+                    payload={"linked_attachments": attachment_ids},
+                    points=point_ids
+                )
+                logger.info(f"Successfully updated linked_attachments for {count} points of filename '{filename}' in collection '{collection_name}'.")
+            return count
+        except Exception as e:
+            logger.error(f"Failed to update linked_attachments by filename '{filename}' in collection '{collection_name}': {e}")
             raise e
 
     @classmethod

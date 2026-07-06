@@ -1,4 +1,99 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
+## 2026-07-06 修正「AI 讀取附件內容」實際讀取的是使用者填寫的備註而非檔案本身內容
+
+### 問題描述
+使用者實測「擷取附件內容」步驟後回報：畫面上顯示的是上傳附件時手動填寫的「檔案描述」欄位（一段簡短備註），並非附件檔案本身的實際文字內容——這不符合預期，使用者要的是 AI 真正讀取檔案（PDF/DOCX 等）解析出來的內容，不是使用者自己打的一段話。
+
+### 修改內容
+1. **上傳時自動解析檔案實際內容**：`backend/routers/attachment.py` 的 `upload_attachment()` 新增呼叫既有的 `services/document_parser.py` 的 `DocumentParser.parse_file()`（與 `/api/embedding/upload` 共用同一套解析器，支援 PDF/DOCX/DOC/DOTX/TXT/MD/4GL/4FD），解析成功則存入 `Attachment.extracted_content`；解析失敗（例如上傳了目前不支援的格式，如 xlsx/pptx/圖片）則記錄 `extraction_error`，**不會**中斷上傳流程，附件仍可正常儲存與下載。
+2. `backend/models/attachment.py`：新增 `extracted_content`（自動解析出的實際文字內容）與 `extraction_error`（解析失敗原因）兩個欄位；原本的 `description` 欄位保留，但重新定位為「使用者填寫的備註」，僅在無法自動解析時作為備援內容來源。
+3. `backend/routers/rag.py`：新增共用函式 `_get_attachment_effective_text(att)`——優先回傳 `extracted_content`；解析失敗或不支援格式時退回 `description`（並在內容旁註明原因）；兩者皆無則明確回報「無可讀取的內容」，不假裝有內容。`attachment_extraction` 步驟與 Map-Reduce 分批摘要的附件區塊皆改用此函式取得的實際內容，而非直接讀 `description`。
+4. `backend/schemas/attachment.py`：`AttachmentResponse` 新增 `has_extracted_content`（布林值，避免整份附件清單回應夾帶大量文字內容）與 `extraction_error`。
+5. **前端**：`frontend/src/components/embedding/AttachmentManagerTab.vue` 附件清單每筆新增「✓ 已擷取實際內容」或「⚠ 無法自動擷取內容」徽章（滑鼠移入可看到失敗原因），並將「檔案描述 / AI 讀取內容」欄位標籤與提示文字改為「檔案描述（備註）」，清楚說明此欄位僅供顯示參考、AI 讀取附件內容時會優先使用自動擷取的檔案實際內容。
+
+### 已知限制
+本次修正前上傳的既有附件（尚未存有 `extracted_content`）不會被回溯解析，AI 讀取附件內容時會自動退回使用其 `description` 備註；若要讓既有附件也改用實際檔案內容，需重新上傳該檔案。
+
+### 修改檔案
+- `backend/models/attachment.py`
+- `backend/schemas/attachment.py`
+- `backend/routers/attachment.py`
+- `backend/routers/rag.py`
+- `frontend/src/components/embedding/AttachmentManagerTab.vue`
+
+### 對應規劃文件
+`docs/DevelopmentProcess/AttachmentSemanticHybridSearchPlan.md`。
+
+## 2026-07-06 語義混合附件查詢法新增獨立的「擷取附件內容」步驟，讓使用者能親眼確認 AI 實際讀取了哪些附件
+
+### 功能描述
+使用者實測後回報：勾選「AI 讀取附件內容」後，附件描述內容會被併入回答的上下文摘要，但畫面上完全沒有任何步驟顯示「AI 真的讀取了哪些附件、讀到什麼內容」，無法確認這個功能是否真的生效。新增獨立的 SSE 步驟 `attachment_extraction`（擷取附件內容），在「向量資料查詢」步驟成功之後、進入分批摘要判斷之前送出，列出本次找到的每一個關聯附件的檔名、Token 數與完整內容說明文字，讓使用者展開此步驟即可親眼確認。
+
+### 實作內容
+1. `backend/routers/rag.py`：`rag_chat_stream()` 在 `vector_search` 的 `success` 事件送出之後，新增判斷——當 `search_type == "semantic_hybrid_attachment"` 且 `read_attachment_content` 為 `true` 且確實找到關聯附件（`attachments_data` 非空）時，依序送出 `attachment_extraction` 的 `running`／`success` 兩個 `event: step`，`success` 內容逐一列出每個附件的檔名、`count_tokens(description)` 計算的 Token 數與內容說明全文。未勾選、或沒有關聯附件時完全不會送出此步驟，不影響既有行為。
+2. **前端零改動**：`frontend/src/stores/chatStore.js` 既有的 SSE 未知 step key 動態插入機制（與 Map-Reduce 分批摘要步驟共用同一套邏輯，見 2026-07-06「Map-Reduce 分批摘要」條目）會自動在 `vector_search` 之後、`llm_thinking` 之前插入這個新步驟並可展開查看，因此本次不需要修改任何前端程式碼。
+3. 附件內容過長時的分批摘要門檻、以及一次讀取多個關聯附件內容，皆沿用既有機制（附件描述在 Map-Reduce 階段被當作額外 block 併入 `ContextSummarizerService.maybe_summarize`；`attachments_data` 本身即為清單，天然支援多檔案），未新增額外機制。
+
+### 修改檔案
+- `backend/routers/rag.py`
+
+### 對應規劃文件
+`docs/DevelopmentProcess/AttachmentSemanticHybridSearchPlan.md`。
+
+## 2026-07-06 語義混合附件查詢法 (Semantic Hybrid Search + Attachment) 實作
+
+### 功能描述
+實作「語義混合附件查詢法 (Semantic Hybrid Search + Attachment)」，此查詢法能在 RAG 檢索時自動關聯預先上傳的實體附件：
+1. **關聯附件管理與上傳**：在前端「向量切分與寫入」頁面中，新增一個「關聯附件管理與上傳」分頁。使用者可選定知識庫，上傳相關參考檔案（例如 xlsx, pdf 檔案），並可附帶該檔案的詳細功能用途描述（可用於對話摘要）、標籤 (Tags) 與類別 (Classes)。上傳的檔案存儲於本地磁碟，並記錄元資料於 MongoDB 中。
+2. **多重關聯設定**：在「已向量化資料管理與刪除」分頁中，使用者在選擇主檔案後，除了原有的「設定關聯檔案 (Links To)」外，新增「設定關聯附件 (Linked Attachments)」區塊，列出目前知識庫所有上傳過的附件並以多選 checkbox 供使用者設定與更新。設定結果會批次寫入該主要檔案所有向量段落的 `linked_attachments` 欄位中。
+3. **雙階段附件檢索**：語義混合附件查詢模式下，系統會將檢索命中片段的 `linked_attachments` 收集，若勾選「AI 讀取附件內容」，會自動將所涉附件的「描述與說明文字」併入上下文摘要（Map-Reduce 機制會將此附件內容妥善進行 Bin-Packing 與分批摘要），避免超出模型上下文長度。
+4. **附件呈現與下載引用**：在對話泡泡內文下方，新增「相關參考附件」區塊，顯示附件的「原始檔名」與「描述說明」，點選時可直接從後端端點下載實體附件。
+
+### 實作內容
+1. **後端設定與資料模型**：
+   - `backend/config.py`：新增 `FILE_ATTACHMENTS_DIR` 設定項。
+   - `backend/models/attachment.py` (新設)：建立 `Attachment` Beanie 模型。
+   - `backend/models/mongodb.py`：註冊 `Attachment` 文件模型。
+   - `backend/schemas/attachment.py` (新設)：定義附件上傳、下載及列表回傳 Schema。
+   - `backend/routers/attachment.py` (新設)：實作附件上傳、清單列出、單筆刪除與檔案安全下載端點。
+   - `backend/main.py`：掛載附件 Router。
+2. **後端檢索與 RAG 整合**：
+   - `backend/services/qdrant_service.py`：新增 `update_attachments_by_filename` 用於批次更新 Qdrant 向量點位 payload 欄位；更新 `get_unique_metadata` 同步讀取 `linked_attachments` 與 `links_to`。
+   - `backend/schemas/retrieval.py`：在 `RetrievalMetadata` 中加入 `linked_attachments` 欄位；新增 `UpdateAttachmentsRequest` 用於接收更新附件請求。
+   - `backend/routers/retrieval.py`：新增 `update-attachments` POST 端點。
+   - `backend/routers/rag.py`：在 `ChatParams` 新增 `read_attachment_content`；在 `rag_chat_stream()` 內，若採用語義混合附件查詢模式且包含關聯附件，自動拉取元資料；若勾選 `read_attachment_content` 則將附件描述合併至上下文；最終隨 `sources` 事件送出附件清單。
+3. **前端 API 與 Store 整合**：
+   - `frontend/src/services/attachmentService.js` (新設)：實作對附件 API 的呼叫。
+   - `frontend/src/services/retrievalService.js`：擴充 `updateAttachments` 介面。
+   - `frontend/src/stores/paramsStore.js`：狀態加入 `readAttachmentContent` 預設 false。
+   - `frontend/src/stores/chatStore.js`：串流發送 payload 新增參數； sources 事件處理中將 `data.attachments` 存入 `msg.attachments`。
+4. **前端 UI 與交互設計**：
+   - `frontend/src/views/EmbeddingTestView.vue`：掛載「關聯附件管理與上傳」分頁。
+   - `frontend/src/components/embedding/AttachmentManagerTab.vue` (新設)：上傳與列出/刪除/下載附件檔案之管理卡片。
+   - `frontend/src/components/embedding/VectorManagementTab.vue`：加入「設定關聯附件」UI 區塊，並在 Chunks 清單中為關聯附件點位繪製綠色 📎 徽章。
+   - `frontend/src/components/params/RagParamsPanel.vue`：搜尋模式下拉選單新增新模式選項，並在切換至新模式時動態顯示 `AI 讀取附件內容` 開關。
+   - `frontend/src/components/chat/MessageBubble.vue`：在對話泡泡底部新增「相關參考附件」卡片，支援點選呼叫 URL 以新分頁下載。
+
+### 修改檔案
+- `backend/config.py`
+- `backend/models/attachment.py` (新設)
+- `backend/models/mongodb.py`
+- `backend/schemas/attachment.py` (新設)
+- `backend/routers/attachment.py` (新設)
+- `backend/main.py`
+- `backend/services/qdrant_service.py`
+- `backend/schemas/retrieval.py`
+- `backend/routers/retrieval.py`
+- `backend/routers/rag.py`
+- `frontend/src/services/attachmentService.js` (新設)
+- `frontend/src/services/retrievalService.js`
+- `frontend/src/stores/paramsStore.js`
+- `frontend/src/stores/chatStore.js`
+- `frontend/src/components/embedding/AttachmentManagerTab.vue` (新設)
+- `frontend/src/components/embedding/VectorManagementTab.vue`
+- `frontend/src/components/params/RagParamsPanel.vue`
+- `frontend/src/components/chat/MessageBubble.vue`
+
 ## 2026-07-06 RAG 對話「參考文檔引用」面板新增每個 Chunk 的 Token 數與總計/分批次數顯示
 
 ### 功能描述

@@ -7,7 +7,7 @@ from datetime import datetime
 from schemas.retrieval import (
     RetrievalRequest, RetrievalResponse, RetrievalResultItem, RetrievalMetadata,
     QueryTransformRequest, QueryTransformResponse, BatchDeleteRequest, DeleteByFilenameRequest,
-    UpdateLinksRequest
+    UpdateLinksRequest, UpdateAttachmentsRequest
 )
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
@@ -49,7 +49,7 @@ async def search(request: RetrievalRequest):
             query_vector = await EmbeddingService.get_embedding(request.query)
         
         # 2. 向 Qdrant 進行雙路融合檢索、純向量檢索或直接 Scroll
-        is_semantic_hybrid_family = request.params.search_type in ("semantic_hybrid", "semantic_hybrid_feedback")
+        is_semantic_hybrid_family = request.params.search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment")
         if is_semantic_hybrid_family:
             raw_results = await QdrantService.search_similar_two_step(
                 collection_name=kb.qdrant_collection_name,
@@ -97,7 +97,8 @@ async def search(request: RetrievalRequest):
                         parent_id=meta.get("parent_id"),
                         function_name=meta.get("function_name"),
                         type=meta.get("type"),
-                        links_to=meta.get("links_to", [])
+                        links_to=meta.get("links_to", []),
+                        linked_attachments=meta.get("linked_attachments", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)
@@ -221,7 +222,8 @@ async def semantic_hybrid_search(request: RetrievalRequest):
                         parent_id=meta.get("parent_id"),
                         function_name=meta.get("function_name"),
                         type=meta.get("type"),
-                        links_to=meta.get("links_to", [])
+                        links_to=meta.get("links_to", []),
+                        linked_attachments=meta.get("linked_attachments", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)
@@ -463,5 +465,55 @@ async def update_file_links(knowledge_base_id: str, request: UpdateLinksRequest)
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"無法在向量資料庫中更新關聯: {str(e)}"
         )
+
+
+@router.post("/knowledge-bases/{knowledge_base_id}/files/update-attachments")
+async def update_file_attachments(knowledge_base_id: str, request: UpdateAttachmentsRequest):
+    """
+    更新指定知識庫中特定檔案名稱的所有向量段落 (Points) 的 linked_attachments 欄位
+    """
+    try:
+        kb_id = PydanticObjectId(knowledge_base_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="無效的知識庫 ID 格式"
+        )
+        
+    kb = await KnowledgeBase.get(kb_id)
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定的知識庫不存在"
+        )
+        
+    if not request.filename.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="請提供主要檔案名稱"
+        )
+        
+    try:
+        updated_count = await QdrantService.update_attachments_by_filename(
+            collection_name=kb.qdrant_collection_name,
+            filename=request.filename,
+            attachment_ids=request.attachment_ids
+        )
+        QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
+
+        kb.updated_at = datetime.utcnow()
+        await kb.save()
+        
+        return {
+            "message": f"成功更新檔案 '{request.filename}' 的關聯附件",
+            "updated_count": updated_count
+        }
+    except Exception as e:
+        logger.error(f"Update file attachments failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"無法在向量資料庫中更新關聯附件: {str(e)}"
+        )
+
 
 

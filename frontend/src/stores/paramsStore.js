@@ -19,6 +19,9 @@ export const useParamsStore = defineStore('params', {
     // 檢索內容分批摘要門檻，留空則沿用後端全域預設值
     contextSummarizeThreshold: null,
 
+    // 是否讓 AI 讀取關聯附件描述進行摘要總結
+    readAttachmentContent: false,
+
     // Generation parameters
     model: 'Qwen3.6-35B-A3B-FP8',
     temperature: 0.3,

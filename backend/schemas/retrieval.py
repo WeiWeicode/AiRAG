@@ -26,6 +26,7 @@ class RetrievalMetadata(BaseModel):
     function_name: Optional[str] = None
     type: Optional[str] = None
     links_to: Optional[List[str]] = Field(default_factory=list)
+    linked_attachments: Optional[List[str]] = Field(default_factory=list)
 
     class Config:
         populate_by_name = True
@@ -69,5 +70,9 @@ class DeleteByFilenameRequest(BaseModel):
 class UpdateLinksRequest(BaseModel):
     filename: str
     links_to: List[str]
+
+class UpdateAttachmentsRequest(BaseModel):
+    filename: str
+    attachment_ids: List[str]
 
 
