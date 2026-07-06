@@ -65,17 +65,18 @@ export const useChatStore = defineStore('chat', {
         role: 'assistant',
         content: '',
         sources: null,
+        contextSummary: null,
         thinking: '',
         isThinking: false,
         question,
         dbQueryCandidates: null,
         awaitingProfileSelection: false,
-        steps: ['semantic_hybrid', 'semantic_hybrid_feedback', 'semantic_db_query'].includes(paramsStore.searchMode) ? [
+        steps: [
           { key: 'semantic_analysis', name: '語義分析', status: 'pending', content: '', expanded: false },
           { key: 'vector_search', name: '向量資料查詢', status: 'pending', content: '', expanded: false },
           { key: 'llm_thinking', name: '思考中', status: 'pending', content: '', expanded: false },
           { key: 'conclusion', name: '結論', status: 'pending', content: '', expanded: false }
-        ] : null,
+        ],
         created_at: new Date().toISOString()
       }
       this.messages.push(assistantMessage)
@@ -118,7 +119,8 @@ export const useChatStore = defineStore('chat', {
             top_k: paramsStore.topK,
             score_threshold: paramsStore.scoreThreshold,
             filter_tags: parsedFilterTags.length > 0 ? parsedFilterTags : undefined,
-            search_type: paramsStore.searchMode
+            search_type: paramsStore.searchMode,
+            context_summarize_trigger_tokens: paramsStore.contextSummarizeThreshold || undefined
           }
         }
 
@@ -242,10 +244,16 @@ export const useChatStore = defineStore('chat', {
                       msg.dbQueryCandidates = data.candidates || []
                       msg.awaitingProfileSelection = true
                     } else if (msg.steps) {
-                      const stepObj = msg.steps.find(s => s.key === data.step)
-                      if (stepObj) {
-                        stepObj.status = data.status
-                        stepObj.content = data.content
+                      let stepObj = msg.steps.find(s => s.key === data.step)
+                      if (!stepObj) {
+                        stepObj = { key: data.step, name: data.label || data.step, status: 'pending', content: '', expanded: false }
+                        const insertAt = msg.steps.findIndex(s => s.key === 'llm_thinking')
+                        msg.steps.splice(insertAt === -1 ? msg.steps.length : insertAt, 0, stepObj)
+                      }
+                      stepObj.status = data.status
+                      stepObj.content = data.content
+                      if (data.label) {
+                        stepObj.name = data.label
                       }
                     }
                   }
@@ -253,6 +261,7 @@ export const useChatStore = defineStore('chat', {
                   const msg = this.messages.find(m => m.id === assistantMessageId)
                   if (msg) {
                     msg.sources = data.sources
+                    msg.contextSummary = data.context_summary || null
                   }
                 }
               } catch (e) {

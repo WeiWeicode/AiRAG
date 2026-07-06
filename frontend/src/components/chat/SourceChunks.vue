@@ -3,6 +3,10 @@ defineProps({
   sources: {
     type: Array,
     required: true
+  },
+  contextSummary: {
+    type: Object,
+    default: null
   }
 })
 </script>
@@ -18,7 +22,22 @@ defineProps({
       </svg>
       參考文檔引用 (Chunks)
     </div>
-    <div 
+
+    <!-- Token 統計摘要：總計 Token 數與分批摘要（Map-Reduce）切分次數 -->
+    <div
+      v-if="contextSummary"
+      class="text-[10px] text-[#9ca3af] bg-white/3 border border-white/8 rounded-lg px-3 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1"
+    >
+      <span>總計 Token：<span class="text-[#a78bfa] font-semibold font-display">{{ contextSummary.total_tokens?.toLocaleString() ?? 0 }}</span></span>
+      <span v-if="contextSummary.was_summarized">
+        已觸發分批摘要（門檻 {{ contextSummary.threshold_tokens?.toLocaleString() }}）：切分
+        <span class="text-[#a78bfa] font-semibold font-display">{{ contextSummary.batch_count }}</span> 次整理 /
+        <span class="text-[#a78bfa] font-semibold font-display">{{ contextSummary.rounds }}</span> 輪思考
+      </span>
+      <span v-else>未超過門檻（{{ contextSummary.threshold_tokens?.toLocaleString() }}），未進行分批摘要</span>
+    </div>
+
+    <div
       v-for="(source, idx) in sources" 
       :key="idx" 
       class="group relative bg-white/3 border border-white/8 px-3 py-1.5 rounded-lg flex items-center justify-between gap-4 text-xs hover:bg-white/8 hover:border-white/16 transition-all cursor-help"
@@ -27,8 +46,16 @@ defineProps({
         [{{ source.file || source.metadata?.filename || '未知檔案' }}] 
         段落: #{{ (source.chunk_index !== undefined && source.chunk_index !== null) ? source.chunk_index : (source.metadata?.chunk_index !== undefined && source.metadata?.chunk_index !== null ? source.metadata.chunk_index : '?') }}
       </span>
-      <span class="bg-[#8b5cf6]/15 text-[#a78bfa] font-semibold font-display px-1.5 py-0.5 rounded text-[10px] flex-shrink-0">
-        Similarity: {{ (source.score !== undefined ? source.score : 0).toFixed(2) }}
+      <span class="flex items-center gap-1.5 flex-shrink-0">
+        <span
+          v-if="source.token_count !== undefined"
+          class="bg-white/8 text-[#9ca3af] font-semibold font-display px-1.5 py-0.5 rounded text-[10px]"
+        >
+          Tokens: {{ source.token_count }}
+        </span>
+        <span class="bg-[#8b5cf6]/15 text-[#a78bfa] font-semibold font-display px-1.5 py-0.5 rounded text-[10px]">
+          Similarity: {{ (source.score !== undefined ? source.score : 0).toFixed(2) }}
+        </span>
       </span>
 
       <!-- Tooltip Content Popup Wrapper (bridges gap with pb-2, allows hover persistence) -->

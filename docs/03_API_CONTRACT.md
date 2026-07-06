@@ -47,7 +47,8 @@
     "top_k": 13,
     "score_threshold": 0.65,
     "filter_tags": ["string"],
-    "search_type": "vector | hybrid | semantic_hybrid"
+    "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_db_query",
+    "context_summarize_trigger_tokens": 50000
   }
 }
 ```

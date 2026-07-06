@@ -47,6 +47,10 @@ class Settings:
     DEFAULT_REPETITION_PENALTY: float = float(os.getenv("DEFAULT_REPETITION_PENALTY", "1.1"))
     DEFAULT_FREQUENCY_PENALTY: float = float(os.getenv("DEFAULT_FREQUENCY_PENALTY", "0"))
 
+    # 檢索內容分批摘要
+    DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS: int = int(os.getenv("DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS", "50000"))
+    CONTEXT_SUMMARIZE_MAX_ROUNDS: int = int(os.getenv("CONTEXT_SUMMARIZE_MAX_ROUNDS", "3"))
+
     # 語義資料庫查詢法 (Semantic DB Query)
     AI_DB_QUERY_MAX_ROWS: int = int(os.getenv("AI_DB_QUERY_MAX_ROWS", "50"))
     AI_DB_QUERY_MAX_CHARS: int = int(os.getenv("AI_DB_QUERY_MAX_CHARS", "4000"))

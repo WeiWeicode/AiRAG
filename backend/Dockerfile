@@ -38,6 +38,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 設定 tiktoken 快取路徑並在 build 時預先下載快取檔
+ENV TIKTOKEN_CACHE_DIR=/app/.tiktoken_cache
+RUN python -c "import os, tiktoken; os.makedirs(os.environ['TIKTOKEN_CACHE_DIR'], exist_ok=True); tiktoken.get_encoding('cl100k_base')"
+
 # 複製程式碼
 COPY . .
 

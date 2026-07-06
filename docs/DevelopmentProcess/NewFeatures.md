@@ -1,4 +1,52 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
+## 2026-07-06 RAG 對話「參考文檔引用」面板新增每個 Chunk 的 Token 數與總計/分批次數顯示
+
+### 功能描述
+在既有的 Map-Reduce 分批摘要機制（見下一則紀錄）基礎上，讓使用者可以在前端直接看到本次檢索的 token 使用狀況：
+1. 每個 chunk 卡片新增 `Tokens: N` 徽章，顯示該段落原始內容的 token 數。
+2. 清單最上方新增統計列：顯示所有 chunk 的 Token 總計，以及是否觸發了分批摘要——觸發時顯示「切分 N 次整理 / M 輪思考」，未觸發則顯示「未超過門檻，未進行分批摘要」。
+
+### 實作內容
+1. `backend/routers/rag.py`：一般檢索與 `semantic_db_query` 兩種來源的 `sources.append(...)` 都新增 `token_count`（`utils.token_counter.count_tokens`）；新增 `context_summary` dict（`total_tokens`/`batch_count`/`rounds`/`was_summarized`/`threshold_tokens`），隨最終 `event: sources` 事件一併送出。
+2. `backend/services/context_summarizer_service.py`：`maybe_summarize()` 記錄 `result["rounds"]`（遞迴中最後到達的輪數）與累加 `result["batch_count"]`（各輪 Map 分組數總和）。
+3. `frontend/src/stores/chatStore.js`：`sources` 事件同時存入 `msg.contextSummary`。
+4. `frontend/src/components/chat/MessageBubble.vue` / `SourceChunks.vue`：新增 `contextSummary` prop 並在 Chunks 清單上方顯示統計列，每個 chunk 項目新增 Token 數徽章。
+
+### 對應規劃文件
+對應 `docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md` 第 11 節。
+
+## 2026-07-06 實作 Map-Reduce 檢索上下文分批摘要機制，防止超長檢索內容造成 LLM 呼叫失敗
+
+### 功能描述
+當 RAG 檢索召回的參考資料總 Token 數過長時，直接送入主模型容易超出上下文長度限制（或觸發 HTTP 400 錯誤）。本功能實作了 Map-Reduce 分批摘要機制：
+1. **觸發與門檻**：使用者可在前端檢索設定面板手動調整「分批摘要門檻 (Context Summarize Threshold, tokens)」（預設為 50,000 tokens）。
+2. **Bin-Packing 分組**：使用不拆散任何檢索片段的 Bin-Packing 演算法，將檢索區塊依序累加分組。
+3. **Map 階段（分批整理）**：依區塊類型套用專屬的摘要提示詞（文件段落保留來源檔名/段落編號標記；資料庫查詢結果則保留表格/欄位上下文），呼叫 LLM 對各分組進行重點整理。
+4. **Reduce 階段（遞迴合併）**：當分批摘要結果仍大於門檻時，遞迴再次進入 Map 處理；當低於門檻且多於 1 份時，呼叫 LLM 進行最終合併，直至合一。設有最大輪數限制（預設 3 輪）避免無窮遞迴。
+5. **動態 SSE 顯示**：整個 Map-Reduce 過程的每一步驟都會動態向前端推送 SSE `event: step` 狀態（例如 `context_summarize_r1_batch_1`），並支援展開查看原始內容與整理結果。
+
+### 實作內容
+1. **環境與 Docker 準備**：`backend/requirements.txt` 新增 `tiktoken`，並在 `backend/Dockerfile` 中配置 `TIKTOKEN_CACHE_DIR` 以在 Docker 建置時預載 `cl100k_base` 模型的編碼快取，實現離線環境下的精準 Token 計算。
+2. **Token 計算工具**：新增 `backend/utils/token_counter.py`，封裝 `count_tokens` 以獲取精確的 tiktoken token 數。
+3. **後端設定變更**：`backend/config.py` 增加 `DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS` (50,000) 與 `CONTEXT_SUMMARIZE_MAX_ROUNDS` (3) 全域設定值。
+4. **核心摘要服務**：建立 `backend/services/context_summarizer_service.py` 核心類別，提供 Bin-Packing 分組、Map/Reduce 專屬 Prompt 構建、串流進度 `yield` 輸出與遞迴 maybe_summarize 控制。
+5. **RAG 路由整合**：修改 `backend/routers/rag.py` 的 `ChatParams` 模型，加入可覆寫的 `context_summarize_trigger_tokens` 欄位；在 `rag_chat_stream()` 內，於檢索完成後、主模型推理思考前，調用 `ContextSummarizerService.maybe_summarize` 執行分批摘要並將進度 SSE 串流推送給前端。
+6. **前端 Store 擴充**：
+   - 修改 `frontend/src/stores/paramsStore.js` 新增 `contextSummarizeThreshold` 參數。
+   - 修改 `frontend/src/stores/chatStore.js`，將 `steps` 的建立改為所有查詢模式下無條件初始化；發送 API 請求時夾帶 `context_summarize_trigger_tokens`；SSE 接收步驟事件時支援動態插入未知 step 項目，確保摘要步驟能被流暢展開與更新。
+7. **前端 UI 更新**：修改 `frontend/src/components/params/RagParamsPanel.vue`，在檢索設定區域中新增門檻自訂欄位與引導說明。
+
+### 修改檔案
+- `backend/requirements.txt`
+- `backend/Dockerfile`
+- `backend/utils/token_counter.py` (新設)
+- `backend/config.py`
+- `backend/services/context_summarizer_service.py` (新設)
+- `backend/routers/rag.py`
+- `frontend/src/stores/paramsStore.js`
+- `frontend/src/stores/chatStore.js`
+- `frontend/src/components/params/RagParamsPanel.vue`
+
 ## 2026-07-03 語義資料庫查詢法新增「必定查詢」設定檔標記，作為問題語意不明確時的兜底機制
 
 ### 功能描述

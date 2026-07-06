@@ -20,11 +20,11 @@ const paramsStore = useParamsStore()
         <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">檢索數量 (Top-K)</label>
         <span class="text-xs font-bold text-[#a78bfa] font-display">{{ paramsStore.topK }}</span>
       </div>
-      <input 
-        v-model.number="paramsStore.topK" 
-        type="range" 
-        min="1" 
-        max="15" 
+      <input
+        v-model.number="paramsStore.topK"
+        type="range"
+        min="1"
+        max="50"
         class="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#8b5cf6]"
       />
     </div>
@@ -69,6 +69,21 @@ const paramsStore = useParamsStore()
         <option value="semantic_hybrid_feedback" class="bg-[#111827] text-white">語義混合回饋查詢法 (Semantic Hybrid + Feedback)</option>
         <option value="semantic_db_query" class="bg-[#111827] text-white">語義資料庫查詢法 (Semantic DB Query)</option>
       </select>
+    </div>
+
+    <!-- Context Summarize Threshold -->
+    <div class="flex flex-col gap-2">
+      <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">分批摘要門檻 (Context Summarize Threshold, tokens)</label>
+      <input 
+        v-model.number="paramsStore.contextSummarizeThreshold" 
+        type="number" 
+        min="1"
+        class="bg-white/5 border border-white/8 rounded-lg text-white px-3 py-2 text-xs focus:outline-none focus:border-[#8b5cf6] transition-all"
+        placeholder="預設 50000"
+      />
+      <div class="text-[10px] text-[#9ca3af] leading-relaxed">
+        檢索內容 token 數超過此值時，會先分批摘要再送進主模型，避免超出模型上下文長度而回傳 400。
+      </div>
     </div>
 
     <!-- Semantic DB Query 專用參數：筆數/字數上限（可調整覆寫全域預設值） -->

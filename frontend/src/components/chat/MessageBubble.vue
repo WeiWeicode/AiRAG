@@ -172,7 +172,7 @@ const toggleThinking = () => {
         <div v-else class="white-space-pre-wrap text-sm leading-relaxed">{{ message.content }}</div>
 
         <!-- Citation references -->
-        <SourceChunks v-if="message.sources && message.sources.length > 0" :sources="message.sources" />
+        <SourceChunks v-if="message.sources && message.sources.length > 0" :sources="message.sources" :context-summary="message.contextSummary" />
 
         <!-- Feedback buttons (only for assistant responses) -->
         <div v-if="message.role === 'assistant' && message.id !== 'welcome'" class="mt-2.5 flex gap-2">

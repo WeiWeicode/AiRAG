@@ -1,5 +1,83 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-07-06 Map-Reduce 分批摘要功能最終複查：修正失敗降級、label 小 bug、tiktoken 快取誤入版控
+
+### 問題描述
+功能整體驗收前的最後一輪 Code Review，處理先前記錄在 `ContextMapReduceSummaryPlan.md` 第 10 節但尚未修的兩項問題，並額外發現一個環境衛生問題：
+1. `ContextSummarizerService.maybe_summarize()` 若在 Map/Reduce 階段呼叫 LLM 失敗（例如地端 vLLM 逾時），會 `raise` 例外，但 `rag.py` 呼叫處沒有包 try/except，導致整個 SSE 串流中斷，`llm_thinking`/`sources`/`done` 都發不出去。
+2. `rag.py` 組 block 的 `label` 欄位因 `chunk_idx_str` 已含 `#`，又重複疊加一次 `#`，變成 `##12`。
+3. 本機執行 tiktoken 會在 `backend/.tiktoken_cache/` 產生快取，`.gitignore` 沒有涵蓋這個目錄名稱，一直卡在 untracked 清單中。
+
+### 修改內容
+1. `backend/routers/rag.py` (修改)：
+   - 呼叫 `ContextSummarizerService.maybe_summarize()` 處包 try/except，失敗時記錄錯誤並 yield `context_summarize_error` failed step，保留原始未摘要的 `context_str` 讓對話繼續完成，不中斷整個回答流程。
+   - 修正 block `label` 重複 `#` 的組字錯誤。
+2. `backend/.gitignore` (修改)：新增 `.tiktoken_cache/` 規則。
+
+### 驗證
+- `py_compile` 全部通過。
+- 用模擬測試驗證失敗降級路徑：即使摘要中途丟出例外，串流仍會正常送出收尾事件，不會卡死或中斷連線。
+- `git status` 確認 `.tiktoken_cache/` 不再出現在 untracked 清單。
+
+### 對應規劃文件
+對應 `docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md` 第 13 節。
+
+## 2026-07-06 修正 Map-Reduce 遞迴 Reduce 進入下一輪後，當前輪的「合併最終摘要」步驟卡在執行中之問題
+
+### 問題描述
+使用者實測發現，當 Map-Reduce 遞迴進入第二輪時，第一輪的「合併最終摘要」步驟在 UI 上會永遠停在「執行中」轉圈圈，而此時第二輪已執行完成，思考中也在運行。這是因為後端在 yield 了 running 狀態後，直接遞迴進入下一輪並 return，漏掉了為當前這一輪的 reduce step 發送 `success` 完成事件的步驟。
+
+### 修改內容
+1. `backend/services/context_summarizer_service.py` (修改)：
+   - 在遞迴呼叫 `maybe_summarize()` 的 `async for evt in ...` 迴圈結束後，針對當前輪的 `reduce_step_key` 補發一個 `status: "success"` 的完成事件，並於 content 顯示「已將 N 份摘要整合完成，交由下一輪繼續處理。」，解決 UI 狀態卡在執行中轉圈圈的問題。
+
+### 對應規劃文件
+對應 `docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md` 第 12 節。
+
+## 2026-07-06 RAG 對話新增每個 Chunk 的 Token 數與分批摘要統計，隨 `sources` SSE 事件回傳
+
+### 問題描述
+Map-Reduce 分批摘要機制上線後，使用者在前端無法得知本次檢索的 token 使用狀況（每個 chunk 多少 token、總計多少、有沒有觸發分批、切分了幾次），需要補上對應統計資料由後端計算並傳給前端顯示。
+
+### 修改內容
+1. `backend/routers/rag.py` (修改)：
+   - 匯入 `utils.token_counter.count_tokens`。
+   - 一般檢索路徑與 `semantic_db_query`（`_run_execute()`）路徑的 `sources.append(...)` 都新增 `token_count` 欄位。
+   - 新增 `context_summary` dict（`total_tokens`/`batch_count`/`rounds`/`was_summarized`/`threshold_tokens`），函式一開始給預設值；組完 `context_str` 後把 `total_tokens` 設為所有來源 chunk 的 `token_count` 加總；呼叫 `ContextSummarizerService.maybe_summarize()` 後再從其 `result` 補上 `batch_count`/`rounds`/`was_summarized`。
+   - 最終 `event: sources` 事件夾帶 `context_summary` 欄位一併送出。
+2. `backend/services/context_summarizer_service.py` (修改)：`maybe_summarize()` 進入時記錄 `result["rounds"] = round_no`；每次執行 Map 分組時累加 `result["batch_count"]`，讓遞迴多輪的批次數能正確加總。
+
+### 對應規劃文件
+對應 `docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md` 第 11 節。
+
+## 2026-07-06 修正 `context_summarizer_service.py` 在 Python 3.11 環境下的 f-string 反斜線語法錯誤
+
+### 問題描述
+在 Python 3.11 (或更早版本) 下啟動伺服器時，`uvicorn` 載入失敗並拋出 `SyntaxError: f-string expression part cannot include a backslash`。原因是在 `backend/services/context_summarizer_service.py` 中，將含有 `\n` 反斜線字元的 dictionary 物件或 f-string 直接寫在 outer f-string 的 `{json.dumps(...)}` 表達式大括號內，此寫法在 Python 3.12 之前不被支援。
+
+### 修改內容
+1. `backend/services/context_summarizer_service.py` (修改)：
+   - 將所有 SSE step 事件中的 JSON dict 宣告移出 f-string，先宣告局部變數 `event_data`，再將 `{json.dumps(event_data, ensure_ascii=False)}` 帶入，徹底避免在 `{}` 大括號內使用反斜線 `\`。
+
+## 2026-07-06 實作 Map-Reduce 檢索上下文分批摘要機制，防止超長檢索內容造成 LLM 呼叫失敗
+
+### 問題描述
+當 RAG 檢索召回的參考資料 Token 總數過大時，直接作為上下文傳給 LLM 容易超出模型輸入限制或觸發 400 錯誤。需要一套機制在 Token 超過門檻時，對檢索片段進行 Bin-Packing 分組並遞迴呼叫 LLM 進行 Map-Reduce 摘要合併。
+
+### 修改內容
+1. `backend/requirements.txt` (修改)：新增 `tiktoken` 依賴。
+2. `backend/Dockerfile` (修改)：設定 `ENV TIKTOKEN_CACHE_DIR=/app/.tiktoken_cache` 並在 build 階段預下載 `cl100k_base` 編碼，以支援離線環境。
+3. `backend/utils/token_counter.py` (新增)：實作 `count_tokens` 以使用 tiktoken 計算精確 Token 數。
+4. `backend/config.py` (修改)：Settings 新增 `DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS` (50,000) 與 `CONTEXT_SUMMARIZE_MAX_ROUNDS` (3)。
+5. `backend/services/context_summarizer_service.py` (新增)：實作 `ContextSummarizerService` 類別，包含 Bin-Packing 分組演算法、Map/Reduce 專屬 Prompt 構建、以及遞迴處理 `maybe_summarize` 生成器。每一步驟皆會 yield SSE `event: step` 狀態（如 `context_summarize_r1_batch_1`，包含 `label` 與原始內容/整理結果預覽）。
+6. `backend/routers/rag.py` (修改)：
+   - `ChatParams` schema 新增 `context_summarize_trigger_tokens` 可調參數。
+   - `rag_chat_stream()` 內解析此參數（預設使用 config 設定）。
+   - 在檢索完成且 `context_str` 存在時，將 sources 轉換為對應 blocks 列表（依 search_type 分流：一般搜尋保留來源文件/段落標記；`semantic_db_query` 則保留表格/欄位上下文），並呼叫 `ContextSummarizerService.maybe_summarize` 進行處理。
+
+### 對應規劃文件
+對應 `docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md`。
+
 ## 2026-07-03 RAG 對話新增 repetition/frequency penalty 與重複輸出偵測（防止地端 LLM 無限迴圈重複同一句話）
 
 ### 問題描述

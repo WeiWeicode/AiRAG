@@ -16,6 +16,9 @@ export const useParamsStore = defineStore('params', {
     // 不限定知識庫：勾選後掃描所有知識庫的查詢設定檔，並自動選擇分數最高的候選（不列出候選讓使用者選）
     dbQueryAutoKb: false,
 
+    // 檢索內容分批摘要門檻，留空則沿用後端全域預設值
+    contextSummarizeThreshold: null,
+
     // Generation parameters
     model: 'Qwen3.6-35B-A3B-FP8',
     temperature: 0.3,

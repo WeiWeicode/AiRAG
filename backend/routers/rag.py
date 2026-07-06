@@ -12,6 +12,8 @@ from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
 from services.rerank_service import RerankService
 from services.feedback_boost_service import FeedbackBoostService
+from services.context_summarizer_service import ContextSummarizerService
+from utils.token_counter import count_tokens
 from utils.security import get_current_user
 from config import settings
 
@@ -32,6 +34,7 @@ class ChatParams(BaseModel):
     score_threshold: Optional[float] = None
     filter_tags: Optional[List[str]] = None
     search_type: Optional[str] = "vector"
+    context_summarize_trigger_tokens: Optional[int] = None
 
 class ChatRequest(BaseModel):
     question: str
@@ -92,7 +95,8 @@ async def _run_semantic_db_query(request: "ChatRequest", question: str, result: 
                 "filename": f"DB_QUERY_PROFILE_{exec_result['profile_name']}",
                 "generated_sql": exec_result["generated_sql"]
             },
-            "score": 1.0
+            "score": 1.0,
+            "token_count": count_tokens(piece)
         })
         header = block_header or f"已選定設定檔：{exec_result['profile_name']}"
         block = (
@@ -200,6 +204,7 @@ async def rag_chat_stream(request: ChatRequest):
     frequency_penalty = settings.DEFAULT_FREQUENCY_PENALTY
     filter_tags = None
     search_type = "vector"
+    context_summarize_trigger_tokens = settings.DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS
 
     if request.params:
         if request.params.temperature is not None:
@@ -218,10 +223,19 @@ async def rag_chat_stream(request: ChatRequest):
             filter_tags = request.params.filter_tags
         if request.params.search_type is not None:
             search_type = request.params.search_type
+        if request.params.context_summarize_trigger_tokens is not None:
+            context_summarize_trigger_tokens = request.params.context_summarize_trigger_tokens
 
     sources = []
     context_str = ""
-    
+    context_summary = {
+        "total_tokens": 0,
+        "batch_count": 0,
+        "rounds": 0,
+        "was_summarized": False,
+        "threshold_tokens": context_summarize_trigger_tokens
+    }
+
     # 1. 如果有指定知識庫，執行向量檢索獲取 Context
     if search_type == "semantic_db_query":
         db_query_result = {}
@@ -383,7 +397,8 @@ async def rag_chat_stream(request: ChatRequest):
                                 "class": meta.get("class", []),
                                 "links_to": meta.get("links_to", [])
                             },
-                            "score": item.get("score", 0.0)
+                            "score": item.get("score", 0.0),
+                            "token_count": count_tokens(item.get("content", ""))
                         })
                         chunk_idx = meta.get("chunk_index")
                         chunk_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
@@ -414,6 +429,47 @@ async def rag_chat_stream(request: ChatRequest):
     else:
         yield f"event: step\ndata: {json.dumps({'step': 'semantic_analysis', 'status': 'success', 'content': '無目標知識庫，略過語義分析。'}, ensure_ascii=False)}\n\n"
         yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': '無目標知識庫，略過向量資料查詢。'}, ensure_ascii=False)}\n\n"
+
+    # 1.5. 如果需要，對檢索出的上下文進行 Map-Reduce 分批摘要
+    if context_str:
+        context_summary["total_tokens"] = sum(s.get("token_count", 0) for s in sources)
+
+        blocks = []
+        is_db = (search_type == "semantic_db_query")
+        if is_db:
+            for idx, src in enumerate(sources):
+                blocks.append({
+                    "text": src["content"],
+                    "label": src["metadata"].get("filename", f"DB_QUERY_{idx}")
+                })
+        else:
+            for src in sources:
+                meta = src.get("metadata", {})
+                chunk_idx = meta.get("chunk_index")
+                chunk_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
+                text = f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{src.get('content', '')}"
+                label = f"{meta.get('filename', '未知')} {chunk_idx_str}"
+                blocks.append({"text": text, "label": label})
+
+        if blocks:
+            summarize_result = {}
+            try:
+                async for evt in ContextSummarizerService.maybe_summarize(
+                    question=question,
+                    blocks=blocks,
+                    threshold_tokens=context_summarize_trigger_tokens,
+                    result=summarize_result,
+                    is_db=is_db
+                ):
+                    yield evt
+                if "context_str" in summarize_result:
+                    context_str = summarize_result["context_str"]
+                context_summary["batch_count"] = summarize_result.get("batch_count", 0)
+                context_summary["rounds"] = summarize_result.get("rounds", 0)
+                context_summary["was_summarized"] = summarize_result.get("was_summarized", False)
+            except Exception as summarize_e:
+                logger.error(f"Context summarization failed, falling back to original unsummarized context: {summarize_e}")
+                yield f"event: step\ndata: {json.dumps({'step': 'context_summarize_error', 'status': 'failed', 'content': f'分批摘要失敗，將改用原始未摘要內容繼續回答：{str(summarize_e)}'}, ensure_ascii=False)}\n\n"
 
     # 發送模型推理思考步驟事件
     yield f"event: step\ndata: {json.dumps({'step': 'llm_thinking', 'status': 'running', 'content': '正在整理思緒...'}, ensure_ascii=False)}\n\n"
@@ -504,7 +560,7 @@ async def rag_chat_stream(request: ChatRequest):
         yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': error_msg}, ensure_ascii=False)}\n\n"
 
     # 4. 傳送 sources 事件與 done 事件給前端
-    yield f"event: sources\ndata: {json.dumps({'sources': sources}, ensure_ascii=False)}\n\n"
+    yield f"event: sources\ndata: {json.dumps({'sources': sources, 'context_summary': context_summary}, ensure_ascii=False)}\n\n"
     yield f"event: chunk\ndata: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
 @router.post("/chat")

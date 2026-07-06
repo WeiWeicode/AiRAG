@@ -16,3 +16,4 @@ markdown>=3.6
 pyodbc>=5.1.0
 fastembed>=0.3.0
 oracledb>=2.0.0
+tiktoken>=0.6.0

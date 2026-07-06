@@ -272,16 +272,41 @@ Structured JSON { "embeddings_input": "...", "sparse_keywords": [...] }
 
 `vector`、`hybrid` 兩種模式仍呼叫單階段的 `search_similar()`，不會觸發雙階段鄰居搜尋。
 
-### 5.2 步驟進度 SSE 發送事件
+### 5.2 Map-Reduce 上下文分批摘要機制
+
+當檢索出的上下文 Token 總量超過設定的門檻（預設為 50,000 tokens）時，系統會啟動遞迴式的 Map-Reduce 分批摘要機制，以防止上下文過長導致 LLM 呼叫回傳 400 錯誤。
+
+```mermaid
+graph TD
+    A[開始] --> B{Token 數 <= 門檻?}
+    B -- 是 --> C[直接合併上下文，不摘要]
+    B -- 否 --> D[使用 Bin-Packing 將區塊分組]
+    D --> E[Map 階段：呼叫 LLM 進行分批摘要]
+    E --> F{已達最大輪數上限?}
+    F -- 是 --> G[直接合併各分批摘要作為最終上下文]
+    F -- 否 --> H{摘要剩餘 1 份?}
+    H -- 是 --> I[此份摘要即為最終上下文]
+    H -- 否 --> J[進入 Reduce 階段：遞迴呼叫 maybe_summarize 合併摘要]
+    J --> B
+```
+
+- **分組策略 (Bin-Packing)**：以不拆散任何檢索片段為原則，依序累加區塊。若單一區塊本身的 token 數就超過門檻，則該區塊獨立成一組送進 Map，不做字元截斷。
+- **類型識別**：
+  - **一般文件段落**：使用專用 Map 提示詞，強制要求模型保留來源標記格式（例如 `[文件名] 段落: #段落編號`），便於最終生成回答時進行引用標註。
+  - **資料庫查詢結果 (`semantic_db_query`)**：使用專用資料庫摘要提示詞，以保留 `表格/欄位` 的脈絡為重點，去除非相關或空欄位，避免過度保守判定「查無相關資訊」。
+- **SSE 事件回報**：摘要執行過程會發送多個 `event: step` 事件（如 `context_summarize_r1_batch_1`、`context_summarize_r1_reduce`），並帶有進度與內容預覽以提升使用者體驗。
+
+### 5.3 步驟進度 SSE 發送事件
 `/api/rag/chat` 對話串流中，後端依序透過 `event: step` 回傳處理進度，實際欄位為 `step` / `status` / `content`：
 1. `step: "semantic_analysis"`（`status: running → success`）：語義分析結構化 JSON 與密集向量生成過程。
 2. `step: "vector_search"`（`status: running → success/failed`）：向量檢索過程與召回摘要。
-3. `step: "llm_thinking"`（`status: running`）：固定送出一次「正在整理思緒...」。
-4. `step: "conclusion"`（`status: pending`）：固定送出一次的佔位事件。
+3. `step: "context_summarize_rX_batch_Y" / "context_summarize_rX_reduce"`（`status: running → success/failed`）：Map-Reduce 階段發生的分批摘要及合併步驟（僅於檢索內容超過門檻時動態觸發）。
+4. `step: "llm_thinking"`（`status: running`）：固定送出一次「正在整理思緒...」。
+5. `step: "conclusion"`（`status: pending`）：固定送出一次的佔位事件。
 
 隨後以 `event: chunk`（`type: reasoning/content/done`）串流 LLM 輸出，並在 `done` 之前送出一次 `event: sources`。詳細事件格式見 `03_API_CONTRACT.md` §3.1。
 
-### 5.3 外部服務通訊
+### 5.4 外部服務通訊
 
 | 服務 | 協定 | 端點 | 用途 |
 |:---|:---|:---|:---|
