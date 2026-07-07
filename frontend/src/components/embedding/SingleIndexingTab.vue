@@ -1,10 +1,11 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, watch, computed, onMounted } from 'vue'
 import FileUploader from './FileUploader.vue'
 import ChunkPreview from './ChunkPreview.vue'
 import TokenCounter from './TokenCounter.vue'
 import { useParamsStore } from '../../stores/paramsStore'
 import embeddingService from '../../services/embeddingService'
+import imageService from '../../services/imageService'
 
 const paramsStore = useParamsStore()
 
@@ -12,6 +13,32 @@ const paramsStore = useParamsStore()
 const uploadedFileId = ref('')
 const filename = ref('unknown')
 const rawTextContent = ref('')
+const extractImages = ref(false)
+const extractedImages = ref([])
+
+const imageUrls = ref({})
+const imageLoadFailed = ref({})
+
+const loadExtractedImages = async () => {
+  for (const img of extractedImages.value) {
+    const filename = img.image_filename
+    if (filename && !imageUrls.value[filename] && !imageLoadFailed.value[filename]) {
+      try {
+        const url = await imageService.fetchImageBlobUrl(filename)
+        imageUrls.value[filename] = url
+      } catch (err) {
+        console.error('Failed to load image blob:', err)
+        // 圖片端點需要 JWT，直接用 <img src="/api/..."> 一定會 401，不設無意義的 fallback 網址，
+        // 改記錄載入失敗狀態讓畫面顯示明確的失敗佔位圖
+        imageLoadFailed.value[filename] = true
+      }
+    }
+  }
+}
+
+watch(extractedImages, () => {
+  loadExtractedImages()
+}, { deep: true })
 
 const allTags = ref([])
 const allClasses = ref([])
@@ -68,6 +95,7 @@ const handleUploadSuccess = (data) => {
   if (data.filename) {
     filename.value = data.filename
   }
+  extractedImages.value = data.images || []
 }
 
 const estimateTokens = (text) => {
@@ -80,7 +108,7 @@ const estimateTokens = (text) => {
 }
 
 const triggerChunking = async () => {
-  if (!rawTextContent.value.trim()) {
+  if (!rawTextContent.value.trim() && extractedImages.value.length === 0) {
     alert('請上傳檔案或在此貼上純文字內容以進行切分測試。')
     return
   }
@@ -92,12 +120,15 @@ const triggerChunking = async () => {
   try {
     const payload = {
       file_id: uploadedFileId.value || null,
+      filename: filename.value || null,
       content: rawTextContent.value.trim(),
       params: {
         chunk_size: paramsStore.chunkSize,
         chunk_overlap: paramsStore.chunkOverlap,
-        separator: paramsStore.separator.replace('\\n', '\n')
-      }
+        separator: paramsStore.separator.replace('\\n', '\n'),
+        chunk_mode: paramsStore.chunkMode || 'standard'
+      },
+      images: extractedImages.value
     }
     const response = await embeddingService.chunkText(payload)
     let chunks = response.chunks || []
@@ -134,6 +165,8 @@ const resetFields = () => {
   rawTextContent.value = ''
   chunksList.value = []
   vectorizationStats.value = null
+  extractImages.value = false
+  extractedImages.value = []
 }
 
 const triggerVectorization = async () => {
@@ -154,7 +187,8 @@ const triggerVectorization = async () => {
           filename: filename.value || 'unknown',
           source: uploadedFileId.value ? 'upload' : 'manual',
           tags: selectedTags.value,
-          classes: selectedClasses.value
+          classes: selectedClasses.value,
+          ...c.metadata
         } 
       })),
       knowledge_base_id: paramsStore.knowledgeBaseId,
@@ -175,13 +209,96 @@ const triggerVectorization = async () => {
     isVectorizing.value = false
   }
 }
+
+const downloadImage = (filename) => {
+  imageService.download(filename, filename)
+}
 </script>
 
 <template>
   <div class="flex flex-col gap-5">
     <!-- Drag & Drop / Upload -->
     <div class="bg-[#111827]/70 border border-white/8 rounded-2xl p-5 backdrop-blur-md">
-      <FileUploader @upload-success="handleUploadSuccess" />
+      <FileUploader :extract-images="extractImages" @upload-success="handleUploadSuccess" />
+      <div class="flex items-center gap-2 mt-3 px-1">
+        <input 
+          v-model="extractImages"
+          type="checkbox" 
+          id="chk-extract-images"
+          class="rounded border-white/10 bg-white/5 text-[#8b5cf6] focus:ring-0 focus:ring-offset-0 cursor-pointer"
+        />
+        <label for="chk-extract-images" class="text-xs text-[#9ca3af] cursor-pointer select-none">
+          上傳時自動擷取文件內嵌圖片並呼叫多模態 AI 自動描述圖片內容 (支援 PDF, Word 格式)
+        </label>
+      </div>
+    </div>
+
+    <!-- Extracted Images Gallery -->
+    <div v-if="extractedImages.length > 0" class="bg-[#111827]/70 border border-white/8 rounded-2xl p-5 backdrop-blur-md flex flex-col gap-3">
+      <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">
+        已擷取的文件圖片 ({{ extractedImages.length }} 張)
+      </label>
+      <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+        <div 
+          v-for="img in extractedImages" 
+          :key="img.image_filename"
+          class="bg-white/3 border border-white/8 rounded-xl p-3 flex flex-col gap-2 relative group overflow-hidden"
+        >
+          <div class="h-28 rounded-lg bg-black/40 flex items-center justify-center overflow-hidden border border-white/5 relative">
+            <img
+              v-if="imageUrls[img.image_filename]"
+              :src="imageUrls[img.image_filename]"
+              class="max-h-full max-w-full object-contain animate-fade-in"
+              alt="Extracted doc image"
+            />
+            <div v-else-if="imageLoadFailed[img.image_filename]" class="flex flex-col items-center gap-1 text-[#6b7280] text-[10px]">
+              <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                <line x1="4" y1="4" x2="20" y2="20"/>
+              </svg>
+              圖片載入失敗
+            </div>
+            <svg v-else class="animate-spin h-5 w-5 text-[#6b7280]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <div v-if="imageUrls[img.image_filename]" class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+              <button
+                @click="downloadImage(img.image_filename)"
+                class="p-2 bg-[#8b5cf6] hover:bg-[#a78bfa] rounded-full text-white transition-all shadow-lg"
+                title="下載原圖"
+              >
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                </svg>
+               </button>
+            </div>
+          </div>
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center justify-between text-[10px]">
+              <span class="text-[#a78bfa] font-semibold">
+                {{ img.page ? `第 ${img.page} 頁` : '段落圖片' }}
+              </span>
+              <span
+                v-if="img.caption_failed"
+                class="px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 font-bold"
+              >
+                描述失敗
+              </span>
+              <span
+                v-else-if="img.caption_truncated"
+                class="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 font-bold"
+                title="AI 描述內容因長度上限被截斷，可能不完整（常見於複雜表格圖片）"
+              >
+                描述可能被截斷
+              </span>
+            </div>
+            <p class="text-[11px] text-[#d1d5db] line-clamp-3 leading-relaxed" :title="img.description">
+              {{ img.description }}
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Raw Text Area -->

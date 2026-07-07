@@ -1,4 +1,18 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
+## 2026-07-07 向量化寫入圖片段落時自動加上「圖片」分類標籤
+
+### 功能描述
+當上傳並解析 Word/PDF 文件時，如果擷取到內嵌圖片並生成描述，在寫入向量資料庫 Qdrant 時，系統現在會自動為這些圖片段落的 `tags` 陣列加上 `"圖片"` 標籤。同時，若該標籤在 MongoDB 的分類標籤（Tag）清單中不存在，會自動於後端建立，確保前端的標籤選單中能正確顯示與篩選該標籤。
+
+### 實作內容
+1. `backend/routers/embedding.py`：在 `/vectorize` 路由中，判斷請求的所有 chunks 中若存在 `chunk_type == "image"` 的圖片點位：
+   - 自動在 MongoDB `Tag` 集合中搜尋 `"圖片"` 標籤，若不存在則將其新增進資料庫，方便前端即時取得並在分類標籤篩選器中顯示。
+   - 遍歷 chunks，當遇到圖片段落時（`chunk.metadata.get("chunk_type") == "image"`），自動將 `"圖片"` 字串附加至其 `tags` 列表（會自動進行去重與類型轉換安全檢查），確保點位最終被 upsert 寫入 Qdrant 時帶有此 tag。
+
+### 修改檔案
+- `backend/routers/embedding.py`
+- `docs/DevelopmentProcess/NewFeatures.md`
+
 ## 2026-07-06 修正「AI 讀取附件內容」實際讀取的是使用者填寫的備註而非檔案本身內容
 
 ### 問題描述
@@ -385,3 +399,46 @@
 - `backend/routers/retrieval.py`
 - `backend/schemas/retrieval.py`
 - `tests/test_two_step_search.py` (新設)
+
+## 2026-07-07 新增文件內嵌圖片擷取、多模態描述生成與向量檢索功能
+
+### 功能描述
+實作 Word (docx/dotx) 與 PDF 文件上傳時自動擷取內嵌圖片、呼叫 vLLM 主模型（`Qwen3.6-35B-A3B-FP8`，非地端 llama.cpp Instruct 模型，因其目前已換成無視覺能力的 `qwen2.5-coder-7b-instruct-q8_0.gguf`）生成圖片語意描述，並將其轉化為圖片 Chunk 寫入向量庫 Qdrant。在對話檢索與引用中，若命中圖片 Chunk，前端能直接呈現圖片縮圖並提供下載功能。詳細規劃與 2026-07-07 程式碼複查發現的問題見 `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md`。
+
+### 實作內容
+1. **圖片子目錄與配置擴充**：
+   - 修改 `backend/config.py`：新增 `FILE_ATTACHMENTS_IMAGE_SUBDIR`（預設 `"image"`），實際圖片目錄為 `FILE_ATTACHMENTS_DIR`（`backend/FileAttachments/`）下的 `image/` 子目錄，即 `backend/FileAttachments/image/`。
+2. **圖片抽取與描述生成服務**：
+   - 修改 `backend/services/document_parser.py`：新增靜態方法 `extract_images_from_pdf`（基於 `PyMuPDF` 的 `page.get_images`/`extract_image`）與 `extract_images_from_docx`（基於 `python-docx` 走訪段落中的 `w:drawing`/VML `v:imagedata`，透過 `doc.part.related_parts` 取出圖片二進位資料，非直接讀取 ZIP 檔）。
+   - 修改 `backend/services/llm_service.py`：新增 `describe_image` 方法，將圖片轉為 Base64 後以 OpenAI 相容的多模態訊息格式呼叫 vLLM `chat_completion`（`settings.VLLM_MODEL`）進行語意分析與中文描述生成。
+3. **API 路由器與 Schema 實作**：
+   - 修改 `backend/schemas/embedding.py`：定義 `ExtractedImageItem`，擴充 `UploadResponse` 與 `ChunkRequest` 欄位以傳遞圖片資訊。
+   - 修改 `backend/routers/embedding.py`：
+     - 擴充 `/upload` 路由，支援 `extract_images` 參數。
+     - 擴充 `/chunk` 路由，支援接收 `images` 並將其轉化為 `chunk_type: "image"` 的 Chunk 點位。
+     - 新增 `/images/{stored_filename}` 路由，將擷取的圖片傳送給前端顯示。
+   - 修改 `backend/routers/rag.py`：擴充檢索結果來源 Chunks 的 metadata，向前端透傳 `chunk_type` 與 `image_filename`。
+4. **前端 API 與 UI 整合**：
+   - 新增 `frontend/src/services/imageService.js`：提供圖片下載輔助方法。
+   - 修改 `frontend/src/services/embeddingService.js`：擴充 `uploadFile` 新增 `extractImages` 參數。
+   - 修改 `frontend/src/components/embedding/FileUploader.vue`：接受並透傳 `extractImages` 屬性。
+   - 修改 `frontend/src/components/embedding/SingleIndexingTab.vue`：新增自動擷取勾選項目與已擷取圖片的預覽/下載 Grid 畫廊。
+   - 修改 `frontend/src/components/embedding/BatchIndexingTab.vue`：在 PDF/Word 分流設定區塊下新增自動擷取勾選框，並於批次佇列上傳時透傳。
+   - 修改 `frontend/src/components/chat/SourceChunks.vue`：在引用列表中為圖片加上 🖼 標記，並在 Hover 提示框中顯示縮圖與下載按鈕。
+   - 修改 `frontend/src/components/chat/MessageBubble.vue`：在 AI 訊息框下方新增「相關參考圖片」畫廊，直接顯示所有命中的圖片與描述。
+
+### 修改檔案
+- `backend/config.py`
+- `backend/services/document_parser.py`
+- `backend/services/llm_service.py`
+- `backend/schemas/embedding.py`
+- `backend/routers/embedding.py`
+- `backend/routers/rag.py`
+- `frontend/src/services/imageService.js` (新增)
+- `frontend/src/services/embeddingService.js`
+- `frontend/src/components/embedding/FileUploader.vue`
+- `frontend/src/components/embedding/SingleIndexingTab.vue`
+- `frontend/src/components/embedding/BatchIndexingTab.vue`
+- `frontend/src/components/chat/SourceChunks.vue`
+- `frontend/src/components/chat/MessageBubble.vue`
+

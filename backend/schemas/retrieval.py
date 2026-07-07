@@ -27,6 +27,9 @@ class RetrievalMetadata(BaseModel):
     type: Optional[str] = None
     links_to: Optional[List[str]] = Field(default_factory=list)
     linked_attachments: Optional[List[str]] = Field(default_factory=list)
+    chunk_type: Optional[str] = None
+    image_filename: Optional[str] = None
+    image_chunks: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
 
     class Config:
         populate_by_name = True

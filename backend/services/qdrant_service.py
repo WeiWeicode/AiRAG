@@ -430,7 +430,9 @@ class QdrantService:
                         "function_name": payload.get("function_name"),
                         "type": payload.get("type"),
                         "links_to": payload.get("links_to", []),
-                        "linked_attachments": payload.get("linked_attachments", [])
+                        "linked_attachments": payload.get("linked_attachments", []),
+                        "chunk_type": payload.get("chunk_type"),
+                        "image_filename": payload.get("image_filename")
                     },
                     "score": score,
                     "distance": 1.0 - score
@@ -457,12 +459,14 @@ class QdrantService:
                 parent_id = meta.get("parent_id")
                 
                 if parent_id:
+                    is_image_chunk = meta.get("chunk_type") == "image"
                     parent_content = meta.get("parent_content")
                     parent_range = meta.get("parent_chunk_index_range")
-                    
+                    image_chunks = []
+
                     # 情況 A：若元資料中沒有預存的 parent_content，則從資料庫中撈取所有兄弟節點進行合併 (相容舊資料)
                     if not parent_content:
-                        parent_content, parent_range = await cls.get_siblings_and_merge(
+                        parent_content, parent_range, image_chunks = await cls.get_siblings_and_merge(
                             collection_name=collection_name,
                             parent_id=parent_id,
                             orig_content=item["content"],
@@ -480,12 +484,24 @@ class QdrantService:
                                 f"[主要內容]\n"
                                 f"{parent_content}"
                             )
-                    
-                    if parent_content:
+                        # 為取得同 parent_id 下的圖片，只需要撈取圖片型兄弟節點，不需要重複執行文字合併運算
+                        image_chunks = await cls.get_image_siblings(collection_name, parent_id)
+
+                    # 圖片 chunk 本身被命中時，保留自己的圖片描述內容，不能被同段落純文字合併結果覆蓋
+                    # （get_siblings_and_merge 回傳的 parent_content 已排除圖片自己的內容，只含文字兄弟節點）
+                    if parent_content and not is_image_chunk:
                         item["content"] = parent_content
                     if parent_range:
                         item["metadata"]["chunk_index"] = parent_range
-                        
+                    if is_image_chunk:
+                        # 圖片自己不需要出現在自己的「同段落圖片」清單中
+                        self_image_filename = meta.get("image_filename")
+                        image_chunks = [
+                            ic for ic in image_chunks
+                            if ic.get("metadata", {}).get("image_filename") != self_image_filename
+                        ]
+                    item["metadata"]["image_chunks"] = image_chunks
+
                 final_results.append(item)
                 
             return final_results
@@ -669,7 +685,9 @@ class QdrantService:
                             "function_name": payload.get("function_name"),
                             "type": payload.get("type"),
                             "links_to": payload.get("links_to", []),
-                            "linked_attachments": payload.get("linked_attachments", [])
+                            "linked_attachments": payload.get("linked_attachments", []),
+                            "chunk_type": payload.get("chunk_type"),
+                            "image_filename": payload.get("image_filename")
                         },
                         "score": score,
                         "distance": 1.0 - score,
@@ -697,10 +715,12 @@ class QdrantService:
                     meta = item["metadata"]
                     parent_id = meta.get("parent_id")
                     if parent_id:
+                        is_image_chunk = meta.get("chunk_type") == "image"
                         parent_content = meta.get("parent_content")
                         parent_range = meta.get("parent_chunk_index_range")
+                        image_chunks = []
                         if not parent_content:
-                            parent_content, parent_range = await cls.get_siblings_and_merge(
+                            parent_content, parent_range, image_chunks = await cls.get_siblings_and_merge(
                                 collection_name=collection_name,
                                 parent_id=parent_id,
                                 orig_content=item["content"],
@@ -717,10 +737,20 @@ class QdrantService:
                                     f"[主要內容]\n"
                                     f"{parent_content}"
                                 )
-                        if parent_content:
+                            # 為取得同 parent_id 下的圖片，只需要撈取圖片型兄弟節點，不需要重複執行文字合併運算
+                            image_chunks = await cls.get_image_siblings(collection_name, parent_id)
+                        # 圖片 chunk 本身被命中時，保留自己的圖片描述內容，不能被同段落純文字合併結果覆蓋
+                        if parent_content and not is_image_chunk:
                             item["content"] = parent_content
                         if parent_range:
                             item["metadata"]["chunk_index"] = parent_range
+                        if is_image_chunk:
+                            self_image_filename = meta.get("image_filename")
+                            image_chunks = [
+                                ic for ic in image_chunks
+                                if ic.get("metadata", {}).get("image_filename") != self_image_filename
+                            ]
+                        item["metadata"]["image_chunks"] = image_chunks
                     final_neighbors.append(item)
             else:
                 final_neighbors = deduped_neighbors
@@ -1181,7 +1211,9 @@ class QdrantService:
                         "parent_content": payload.get("parent_content"),
                         "parent_chunk_index_range": payload.get("parent_chunk_index_range"),
                         "function_name": payload.get("function_name"),
-                        "type": payload.get("type")
+                        "type": payload.get("type"),
+                        "chunk_type": payload.get("chunk_type"),
+                        "image_filename": payload.get("image_filename")
                     }
                 })
             
@@ -1192,33 +1224,83 @@ class QdrantService:
             logger.error(f"Failed to get points by parent_id '{parent_id}': {e}")
             return []
 
+    @staticmethod
+    def _strip_structured_content_prefix(content: str) -> str:
+        """
+        去除結構化 Prompt 樣板前綴（[檔案名稱].../[主要內容]\n...），還原成純粹的段落內容。
+        文字與圖片兄弟節點的內容清洗共用同一套邏輯。
+        """
+        for marker in ["[主要內容]\n", "[主要內容]\r\n"]:
+            idx = content.find(marker)
+            if idx != -1:
+                return content[idx + len(marker):]
+        return content
+
+    @classmethod
+    async def get_image_siblings(cls, collection_name: str, parent_id: str) -> list:
+        """
+        只取得同一個 parent_id 下的圖片型兄弟節點（不執行文字去重合併運算）。
+        供已有快取 parent_content、只需要補上 image_chunks 顯示用途的情境使用，
+        避免重複跑一次 get_siblings_and_merge() 的完整文字合併計算。
+        """
+        siblings = await cls.get_by_parent_id(collection_name, parent_id)
+        return [
+            {
+                "chunk_id": sib.get("chunk_id"),
+                "content": cls._strip_structured_content_prefix(sib.get("content") or ""),
+                "metadata": {
+                    "filename": sib["metadata"].get("filename"),
+                    "page": sib["metadata"].get("page"),
+                    "chunk_type": "image",
+                    "image_filename": sib["metadata"].get("image_filename")
+                }
+            }
+            for sib in siblings if sib["metadata"].get("chunk_type") == "image"
+        ]
+
     @classmethod
     async def get_siblings_and_merge(cls, collection_name: str, parent_id: str, orig_content: str, metadata: dict) -> tuple:
         """
-        撈取 parent_id 的所有兄弟節點並去重合併，還原完整的 Parent Content。
+        撈取 parent_id 的所有兄弟節點並去重合併，還原完整的 Parent Content，且分離出圖片段落（不進行文字合併）。
         """
         siblings = await cls.get_by_parent_id(collection_name, parent_id)
         if not siblings:
-            return orig_content, str(metadata.get("chunk_index") or "")
-        
-        indices = [sib["metadata"].get("chunk_index") for sib in siblings if sib["metadata"].get("chunk_index") is not None]
+            return orig_content, str(metadata.get("chunk_index") or ""), []
+
+        # 分離文字與圖片兄弟節點
+        text_siblings = [sib for sib in siblings if sib["metadata"].get("chunk_type") != "image"]
+        image_siblings = [sib for sib in siblings if sib["metadata"].get("chunk_type") == "image"]
+
+        # 收集圖片資訊（content 一併去除結構化樣板前綴，與文字兄弟節點使用同一套清洗邏輯，
+        # 避免啟用「結構化 Prompt 強化」時圖片描述預覽多出重複的檔名/段落編號/標籤樣板文字）
+        image_chunks = [
+            {
+                "chunk_id": sib.get("chunk_id"),
+                "content": cls._strip_structured_content_prefix(sib.get("content") or ""),
+                "metadata": {
+                    "filename": sib["metadata"].get("filename"),
+                    "page": sib["metadata"].get("page"),
+                    "chunk_type": "image",
+                    "image_filename": sib["metadata"].get("image_filename")
+                }
+            }
+            for sib in image_siblings
+        ]
+
+        if not text_siblings:
+            return orig_content, str(metadata.get("chunk_index") or ""), image_chunks
+
+        indices = [sib["metadata"].get("chunk_index") for sib in text_siblings if sib["metadata"].get("chunk_index") is not None]
         if indices:
             min_idx = min(indices)
             max_idx = max(indices)
             parent_range = f"{min_idx}~{max_idx}" if min_idx != max_idx else str(min_idx)
         else:
             parent_range = str(metadata.get("chunk_index") or "")
-            
-        def clean_and_extract_content(content: str) -> str:
-            for marker in ["[主要內容]\n", "[主要內容]\r\n"]:
-                idx = content.find(marker)
-                if idx != -1:
-                    return content[idx + len(marker):]
-            return content
-        
-        raw_contents = [clean_and_extract_content(sib["content"]) for sib in siblings]
+
+        raw_contents = [cls._strip_structured_content_prefix(sib["content"]) for sib in text_siblings]
         if not raw_contents:
-            return orig_content, parent_range
+            return orig_content, parent_range, image_chunks
         
         # 進行去重拼接 (解決 overlap 造成的重複文字問題)
         def merge_two_strings_with_overlap(s1: str, s2: str) -> str:
@@ -1246,5 +1328,5 @@ class QdrantService:
         else:
             display_content = merged_raw
             
-        return display_content, parent_range
+        return display_content, parent_range, image_chunks
 

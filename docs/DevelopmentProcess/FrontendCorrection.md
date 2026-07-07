@@ -1,5 +1,49 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-07-07 RAG 對話圖片來源改採「參考文檔引用」列表樣式，取代小縮圖網格畫廊
+
+### 問題描述
+使用者實測 RAG 功能測試頁面後回饋：同一則回答召回多張圖片時（例如 9 張），`MessageBubble.vue` 原本的網格縮圖畫廊排版（每張縮圖僅約 140px 高、雙欄排列）圖片太小、看不清楚實際內容，且大量圖片時佔用對話畫面很大的垂直空間，體驗不佳。使用者要求改成與既有「參考文檔引用 (Chunks)」文字段落一致的緊湊列表樣式，並只需要在列表尾端加上一個下載圖片的 icon。
+
+### 修改內容
+1. `frontend/src/components/chat/SourceChunks.vue`（修改）：重新加回圖片來源渲染邏輯（`imageSources`/`imageUrls`/`imageLoadFailed`/`loadSourceImages`/`downloadImage`），新增「🖼️ 參考圖片引用 (Image Chunks)」區塊，樣式比照文字 Chunk 列表（單行：檔名＋段落編號＋Tokens／Similarity 徽章＋下載 icon 按鈕），Hover 時彈出比原本網格縮圖更大的圖片預覽（`h-56`）與完整描述文字，解決「縮圖太小看不清楚」的問題。
+2. `frontend/src/components/chat/MessageBubble.vue`（修改）：移除「相關參考圖片」網格畫廊區塊，以及對應的 `imageSources` computed、`imageUrls`/`imageLoadFailed` 狀態、`loadMessageImages`/`downloadImage` 方法（改由 `SourceChunks.vue` 內部管理），一併移除不再使用的 `watch`/`computed` import。
+
+### 驗證
+- `npm run build` 編譯通過，無樣板錯誤。
+- 圖片來源改為緊湊列表＋Hover 放大預覽的實際顯示效果，需使用者於實機手動確認。
+
+## 2026-07-07 修正圖片預覽重複顯示、fallback 圖片網址必定 401、上傳等待動畫缺失
+
+### 問題描述
+延續圖片內嵌向量化功能的程式碼複查（`docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 9 節 9.3/9.7/9.9），發現三項前端問題：對話畫面同一張圖片被 `SourceChunks.vue`／`MessageBubble.vue` 重複渲染兩次；多個元件的 `<img>` fallback 網址（直接指向需要 JWT 的 `/api/embedding/images/...`）在瀏覽器原生 `<img src>` 情境下必定 401、起不到降級效果；「資料切分與向量化寫入」上傳圖片時只有靜態文字提示、沒有轉動動畫，容易讓使用者誤以為畫面卡住。
+
+### 修改內容
+1. `frontend/src/components/chat/SourceChunks.vue`（修改）：移除 `imageSources`/`imageUrls`/`loadSourceImages`/`downloadImage` 與「🖼️ 參考圖片引用」樣板區塊，只保留文字 Chunk 列表（`textSources`），圖片改由 `MessageBubble.vue` 統一顯示。
+2. `frontend/src/components/embedding/ChunkPreview.vue`、`frontend/src/components/embedding/SingleIndexingTab.vue`、`frontend/src/components/embedding/VectorManagementTab.vue`、`frontend/src/components/chat/MessageBubble.vue`（修改）：新增 `imageLoadFailed` 狀態，blob 載入失敗時記錄失敗而非設定會 401 的 fallback 網址；樣板改為三態渲染（載入中 spinner／載入失敗灰階佔位圖示／成功顯示縮圖），下載按鈕僅在成功載入時顯示。
+3. `frontend/src/components/embedding/FileUploader.vue`（修改）：新增 `uploadingText` computed，依 `extractImages` 顯示不同上傳中提示文字；上傳中狀態把靜態雲朵圖示換成轉動中的 spinner。
+
+### 驗證
+- `npm run build` 編譯通過，無樣板錯誤。
+- 圖片顯示三態切換、對話畫面圖片不再重複、上傳中 spinner 顯示，需使用者於實機手動確認。
+
+## 2026-07-07 向量管理頁面新增圖片 Chunk 預覽與描述顯示
+
+### 問題描述
+在「已向量化資料管理與刪除」分頁中，若檔案中包含已經擷取的圖片 Chunk，使用者無法在列表中直接預覽圖片與其描述。需要讓圖片類型的 Chunk 能像聊天面板一樣顯示實體縮圖，並提供圖片描述文字以及原圖下載按鈕。
+
+### 修改內容
+1. `frontend/src/components/embedding/VectorManagementTab.vue` (修改)：
+   - 導入 `imageService`，新增 `imageUrls` 狀態儲存圖片 Blob URL。
+   - 新增 `loadChunkImage(filename)` 方法，非同步將圖片經由 authenticated 請求轉為本地 blob URL 進行渲染；新增 `downloadImage(filename)` 包裝下載。
+   - 新增對 `managementPoints` 的 deep watch，當檔案點位載入時，若偵測到點位為圖片 Chunk (`chunk_type === 'image'`)，自動觸發 Blob URL 載入。
+   - 修改樣板，在標題中若為圖片 Chunk 則加上紫色的 `🖼️ 圖片段落` 徽章。
+   - 修改 Chunks 列表中段落內容的渲染方式：如果是圖片 Chunk，則渲染左右雙欄結構，左邊展示縮圖（Hover 時顯示下載按鈕），右邊展示該圖片的中文語意描述內容。
+
+### 驗證
+- 在向量管理分頁選擇包含圖片的檔案，清單正確顯示紫色 `🖼️ 圖片段落` 徽章。
+- 圖片 Chunk 完美以雙欄預覽呈現圖片與描述，Hover 並點選下載按鈕可正確下載原圖。
+
 ## 2026-07-06 程式碼複查：向量管理頁附件關聯徽章改顯示實際檔名
 
 ### 問題描述

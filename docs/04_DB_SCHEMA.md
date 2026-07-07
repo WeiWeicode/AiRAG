@@ -327,7 +327,9 @@
   "parent_chunk_index_range": "0~4（該 Parent Block 分切出的 Child Chunks 索引區間）",
   "file_type": "docx | md | 4gl | 4fd",
   "header_path": "Header1 > Header2（Word / MD 的層級標題階層首碼）",
-  "function_name": "func_name（4GL 原始碼的函數名稱）"
+  "function_name": "func_name（4GL 原始碼的函數名稱）",
+  "chunk_type": "image | text（標記 Point 類型，文件內嵌圖片之描述為 image，一般文本段落為 text/空值，2026-07-07 新增）",
+  "image_filename": "stored_image_filename.png（類型為 image 時，對應在 backend/FileAttachments/image/ 目錄下儲存的圖片檔名，透過 GET /api/embedding/images/{stored_filename} 讀取，2026-07-07 新增）"
 }
 ```
 > `parent_content`、`type` 兩個欄位在檢索程式碼中會被防禦性讀取（`payload.get(...)`），但目前的寫入程式碼路徑中**找不到明確的寫入來源**，可能僅存在於語義 JSON 匯入路徑或歷史遺留資料，撰寫新功能時不應假設其必然存在。

@@ -567,3 +567,74 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
    - 再把每筆附件的實際內容當作一個摘要區塊，併入既有的 Map-Reduce 分批摘要機制（`ContextSummarizerService.maybe_summarize`，與 `context_summarize_trigger_tokens` 共用同一套門檻與 SSE 步驟事件，見 §3.1 分批摘要說明），使其內容能影響最終回答。
    為 `false` 時完全不會送出 `attachment_extraction` 步驟，附件內容也不會進入 LLM context，只作為下載點呈現。
 4. 目前僅 `POST /api/rag/chat` 實作了「附件查詢＋內容摘要」的完整流程。`POST /api/retrieval/search`（§4.1）雖然 `search_type` 傳入 `semantic_hybrid_attachment` 時也會走雙階段關聯檢索，但**不會**額外查詢 `Attachment` collection 或組出 `attachments`/下載資訊；`POST /api/evaluation/run` 與檢索測試頁目前尚未串接此查詢法。
+
+---
+
+## 15. 文件圖片擷取、描述與檢索 API (Document Image Extraction, Captioning & Retrieval) 【新增，2026-07-07】
+
+提供 PDF 與 Word (docx/dotx) 文件的內嵌圖片擷取、多模態 LLM 圖片描述自動生成，以及檢索時的圖片關聯呈現。
+
+### 15.1 POST `/api/embedding/upload` — 上傳文件 (擴充)
+**Request (multipart/form-data)**：
+* `file`: 檔案本體
+* `extract_images`: 布林值 (選填，預設 `false`)。若為 `true`，上傳 PDF 或 Word 檔案時將自動抽取其內嵌圖片，並呼叫地端多模態 AI 自動描述圖片內容。
+
+**Response 200**：
+```json
+{
+  "file_id": "string",
+  "filename": "string",
+  "content": "string",
+  "page_count": 1,
+  "char_count": 123,
+  "images": [
+    {
+      "image_filename": "img_uuid.png",
+      "page": 1,
+      "description": "圖片的詳細中文描述",
+      "caption_failed": false
+    }
+  ]
+}
+```
+
+### 15.2 GET `/api/embedding/images/{stored_filename}` — 讀取擷取之圖片
+**描述**：取得上傳文件時所擷取的圖片實體，回應為 `FileResponse`，前端可用於 `<img>` src 顯示或下載。
+
+**Response 200**：圖片二進位檔案。
+
+### 15.3 POST `/api/embedding/chunk` — 文本切分預覽 (擴充)
+**Request Body**：
+```json
+{
+  "file_id": "string (選填)",
+  "filename": "string (選填)",
+  "content": "文本內容",
+  "params": {
+    "chunk_size": 512,
+    "chunk_overlap": 50,
+    "separator": "\n\n",
+    "chunk_mode": "standard | parent_child"
+  },
+  "images": [
+    {
+      "image_filename": "img_uuid.png",
+      "page": 1,
+      "description": "圖片的詳細描述"
+    }
+  ]
+}
+```
+**描述**：若傳入 `images` 陣列，切分器會將這些圖片描述轉換成獨立的圖片 Chunk，併入切分結果中。圖片 Chunk 的 `metadata.chunk_type` 為 `"image"`，且 `metadata.image_filename` 與 `metadata.page` 會被保留以供檢索。
+
+### 15.4 檢索結果中圖片 Metadata 與呈現
+在 RAG 對話或向量檢索中，命中類型為圖片的 Chunk 時，其 `metadata` 會包含以下欄位：
+```json
+{
+  "chunk_type": "image",
+  "image_filename": "img_uuid.png",
+  "page": 1
+}
+```
+前端可偵測 `chunk_type == "image"` 並顯示圖片縮圖，且可提供圖片下載功能。
+

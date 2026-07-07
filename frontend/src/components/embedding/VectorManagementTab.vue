@@ -4,6 +4,7 @@ import { useParamsStore } from '../../stores/paramsStore'
 import api from '../../services/api'
 import retrievalService from '../../services/retrievalService'
 import attachmentService from '../../services/attachmentService'
+import imageService from '../../services/imageService'
 
 const paramsStore = useParamsStore()
 
@@ -21,6 +22,26 @@ const isSavingLinks = ref(false)
 const selectedAttachments = ref([])
 const isSavingAttachments = ref(false)
 const allAttachments = ref([])
+
+const imageUrls = ref({})
+const imageLoadFailed = ref({})
+
+const loadChunkImage = async (filename) => {
+  if (!filename || imageUrls.value[filename] || imageLoadFailed.value[filename]) return
+  try {
+    const url = await imageService.fetchImageBlobUrl(filename)
+    imageUrls.value[filename] = url
+  } catch (err) {
+    console.error('Failed to load image blob:', err)
+    // 圖片端點需要 JWT，直接用 <img src="/api/..."> 一定會 401，不設無意義的 fallback 網址，
+    // 改記錄載入失敗狀態讓畫面顯示明確的失敗佔位圖
+    imageLoadFailed.value[filename] = true
+  }
+}
+
+const downloadImage = (filename) => {
+  imageService.download(filename, filename)
+}
 
 const fetchAllAttachments = async () => {
   if (!paramsStore.knowledgeBaseId) {
@@ -104,6 +125,11 @@ const loadManagementPoints = async () => {
     })
     
     managementPoints.value = results
+    results.forEach(point => {
+      if (point.metadata?.chunk_type === 'image' && point.metadata?.image_filename) {
+        loadChunkImage(point.metadata.image_filename)
+      }
+    })
   } catch (error) {
     console.error('載入檔案向量段落失敗:', error)
     alert('載入失敗，請確認後端連線。')
@@ -160,6 +186,15 @@ watch(() => paramsStore.knowledgeBaseId, (newId) => {
     selectedManagementChunkIds.value = []
   }
 }, { immediate: true })
+
+watch(managementPoints, (newPoints) => {
+  if (!newPoints) return
+  newPoints.forEach(p => {
+    if (p.metadata?.chunk_type === 'image' && p.metadata?.image_filename) {
+      loadChunkImage(p.metadata.image_filename)
+    }
+  })
+}, { deep: true })
 
 const isAllManagementSelected = computed(() => {
   return managementPoints.value.length > 0 && selectedManagementChunkIds.value.length === managementPoints.value.length
@@ -425,6 +460,9 @@ onMounted(() => {
                 class="rounded bg-white/5 border-white/10 text-[#8b5cf6] focus:ring-[#8b5cf6]/50 cursor-pointer flex-shrink-0"
               />
               <span class="truncate">[{{ point.metadata?.filename || '未知檔案' }}] P.{{ point.metadata?.page || '?' }}</span>
+              <span v-if="point.metadata?.chunk_type === 'image'" class="bg-purple-500/10 border border-purple-500/20 text-[#a78bfa] px-1.5 py-0.5 rounded text-[9px] flex items-center gap-1 select-none flex-shrink-0">
+                🖼️ 圖片段落
+              </span>
               <span class="text-[#6b7280] flex-shrink-0">段落索引: #{{ point.metadata?.chunk_index || idx }}</span>
               
               <!-- Parent-Child Chunks Badges -->
@@ -482,7 +520,46 @@ onMounted(() => {
               </svg>
             </button>
           </div>
-          <p class="text-xs text-[#9ca3af] leading-relaxed whitespace-pre-wrap">
+          
+          <div v-if="point.metadata?.chunk_type === 'image'" class="flex flex-col sm:flex-row gap-4 items-start animate-fade-in">
+            <div class="w-full sm:w-48 h-32 rounded-lg bg-black/40 flex items-center justify-center overflow-hidden border border-white/8 relative group flex-shrink-0">
+              <img
+                v-if="imageUrls[point.metadata.image_filename]"
+                :src="imageUrls[point.metadata.image_filename]"
+                class="max-h-full max-w-full object-contain"
+                alt="Document Image"
+              />
+              <div v-else-if="imageLoadFailed[point.metadata.image_filename]" class="flex flex-col items-center gap-1 text-[#6b7280] text-[10px]">
+                <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                  <line x1="4" y1="4" x2="20" y2="20"/>
+                </svg>
+                圖片載入失敗
+              </div>
+              <svg v-else class="animate-spin h-5 w-5 text-[#6b7280]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <div v-if="imageUrls[point.metadata.image_filename]" class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                <button
+                  @click="downloadImage(point.metadata.image_filename)"
+                  class="p-2 bg-[#8b5cf6] hover:bg-[#a78bfa] rounded-full text-white transition-all shadow-lg cursor-pointer"
+                  title="下載原圖"
+                >
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="flex-grow flex flex-col gap-1.5 w-full">
+              <span class="text-[10px] font-semibold text-[#a78bfa] uppercase tracking-wider select-none">圖片描述 (AI Generated Caption)</span>
+              <p class="text-xs text-white leading-relaxed whitespace-pre-wrap">
+                {{ point.content }}
+              </p>
+            </div>
+          </div>
+          <p v-else class="text-xs text-[#9ca3af] leading-relaxed whitespace-pre-wrap">
             {{ point.content }}
           </p>
         </div>

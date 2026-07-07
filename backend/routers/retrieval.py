@@ -98,7 +98,10 @@ async def search(request: RetrievalRequest):
                         function_name=meta.get("function_name"),
                         type=meta.get("type"),
                         links_to=meta.get("links_to", []),
-                        linked_attachments=meta.get("linked_attachments", [])
+                        linked_attachments=meta.get("linked_attachments", []),
+                        chunk_type=meta.get("chunk_type"),
+                        image_filename=meta.get("image_filename"),
+                        image_chunks=meta.get("image_chunks", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)
@@ -223,7 +226,10 @@ async def semantic_hybrid_search(request: RetrievalRequest):
                         function_name=meta.get("function_name"),
                         type=meta.get("type"),
                         links_to=meta.get("links_to", []),
-                        linked_attachments=meta.get("linked_attachments", [])
+                        linked_attachments=meta.get("linked_attachments", []),
+                        chunk_type=meta.get("chunk_type"),
+                        image_filename=meta.get("image_filename"),
+                        image_chunks=meta.get("image_chunks", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)
@@ -305,7 +311,10 @@ async def query_transform(request: QueryTransformRequest):
                         class_list=meta.get("class", []),
                         parent_id=meta.get("parent_id"),
                         function_name=meta.get("function_name"),
-                        type=meta.get("type")
+                        type=meta.get("type"),
+                        chunk_type=meta.get("chunk_type"),
+                        image_filename=meta.get("image_filename"),
+                        image_chunks=meta.get("image_chunks", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)

@@ -2,14 +2,14 @@ import time
 import uuid
 import logging
 from datetime import datetime
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
 from beanie import PydanticObjectId
 
 from typing import List
 from schemas.embedding import (
     UploadResponse, ChunkRequest, ChunkResponse, ChunkItem,
     VectorizeRequest, VectorizeResponse, TagCreate, ClassOptionCreate,
-    SemanticJSONIngestRequest, SemanticJSONIngestResponse
+    SemanticJSONIngestRequest, SemanticJSONIngestResponse, ExtractedImageItem
 )
 from services.document_parser import DocumentParser
 from services.chunking_service import ChunkingService
@@ -24,21 +24,101 @@ logger = logging.getLogger("airag.embedding_router")
 router = APIRouter(prefix="/embedding", tags=["Embedding"], dependencies=[Depends(get_current_user)])
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...),
+    extract_images: bool = Form(False)
+):
     """
-    上傳檔案，呼叫解析引擎，並傳回純文字與頁數資訊。
+    上傳檔案，呼叫解析引擎，並傳回純文字、頁數與擷取的圖片資訊。
     """
     try:
         content_bytes = await file.read()
         text, pages, chars = DocumentParser.parse_file(file.filename, content_bytes)
         
         file_id = str(uuid.uuid4())
+        
+        extracted_images = []
+        ext = file.filename.split(".")[-1].lower()
+        
+        if extract_images and ext in ["pdf", "docx", "dotx"]:
+            # Create directory if not exists
+            import os
+            from config import settings
+            image_dir = os.path.join(settings.FILE_ATTACHMENTS_DIR, settings.FILE_ATTACHMENTS_IMAGE_SUBDIR)
+            os.makedirs(image_dir, exist_ok=True)
+            
+            raw_images = []
+            if ext == "pdf":
+                raw_images = DocumentParser.extract_images_from_pdf(content_bytes)
+            elif ext in ["docx", "dotx"]:
+                raw_images = DocumentParser.extract_images_from_docx(content_bytes)
+                
+            from services.llm_service import LLMService
+            from services.markdown_parent_child_chunker import generate_parent_id
+            
+            for raw_img in raw_images:
+                img_bytes = raw_img["image_bytes"]
+                img_ext = raw_img["ext"]
+                
+                # Create unique filename
+                stored_filename = f"{uuid.uuid4().hex}.{img_ext}"
+                target_path = os.path.join(image_dir, stored_filename)
+                
+                # Determine mime type
+                mime_type = f"image/{img_ext}" if img_ext != "jpg" else "image/jpeg"
+                
+                # Context hint
+                context_hint = ""
+                page_val = None
+                parent_id_val = None
+                
+                if ext == "pdf":
+                    page_val = raw_img["page_number"]
+                    context_hint = f"第 {page_val} 頁"
+                elif ext in ["docx", "dotx"]:
+                    header_path = raw_img["header_path"]
+                    if header_path:
+                        header_vals = [header_path[k] for k in sorted(header_path.keys())]
+                        context_hint = " > ".join(header_vals)
+                        parent_id_val = generate_parent_id(file.filename, header_path)
+                        
+                caption_failed = False
+                caption_truncated = False
+                description = ""
+                try:
+                    description, caption_truncated = await LLMService.describe_image(
+                        image_bytes=img_bytes,
+                        mime_type=mime_type,
+                        context_hint=context_hint
+                    )
+                except Exception as ex:
+                    # 逾時等例外字串化常為空字串，補上例外類別名稱與 repr 才看得出真正原因
+                    logger.error(
+                        f"Image captioning failed for {stored_filename}: {type(ex).__name__}: {ex!r}"
+                    )
+                    caption_failed = True
+                    description = f"[圖片描述產生失敗：{file.filename}_img{raw_img['image_index']}]"
+
+                # Write to disk
+                with open(target_path, "wb") as f_out:
+                    f_out.write(img_bytes)
+
+                extracted_images.append(ExtractedImageItem(
+                    image_filename=stored_filename,
+                    description=description,
+                    page=page_val,
+                    parent_id=parent_id_val,
+                    caption_failed=caption_failed,
+                    caption_truncated=caption_truncated
+                ))
+                
         return UploadResponse(
             file_id=file_id,
             filename=file.filename,
             content=text,
             page_count=pages,
-            char_count=chars
+            char_count=chars,
+            images=extracted_images
         )
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
@@ -165,6 +245,33 @@ async def chunk_text(request: ChunkRequest):
                         ))
                         idx += 1
             
+            # Append image chunks if present
+            if request.images:
+                start_index = len(all_children)
+                for idx_offset, img_item in enumerate(request.images):
+                    chunk_idx = start_index + idx_offset
+                    p_id = img_item.parent_id
+                    if not p_id and (is_word or is_md):
+                        p_id = f"{request.filename or 'unknown'}_img_fallback_{chunk_idx}"
+                    meta = {
+                        "chunk_type": "image",
+                        "image_filename": img_item.image_filename,
+                        "page": img_item.page or 1,
+                        "parent_chunk_index_range": str(chunk_idx),
+                        "filename": request.filename or "unknown"
+                    }
+                    if p_id:
+                        meta["parent_id"] = p_id
+                    all_children.append(ChunkItem(
+                        index=chunk_idx,
+                        content=img_item.description,
+                        token_count=ChunkingService.estimate_tokens(img_item.description),
+                        char_count=len(img_item.description),
+                        start_char=0,
+                        end_char=len(img_item.description),
+                        metadata=meta
+                    ))
+
             avg_tokens = int(sum(c.token_count for c in all_children) / len(all_children)) if all_children else 0
             return ChunkResponse(
                 chunks=all_children,
@@ -181,12 +288,32 @@ async def chunk_text(request: ChunkRequest):
         )
         
         items = []
-        total_tokens = 0
         for item in chunks_data:
             items.append(ChunkItem(**item))
-            total_tokens += item["token_count"]
             
-        avg_tokens = int(total_tokens / len(items)) if items else 0
+        # Append image chunks if present
+        if request.images:
+            start_index = len(items)
+            for idx_offset, img_item in enumerate(request.images):
+                chunk_idx = start_index + idx_offset
+                meta = {
+                    "chunk_type": "image",
+                    "image_filename": img_item.image_filename,
+                    "page": img_item.page or 1,
+                    "parent_chunk_index_range": str(chunk_idx),
+                    "filename": request.filename or "unknown"
+                }
+                items.append(ChunkItem(
+                    index=chunk_idx,
+                    content=img_item.description,
+                    token_count=ChunkingService.estimate_tokens(img_item.description),
+                    char_count=len(img_item.description),
+                    start_char=0,
+                    end_char=len(img_item.description),
+                    metadata=meta
+                ))
+            
+        avg_tokens = int(sum(c.token_count for c in items) / len(items)) if items else 0
         
         return ChunkResponse(
             chunks=items,
@@ -234,6 +361,17 @@ async def vectorize_chunks(request: VectorizeRequest):
         # 批次向 llama.cpp 取得向量
         vectors = await EmbeddingService.get_embeddings_batch(texts)
         
+        # 檢查是否有圖片 Chunk 並自動在 MongoDB 建立 "圖片" 標籤
+        has_image = any(chunk.metadata.get("chunk_type") == "image" for chunk in request.chunks)
+        if has_image:
+            try:
+                existing_tag = await Tag.find_one(Tag.name == "圖片")
+                if not existing_tag:
+                    await Tag(name="圖片").insert()
+                    logger.info("Automatically created tag '圖片' in MongoDB.")
+            except Exception as e:
+                logger.error(f"Failed to auto-create tag '圖片': {e}")
+
         # 準備寫入 Qdrant 的 Payload
         qdrant_chunks = []
         for chunk in request.chunks:
@@ -245,6 +383,18 @@ async def vectorize_chunks(request: VectorizeRequest):
             if isinstance(links_to, str):
                 links_to = [links_to] if links_to else []
                 
+            # 取得與清理 tags 陣列
+            tags = chunk.metadata.get("tags", [])
+            if isinstance(tags, str):
+                tags = [tags] if tags else []
+            else:
+                tags = list(tags) if tags is not None else []
+                
+            # 如果是圖片段落，自動加上 "圖片" 標籤
+            if chunk.metadata.get("chunk_type") == "image":
+                if "圖片" not in tags:
+                    tags.append("圖片")
+
             payload = {
                 "content": chunk.content,
                 "filename": chunk.metadata.get("filename", "unknown"),
@@ -254,7 +404,7 @@ async def vectorize_chunks(request: VectorizeRequest):
                 "token_count": ChunkingService.estimate_tokens(chunk.content),
                 "char_count": len(chunk.content),
                 "source": chunk.metadata.get("source", "upload"),
-                "tags": chunk.metadata.get("tags", []),
+                "tags": tags,
                 "class": classes,
                 "links_to": links_to,
                 "created_at": datetime.utcnow().isoformat()
@@ -442,4 +592,38 @@ async def create_class(request: ClassOptionCreate):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"建立類別失敗: {str(e)}"
         )
+
+from fastapi.responses import FileResponse
+import mimetypes
+
+@router.get("/images/{stored_filename}")
+async def get_image(stored_filename: str):
+    """
+    回傳圖片實體檔案，供前端縮圖預覽與下載使用。
+    """
+    from config import settings
+    import os
+    
+    image_dir = os.path.abspath(os.path.join(settings.FILE_ATTACHMENTS_DIR, settings.FILE_ATTACHMENTS_IMAGE_SUBDIR))
+    file_path = os.path.abspath(os.path.join(image_dir, stored_filename))
+    
+    # Check directory traversal
+    if not file_path.startswith(image_dir + os.sep) and file_path != image_dir:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="拒絕存取此路徑"
+        )
+        
+    if not os.path.exists(file_path) or not os.path.isfile(file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="圖片檔案不存在"
+        )
+        
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if not mime_type:
+        mime_type = "application/octet-stream"
+        
+    return FileResponse(file_path, media_type=mime_type)
+
 

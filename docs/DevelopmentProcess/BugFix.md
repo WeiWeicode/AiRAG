@@ -1,5 +1,120 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-07-07 修正圖片描述因固定 60 秒逾時而失敗、且錯誤訊息空白無法診斷的問題（9.11）
+
+### 問題描述（詳見 `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 9 節 9.11）
+使用者實測上傳含密集文字/表格截圖的 Word 文件，圖片描述產生失敗（畫面顯示「描述失敗」徽章），Docker 後端日誌三行錯誤訊息冒號後**完全是空字串**，無法判斷真正原因；但同一張圖片使用者確認在 OpenWebUI 可正常讀取，代表模型本身具備視覺能力。
+
+**根本原因**：`backend/services/llm_service.py` 的 `chat_completion()` 固定使用 `httpx.AsyncClient(timeout=60.0)`，`describe_image()` 也共用這 60 秒上限；但 9.8 修正時已把 `max_tokens` 大幅提高（目前 8192），對文字/表格密集的圖片，自架 vLLM 生成完整描述很容易超過 60 秒，導致 httpx 提早判定逾時中斷連線。Python 的逾時類例外（`httpx.ReadTimeout`／`asyncio.TimeoutError`）字串化通常是空字串，原本的 `logger.error(f"...: {e}")` 因此印不出任何有意義的診斷資訊。
+
+### 解決方案
+1. `chat_completion()` 新增可選參數 `timeout: float = 60.0`，改用 `httpx.AsyncClient(timeout=timeout)`；既有呼叫端不傳入此參數則行為不變（仍是 60 秒）。
+2. `describe_image()` 呼叫時改傳入 `timeout=300.0`（5 分鐘），讓內容複雜的圖片有足夠時間完整生成描述。
+3. `chat_completion()`、`describe_image()`、`routers/embedding.py` 三處的例外 log 訊息改成 `f"...: {type(e).__name__}: {e!r}"`，即使 `str(e)` 是空字串也一定會印出例外類別名稱與 `repr()`，未來能直接從 log 判斷是逾時、連線失敗還是其他原因。
+
+### 修改檔案
+- `backend/services/llm_service.py`
+- `backend/routers/embedding.py`
+- `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md`（記錄複查發現與修正結果）
+
+### 驗證
+- 已用 `python -c "import ast; ast.parse(...)"` 驗證語法正確。
+- 需使用者重新上傳同一份含密集文字/表格截圖的文件，確認描述能在 5 分鐘內完整產生；若仍逾時，Docker log 應能明確看到 `ReadTimeout`/`ConnectTimeout` 等具體例外類別名稱，而非空白訊息。
+
+## 2026-07-07 修正圖片功能剩餘中低風險問題（9.3-9.9），並發現修正 get_by_parent_id 遺漏 chunk_type 投影的高風險問題（9.10）
+
+### 問題描述（詳見 `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 9 節 9.3-9.10）
+延續同日稍早修正的三項高風險問題，本次處理第 9 節剩餘的中低風險項目，並在修正 9.6 效能項目時，複查 `get_by_parent_id()` 發現一項先前未被列入清單、但影響更根本的高風險問題：
+1. **【中】對話畫面圖片來源重複顯示兩次**：`SourceChunks.vue` 與 `MessageBubble.vue` 各自獨立渲染同一組圖片來源。
+2. **【中】DOCX 表格儲存格內的圖片不會被擷取**：`extract_images_from_docx()` 只處理段落、未處理 `Table` 項目。
+3. **【中】結構化 Prompt 強化模式下，圖片描述預覽多出樣板文字**：`get_siblings_and_merge()` 收集 `image_chunks` 時未清洗 `[主要內容]` 樣板前綴。
+4. **【低】每筆帶 `parent_id` 的結果都多一次 Qdrant 查詢**：快取分支仍會重新執行完整合併運算才能取得 `image_chunks`。
+5. **【低】圖片 `<img>` 的 fallback 網址一定會 401**：多處元件的 fallback 寫法在 blob 載入失敗時退回一個必定失敗的網址。
+6. **【中，使用者提出】上傳解析圖片時前端沒有等待動畫**：`FileUploader.vue` 只有靜態文字、無 spinner，容易誤以為卡住。
+7. **【高，複查發現】`get_by_parent_id()` 缺少 `chunk_type`／`image_filename` 欄位投影**：導致 `get_siblings_and_merge()` 的文字/圖片兄弟節點分離邏輯（9.1、9.5 的核心機制）實際上完全沒有作用——圖片兄弟節點仍會被誤判為文字、繼續混入合併結果，「同段落圖片」（`image_chunks`）也永遠是空陣列。此問題比同日稍早修正的三項高風險問題更根本，直接讓 9.1/9.5 的修正失去實際效果。
+
+### 解決方案
+1. `SourceChunks.vue` 移除圖片渲染邏輯，圖片統一由 `MessageBubble.vue` 的「相關參考圖片」畫廊呈現。
+2. `document_parser.py` 的 `extract_images_from_docx()` 重構出共用的 rid 擷取／圖片收集函式，新增對 `docx.table.Table` 的走訪。
+3. `qdrant_service.py` 的 `clean_and_extract_content` 提升為共用靜態方法 `_strip_structured_content_prefix()`，`get_siblings_and_merge()` 收集 `image_chunks` 時一併套用。
+4. 新增輕量方法 `QdrantService.get_image_siblings()`，快取分支改用它取代完整的 `get_siblings_and_merge()`，省下不必要的合併運算（Qdrant 查詢次數因架構限制無法完全避免，已於文件中如實記錄）。
+5. `FileUploader.vue`、`SingleIndexingTab.vue`、`MessageBubble.vue`、`VectorManagementTab.vue`、`ChunkPreview.vue` 的圖片 `<img>` 改為三態渲染（載入中 spinner／載入失敗佔位圖／成功顯示），移除會 401 的 fallback 網址；`FileUploader.vue` 另外加上上傳中 spinner 與依 `extractImages` 顯示不同提示文字。
+6. `qdrant_service.py` 的 `get_by_parent_id()` 補上 `chunk_type`／`image_filename` 兩個欄位投影。
+
+### 修改檔案
+- `backend/services/qdrant_service.py`
+- `backend/services/document_parser.py`
+- `frontend/src/components/chat/SourceChunks.vue`
+- `frontend/src/components/chat/MessageBubble.vue`
+- `frontend/src/components/embedding/ChunkPreview.vue`
+- `frontend/src/components/embedding/SingleIndexingTab.vue`
+- `frontend/src/components/embedding/VectorManagementTab.vue`
+- `frontend/src/components/embedding/FileUploader.vue`
+- `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md`（記錄複查發現與修正結果）
+
+### 驗證
+- 已用 `python -c "import ast; ast.parse(...)"` 驗證所有修改過的 Python 檔案語法正確。
+- 已用 `npm run build` 驗證所有修改過的 Vue 元件編譯正常，無樣板錯誤。
+- 圖片功能的端到端驗證（重新上傳含圖片文件、檢查 Qdrant payload、RAG 對話命中測試）仍需使用者手動測試，依專案慣例不由 AI 開瀏覽器驗證。
+
+## 2026-07-07 程式碼複查後修正圖片 Chunk 內容被覆蓋、圖片描述被截斷、開發文件與程式碼不符三項高風險問題
+
+### 問題描述（詳見 `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 9 節）
+1. **【高】圖片 Chunk 命中時內容被覆蓋**：`qdrant_service.py` 的 `search_similar()`／`search_similar_two_step()` 對每一筆帶 `parent_id` 的檢索結果一律用 `get_siblings_and_merge()` 回傳的「同段落純文字合併結果」覆蓋 `item["content"]`；但該函式已將圖片兄弟節點排除在合併結果之外。當圖片 Chunk 自己就是最相關的命中結果時（Word 文件內嵌圖片必然帶 `parent_id`），其自身的圖片描述會被換成旁邊的純文字段落，導致 AI 看不到圖片描述本身，直接打破「問架構圖能被說明」的核心驗收情境。
+2. **【高，使用者實測發現】圖片描述常在複雜表格/BOM 圖片上被硬性截斷**：`llm_service.py` 的 `describe_image()` 呼叫 vLLM 時 `max_tokens=512`，表格/BOM 類圖片逐行描述很容易在還沒描述完就被強制中斷；且 `chat_completion()` 從未讀取 `finish_reason`，截斷的半截描述會被當成正常結果直接寫入 Qdrant，使用者與系統都無法察覺內容不完整，須事後人工檢查 Qdrant payload 才能發現（見使用者提供的截圖：BOM 表格描述在「第3行」戛然而止）。
+3. **【高】開發紀錄與 DB Schema 文件內容與實際程式碼不符**：`NewFeatures.md`／`04_DB_SCHEMA.md` 誤寫成使用「地端多模態 AI (MiniCPM-V)」與 `EXTRACTED_IMAGES_DIR`/`ExtractedImages/` 目錄，但實際程式碼是呼叫 vLLM 主模型 `Qwen3.6-35B-A3B-FP8`，圖片存於 `FILE_ATTACHMENTS_DIR` + `FILE_ATTACHMENTS_IMAGE_SUBDIR`（`backend/FileAttachments/image/`），全專案 grep 不到前者字樣。
+
+### 解決方案
+1. `backend/services/qdrant_service.py`：`search_similar()`（461-508 行）與 `search_similar_two_step()` 鄰居合併段落新增 `is_image_chunk` 判斷，圖片 Chunk 命中時不再用 `parent_content` 覆蓋自己的 `content`；同時排除圖片自己出現在自己的 `image_chunks` 清單中。
+2. `backend/services/llm_service.py`：`chat_completion()` 新增可選參數 `return_finish_reason`（預設 `False`，不影響既有 7 處呼叫端）；`describe_image()` 的 `max_tokens` 由 512 提高到 2048，並依 `finish_reason == "length"` 判斷截斷、回傳 `(description, truncated)` tuple，截斷時記錄 warning log。`backend/schemas/embedding.py` 的 `ExtractedImageItem` 新增 `caption_truncated` 欄位，`backend/routers/embedding.py` 同步更新呼叫端；`frontend/src/components/embedding/SingleIndexingTab.vue` 新增橘色「描述可能被截斷」徽章。
+3. 更正 `docs/DevelopmentProcess/NewFeatures.md`（2026-07-07 條目）與 `docs/04_DB_SCHEMA.md` 的 `image_filename` 欄位說明，改為實際使用的模型與目錄設定。
+
+### 修改檔案
+- `backend/services/qdrant_service.py`
+- `backend/services/llm_service.py`
+- `backend/schemas/embedding.py`
+- `backend/routers/embedding.py`
+- `frontend/src/components/embedding/SingleIndexingTab.vue`
+- `docs/DevelopmentProcess/NewFeatures.md`
+- `docs/04_DB_SCHEMA.md`
+- `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md`（記錄複查發現與修正結果）
+
+### 尚待處理
+第 9 節中低風險項目（9.3 對話畫面圖片重複顯示、9.4 DOCX 表格內圖片未擷取、9.5 結構化模式下圖片描述含樣板文字、9.6 多餘 Qdrant 查詢、9.7 `<img>` fallback 必定 401）尚未修正，留待後續處理。
+
+## 2026-07-07 修正 RAG 檢索同 parent_id 合併時圖片 Chunk 被混入文字與切分截斷問題、以及向量管理與切分預覽無法顯示圖片 bug
+
+### 問題描述
+1. **圖片 Chunk 與文字合併衝突**：在 parent-child 檢索召回多個兄弟節點並進行合併還原（`get_siblings_and_merge`）時，若召回的兄弟節點中包含圖片 Chunk（`chunk_type == "image"`，其 content 為圖片的 AI 語意描述），這些圖片內容會被當作一般文字兄弟節點一起送入去重合併與 range 截斷中。這導致圖片的語意描述被硬塞進檢索文字段落中，破壞了原本文件的純文字結構，並造成了「圖片描述文字截斷/排版錯亂」的現象；同時，這也使得前端無法以結構化的方式取得這些伴隨被召回的圖片，导致對話中只會顯示 0-1 張圖片。
+2. **向量管理與切分預覽無圖片**：
+   - 「自訂資料向量化.已向量化資料管理與刪除」頁面（`VectorManagementTab.vue`）中，雖然有針對 `chunk_type === 'image'` 顯示圖片的 UI 設計，但未在資料載入後呼叫 `loadChunkImage()` 方法以透過 Blob 載入授權圖片，導致圖片區塊全部呈現空白。
+   - 「自訂資料向量化.資料切分與向量化寫入」的 Chunk 預覽組件（`ChunkPreview.vue`）中，未設計圖片 Chunk 的特殊預覽邏輯，僅以 text 欄位顯示描述，使得使用者切分完成後無法預覽擷取到的圖片。
+
+### 解決方案
+1. **分離兄弟節點中的圖片 Chunk**：
+   - 修改 `backend/services/qdrant_service.py` 中的 `get_siblings_and_merge`：在撈取所有兄弟節點後，根據 `chunk_type == "image"` 將其分離為 `text_siblings` 與 `image_siblings`。
+   - 僅對 `text_siblings` 進行去重合併，確保產出的段落文字純淨無污染。
+   - 將 `image_siblings` 中的圖片資訊（`chunk_id`, `content`, `metadata` 如 `image_filename`, `page`, `filename`）打包成 `image_chunks` 列表，與合併後的 `display_content` 一起以 tuple 形式回傳。
+   - 在 `search_similar` 與 `search_similar_two_step` 中捕捉 `image_chunks`，並將其注入至最終檢索點位的 metadata 字典的 `"image_chunks"` 欄位中。
+2. **擴充 Schema 與 RAG 路由對應**：
+   - 在 `backend/schemas/retrieval.py` 的 `RetrievalMetadata` schema 中新增 `image_chunks: Optional[List[Dict[str, Any]]] = Field(default_factory=list)`。
+   - 在 `backend/routers/retrieval.py` 的各查詢路由，以及 `backend/routers/rag.py` 的 RAG `/chat/completions` 路由中，將 metadata 中的 `image_chunks` 正確透傳至對應的 response schemas 與 sources payload 中。
+3. **前端 RAG 與引用組件升級**：
+   - 修改 `frontend/src/components/chat/SourceChunks.vue` 與 `MessageBubble.vue`：擴充其 `imageSources` 計算屬性，除了過濾出 `sources` 中直接為 `chunk_type === 'image'` 的項目，更進一步從文字 sources 的 `metadata.image_chunks` 中拉取所有巢狀圖片點位，並依 `image_filename` 進行去重。這使得與同一段落關聯的所有圖片引用與對話卡片均能完美完整地呈現。
+4. **前端向量管理與切分預覽圖片預覽修正**：
+   - 修改 `VectorManagementTab.vue`：在 `loadManagementPoints` 成功載入點位後，走訪結果並對所有圖片點位呼叫 `loadChunkImage()` 載入其 Blob URL。
+   - 修改 `ChunkPreview.vue`：導入 `imageService`，為 `chunk.metadata?.chunk_type === 'image'` 的 Chunk 增加專屬的圖片畫廊與 AI 描述呈現區塊，實現切分完成後的即時圖片預覽。
+
+### 修改檔案
+- `backend/schemas/retrieval.py`
+- `backend/services/qdrant_service.py`
+- `backend/routers/retrieval.py`
+- `backend/routers/rag.py`
+- `frontend/src/components/chat/SourceChunks.vue`
+- `frontend/src/components/chat/MessageBubble.vue`
+- `frontend/src/components/embedding/VectorManagementTab.vue`
+- `frontend/src/components/embedding/ChunkPreview.vue`
+
 ## 2026-07-03 修正語義資料庫查詢法 SQL 產生時欄位名稱幻覺（跨表格套用 Few-Shot 範例欄位名）導致執行失敗問題
 
 ### 問題描述

@@ -1,12 +1,21 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
+class ExtractedImageItem(BaseModel):
+    image_filename: str
+    description: str
+    page: Optional[int] = None
+    parent_id: Optional[str] = None
+    caption_failed: bool = False
+    caption_truncated: bool = False
+
 class UploadResponse(BaseModel):
     file_id: str
     filename: str
     content: str
     page_count: int
     char_count: int
+    images: List[ExtractedImageItem] = Field(default_factory=list)
 
 class ChunkParams(BaseModel):
     chunk_size: int = 512
@@ -19,6 +28,8 @@ class ChunkRequest(BaseModel):
     filename: Optional[str] = None
     content: str
     params: ChunkParams = Field(default_factory=ChunkParams)
+    images: List[ExtractedImageItem] = Field(default_factory=list)
+
 
 class ChunkItem(BaseModel):
     index: int

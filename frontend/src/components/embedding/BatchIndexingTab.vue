@@ -56,6 +56,7 @@ const isBatchProcessing = ref(false)
 const batchProcessIndex = ref(-1) // index of file currently processing
 const isBatchDragActive = ref(false)
 const batchFileInput = ref(null)
+const batchExtractImages = ref(false)
 
 const selectedExtension = ref('.pdf')
 const batchChunkSizeExt = ref(512)
@@ -267,11 +268,11 @@ const startBatchProcessing = async () => {
     
     fileItem.status = 'parsing'
     fileItem.progress = 10
-    fileItem.message = '正在上傳並解析檔案...'
+    fileItem.message = batchExtractImages.value ? '正在上傳、解析並辨識/描述內嵌圖片...' : '正在上傳並解析檔案...'
     
     try {
       // 1. Upload & Parse file to backend
-      const uploadData = await embeddingService.uploadFile(fileItem.fileObject)
+      const uploadData = await embeddingService.uploadFile(fileItem.fileObject, batchExtractImages.value)
       const content = uploadData.content || ''
       const fname = uploadData.filename || fileItem.name
       
@@ -289,7 +290,8 @@ const startBatchProcessing = async () => {
           chunk_overlap: batchChunkOverlapExt.value,
           separator: batchSeparatorExt.value.replace('\\n', '\n'),
           chunk_mode: batchChunkModeExt.value
-        }
+        },
+        images: uploadData.images || []
       }
       const chunkData = await embeddingService.chunkText(chunkPayload)
       let chunks = chunkData.chunks || []
@@ -569,6 +571,19 @@ onUnmounted(() => {
               <option value="standard" class="bg-[#111827] text-white">標準字元切分</option>
               <option value="parent_child" class="bg-[#111827] text-white">大小雙層結構 (Parent-Child)</option>
             </select>
+          </div>
+
+          <!-- Image Extraction Checkbox (Show only for PDF or Word) -->
+          <div v-if="selectedExtension === '.pdf' || selectedExtension === '.docx'" class="flex items-center gap-2 mt-1 px-1">
+            <input 
+              v-model="batchExtractImages"
+              type="checkbox" 
+              id="chk-batch-extract-images"
+              class="rounded border-white/10 bg-white/5 text-[#8b5cf6] focus:ring-0 focus:ring-offset-0 cursor-pointer"
+            />
+            <label for="chk-batch-extract-images" class="text-[10px] text-[#9ca3af] cursor-pointer select-none">
+              自動擷取內嵌圖片並產生描述
+            </label>
           </div>
         </div>
 

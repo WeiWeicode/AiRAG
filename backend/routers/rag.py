@@ -441,7 +441,10 @@ async def rag_chat_stream(request: ChatRequest):
                                 "tags": meta.get("tags", []),
                                 "class": meta.get("class", []),
                                 "links_to": meta.get("links_to", []),
-                                "linked_attachments": meta.get("linked_attachments", [])
+                                "linked_attachments": meta.get("linked_attachments", []),
+                                "chunk_type": meta.get("chunk_type"),
+                                "image_filename": meta.get("image_filename"),
+                                "image_chunks": meta.get("image_chunks", [])
                             },
                             "score": item.get("score", 0.0),
                             "token_count": count_tokens(item.get("content", ""))

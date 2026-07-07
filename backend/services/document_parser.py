@@ -8,6 +8,116 @@ logger = logging.getLogger("airag.parser")
 
 class DocumentParser:
     @staticmethod
+    def extract_images_from_pdf(file_bytes: bytes) -> list:
+        """
+        抽取 PDF 中的圖片。
+        """
+        import fitz
+        images = []
+        try:
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            for page_idx, page in enumerate(doc):
+                image_list = page.get_images(full=True)
+                for img_idx, img in enumerate(image_list):
+                    xref = img[0]
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
+                    images.append({
+                        "image_bytes": image_bytes,
+                        "ext": image_ext,
+                        "page_number": page_idx + 1,
+                        "image_index": img_idx + 1
+                    })
+            doc.close()
+        except Exception as e:
+            logger.error(f"Error extracting images from PDF: {e}")
+        return images
+
+    @staticmethod
+    def extract_images_from_docx(file_bytes: bytes) -> list:
+        """
+        抽取 DOCX 中的圖片（含表格儲存格內的圖片），並儘量關聯到最近的標題階層路徑。
+        """
+        import docx
+        from docx.oxml.ns import nsmap, qn
+        import io
+
+        # Ensure 'v' is registered in nsmap
+        if 'v' not in nsmap:
+            nsmap['v'] = 'urn:schemas-microsoft-com:vml'
+
+        images = []
+        try:
+            doc = docx.Document(io.BytesIO(file_bytes))
+
+            # We will walk paragraph items in order, tracking headers, to associate parent_id
+            from services.word_parent_child_chunker import iter_block_items, get_heading_level, get_paragraph_text
+
+            current_headers = {}
+            img_counter = 0
+
+            def extract_rids_from_element(element):
+                rids = []
+                # 1. Modern drawings
+                blips = element.findall('.//' + qn('a:blip'))
+                for blip in blips:
+                    rid = blip.get(qn('r:embed')) or blip.get(qn('r:link'))
+                    if rid:
+                        rids.append(rid)
+                # 2. Legacy drawings (VML)
+                imagedatas = element.findall('.//' + qn('v:imagedata'))
+                for imgdata in imagedatas:
+                    rid = imgdata.get(qn('r:id'))
+                    if rid:
+                        rids.append(rid)
+                return rids
+
+            def append_images_for_rids(rids, header_path):
+                nonlocal img_counter
+                for rid in rids:
+                    if rid in doc.part.related_parts:
+                        part = doc.part.related_parts[rid]
+                        if "image" in part.content_type:
+                            img_counter += 1
+                            ext = part.content_type.split('/')[-1]
+                            if ext == "jpeg":
+                                ext = "jpg"
+                            images.append({
+                                "image_bytes": part.blob,
+                                "ext": ext,
+                                "header_path": header_path.copy(),
+                                "image_index": img_counter
+                            })
+
+            for item in iter_block_items(doc):
+                if isinstance(item, docx.text.paragraph.Paragraph):
+                    # Track headers
+                    heading_level = get_heading_level(item)
+                    if heading_level > 0:
+                        text = get_paragraph_text(item)
+                        if text:
+                            # Clear lower level headers
+                            for l in range(heading_level, 7):
+                                current_headers.pop(f"Header {l}", None)
+                            current_headers[f"Header {heading_level}"] = text
+
+                    # Extract images in the paragraph
+                    rids = extract_rids_from_element(item._element)
+                    append_images_for_rids(rids, current_headers)
+                elif isinstance(item, docx.table.Table):
+                    # 表格儲存格內也可能內嵌圖片（常見的圖文並排排版方式），沿用目前累積到的標題階層
+                    for row in item.rows:
+                        for cell in row.cells:
+                            for para in cell.paragraphs:
+                                rids = extract_rids_from_element(para._element)
+                                append_images_for_rids(rids, current_headers)
+
+        except Exception as e:
+            logger.error(f"Error extracting images from DOCX: {e}")
+        return images
+
+    @staticmethod
     def parse_pdf(file_bytes: bytes) -> Tuple[str, int]:
         """
         解析 PDF 檔案位元組，提取純文字與頁數。

@@ -1,9 +1,10 @@
 import api from './api'
 
 export default {
-  async uploadFile(file) {
+  async uploadFile(file, extractImages = false) {
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('extract_images', extractImages)
     const response = await api.post('/api/embedding/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
