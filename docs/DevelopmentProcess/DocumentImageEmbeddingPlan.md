@@ -475,3 +475,106 @@ IMAGE_CAPTION_CONCURRENCY: int = int(os.getenv("IMAGE_CAPTION_CONCURRENCY", "3")
 5. 確認兩個方法回傳值型別與既有行為一致，不影響 `database_indexing.py`、`delete_db_query_profile_point()` 既有呼叫端。
 
 使用者待實機驗證：在「已向量化資料管理」頁面對一份含圖片的文件整批刪除，確認 `backend/FileAttachments/image/` 內對應的圖片檔案消失；再測試「圖片描述被切成多個片段」的情境，只單獨刪除其中一個片段但保留同一張圖的其他片段，確認圖片檔案不會被誤刪、其餘片段的縮圖/下載仍正常。
+
+## 13. 圖片描述生成套用「重複輸出／無限思考」偵測與中斷（已實作，2026-07-07）
+
+> 狀態：**已實作 2026-07-07**。實作異動請對照 `docs/DevelopmentProcess/BackendCorrection.md` 2026-07-07 條目。使用者要求：圖片解析（`describe_image()` 呼叫 vLLM 生成描述）時，若模型陷入「無限思考」（reasoning/thinking 階段不斷迴圈、遲遲不產生正式內容）或「輸出重複」（不斷重複同一段文字），要能直接偵測並中斷，並指出專案先前已針對 RAG 對話做過同類需求，套用同一套機制即可。
+
+### 13.1 既有機制（可直接套用的原型）
+
+專案在 2026-07-03 已針對 RAG 對話串流實作過「重複輸出偵測」，記錄於 `docs/DevelopmentProcess/BackendCorrection.md`「2026-07-03 RAG 對話新增 repetition/frequency penalty 與重複輸出偵測」條目，分兩層防禦：
+
+1. **Layer 1：vLLM 生成參數層** — `backend/config.py:47-48` 的 `DEFAULT_REPETITION_PENALTY`（預設 `1.1`）、`DEFAULT_FREQUENCY_PENALTY`（預設 `0`）；`backend/services/llm_service.py` 的 `chat_completion()`（10-19 行參數、36-39 行）已支援 `repetition_penalty`/`frequency_penalty` 參數，未帶入時維持 `None`（不影響 `query_rewrite`/`hyde_generation` 等既有呼叫端）。
+2. **Layer 2：串流層 n-gram 重複偵測** — `backend/routers/rag.py:609-634`：串流消費迴圈中持續累積 `content` 增量到 `accumulated_content`，一旦累積長度達到 `repeat_ngram_size(25) * repeat_trigger_count(4)`，取最後 25 字當作 `tail`，若 `tail` 在整個累積內容中出現次數 `>= 4` 次，判定為重複迴圈，記錄 warning log、附加系統提示文字、`break` 主動中斷串流。
+
+**現況缺口**：這兩層目前只套用在 `backend/routers/rag.py` 的 RAG 對話串流，`backend/services/llm_service.py` 的 `describe_image()`（125-166 行）完全沒有套用——呼叫 `chat_completion()` 時未傳入 `repetition_penalty`/`frequency_penalty`（Layer 1 缺）；且目前是**非串流**呼叫（未傳 `stream=True`），必須等 vLLM 完全生成完畢（撞到 `max_tokens=20480` 或 300 秒 timeout）才能拿到結果，中途完全無法偵測或中斷重複/迴圈（Layer 2 缺，且非串流架構下無法套用）。另外，既有 Layer 2 只檢查 `content`（正式輸出）的重複，**沒有檢查 `reasoning_content`／`thought`／`reasoning`（思考內容）的重複**（`rag.py:621-623` 思考內容直接 yield 給前端顯示，未經任何重複檢查）——這正是使用者說的「無限思考」情境：具備推理能力的模型（Qwen3.6-35B-A3B-FP8）可能卡在思考階段不斷迴圈，遲遲不產生正式描述內容，而現有機制對此毫無防備。
+
+### 13.2 設計方向
+
+把 `describe_image()` 從「非串流、等待完整結果」改為「串流消費、邊收邊偵測」，完整套用既有兩層機制，並額外把 Layer 2 的重複偵測**同時套用在思考內容與正式內容兩條軌道**：
+
+1. **Layer 1**：`describe_image()` 呼叫 `chat_completion()` 時補上 `repetition_penalty=settings.DEFAULT_REPETITION_PENALTY, frequency_penalty=settings.DEFAULT_FREQUENCY_PENALTY`（沿用既有全域設定，不新增設定項）。
+2. **改為串流呼叫**：`chat_completion(messages, temperature=0.3, max_tokens=20480, timeout=300.0, stream=True, repetition_penalty=..., frequency_penalty=...)`，`describe_image()` 內部改成 `async for raw_chunk in stream:` 消費迴圈（比照 `rag.py:614-636` 的解析寫法：`json.loads` → 取 `choices[0]["delta"]` 的 `content`/`reasoning_content`(`thought`/`reasoning`) → 分別累積成 `accumulated_content`、`accumulated_reasoning`；`finish_reason` 從帶有該欄位的 chunk 中取得，供既有「`finish_reason == "length"` → `truncated=True`」判斷沿用）。
+3. **Layer 2（思考與正式內容分別偵測）**：新增共用 staticmethod `LLMService._is_repeating_tail(accumulated: str, ngram_size: int = 25, trigger_count: int = 4) -> bool`（把 `rag.py:628-630` 的判斷式抽出來共用，數值不變，`rag.py` 既有的內嵌判斷式一併改為呼叫這個共用方法，避免同一組 magic number 在兩處各自維護、日後容易失準）。串流消費迴圈中，`accumulated_reasoning`／`accumulated_content` 各自累積後都呼叫 `_is_repeating_tail(...)` 檢查：
+   - **思考內容（`accumulated_reasoning`）觸發重複** → 記錄 warning log（例如「Detected repeated reasoning loop while describing image」）、中斷串流消費（`break`）。此時 `accumulated_content` 必然是空字串（模型還沒開始正式輸出），視為**完全沒有產生可用描述**，直接 `raise RuntimeError(...)`，讓既有呼叫端 `backend/routers/embedding.py` 的 `process_one_image()`（現有 `try/except` 已存在，見 9.8 節）依既有邏輯自動標記 `caption_failed=True`、落地存檔但描述文字改為失敗提示——**不需要修改 `embedding.py` 或任何 schema**。
+   - **正式內容（`accumulated_content`）觸發重複** → 記錄 warning log、中斷串流消費（`break`），視為「有部分內容但不完整」，回傳 `(accumulated_content.strip(), truncated=True)`——沿用既有 `caption_truncated` 語意（現有前端「描述可能被截斷」橘色徽章不需修改即可正確呈現這個情境）。
+4. **不新增欄位／不新增設定項**：重複偵測的門檻數值沿用既有的 `25`/`4`；截斷語意沿用既有 `caption_truncated` 布林欄位；失敗語意沿用既有 `caption_failed` + 例外處理路徑。刻意不新增例如 `caption_repeated` 這類新欄位，避免為同一個「描述不可靠」的使用者情境（截斷 vs 迴圈中斷）製造兩套不同的 UI 判斷分支。
+
+### 13.3 影響範圍
+
+- 改動集中在 `backend/services/llm_service.py` 的 `describe_image()`（125-166 行，內部實作方式改變，對外簽章與回傳型別 `tuple[str, bool]` 或拋出例外的既有行為不變）與新增的 `_is_repeating_tail()` 共用方法。
+- `backend/routers/rag.py` 只需把既有內嵌判斷式（628-630 行）換成呼叫新的共用方法，數值與行為不變，屬於零風險重構。
+- `backend/routers/embedding.py`／`schemas/embedding.py`／前端皆**不需修改**：`describe_image()` 對外行為維持「回傳 `(description, truncated)`」或「拋出例外」兩種既有型態，呼叫端既有的 `caption_failed`/`caption_truncated` 處理邏輯直接適用。
+
+### 13.4 驗證方式
+
+本地沒有會真的無限迴圈/重複輸出的 vLLM 服務可供端到端測試，改用獨立腳本，比照既有 `tests/test_two_step_search.py` 的 mock 手法，直接 mock `LLMService.chat_completion` 回傳的串流生成器（模擬逐塊 `data: {...}` 字串），驗證以下情境：
+1. 正常情境（無重複）：串流內容不觸發 `_is_repeating_tail`，最終回傳完整描述、`truncated=False`，行為與修改前一致（回歸測試）。
+2. `finish_reason == "length"`（現有情境）：回傳 `truncated=True`，行為與修改前一致（回歸測試）。
+3. 模擬 `reasoning_content` 不斷重複同一段文字達到門檻 → 驗證會 `raise` 例外（不會回傳任何 tuple），且不會誤把思考內容當作正式描述回傳。
+4. 模擬 `content` 不斷重複同一段文字達到門檻 → 驗證回傳 `(已累積的部分內容, True)`，且串流有被提前中斷（mock 的生成器不會被完整消費到底）。
+5. `_is_repeating_tail()` 本身用幾組固定字串（重複/不重複）驗證判斷邏輯正確。
+
+使用者待實機驗證：待 vLLM 服務可實際觸發思考迴圈或重複輸出的情境出現時（或人為調整 prompt 誘發），觀察後端 log 是否正確印出對應的 warning 訊息、圖片是否正確標記 `caption_failed`/`caption_truncated`，且不會像現況一樣卡滿 300 秒 timeout 或 20480 個 token 才結束。
+
+### 13.5 實作結果（2026-07-07）
+
+1. `backend/services/llm_service.py`：新增 `LLMService._is_repeating_tail()` staticmethod（`rag.py` 原本的內嵌判斷式抽出來的共用版本，數值不變：`ngram_size=25`、`trigger_count=4`）。`describe_image()` 改為呼叫 `chat_completion(..., stream=True, repetition_penalty=settings.DEFAULT_REPETITION_PENALTY, frequency_penalty=settings.DEFAULT_FREQUENCY_PENALTY)`，內部改成 `async for raw_chunk in stream:` 消費迴圈，分別累積 `accumulated_reasoning`／`accumulated_content` 並各自呼叫 `_is_repeating_tail()`；思考內容觸發重複時 `raise RuntimeError(...)`，正式內容觸發重複時提前 `return (accumulated_content.strip(), True)`；`finish_reason` 從串流中帶有該欄位的 chunk 擷取，`finish_reason == "length"` 的既有截斷判斷邏輯不變。
+2. `backend/routers/rag.py`：串流重複偵測的內嵌判斷式（原 628-630 行）改為呼叫 `LLMService._is_repeating_tail(accumulated_content)`，移除重複定義的 `repeat_ngram_size`/`repeat_trigger_count` 區域變數，行為與門檻數值完全不變。
+3. **驗證方式**：因本地無可觸發真實無限迴圈的 vLLM 服務，改用獨立 Python 腳本 mock `LLMService.chat_completion` 回傳的串流生成器，驗證：正常情境完整回傳且 `truncated=False`（回歸）；`finish_reason=="length"` 情境 `truncated=True`（回歸）；`reasoning_content` 重複觸發 `RuntimeError` 且訊息含「無限思考」字樣；`content` 重複時回傳已累積的部分內容且 `truncated=True`，並確認串流生成器**沒有被完整消費到底**（實際只消費 6/20 個模擬 chunk，證明有提前中斷，而非等到生成器自然結束）；`_is_repeating_tail()` 的獨立字串判斷案例皆正確。另重跑既有回歸測試 `backend/tests/test_word_chunker.py`、`tests/test_two_step_search.py`，確認未受影響、全數通過。
+4. 依規劃，`backend/routers/embedding.py`／`schemas/embedding.py`／前端皆未修改。
+
+## 14. 圖片查詢語義解析降級、同段落多張圖片未進入 AI 摘要、段落編號顯示 #?（已實作，2026-07-07）
+
+> 狀態：**已實作 2026-07-07**。實作異動請對照 `docs/DevelopmentProcess/BackendCorrection.md` 2026-07-07 條目。使用者實測「跟我說明 GP5.1建立備份營運中心.docx 圖片」這類查詢後回報三個相關問題：(1) 語義解析 AI 輸出 `is_fallback: true`，`embeddings_input`／`sparse_keywords` 直接退化成原始問句，完全沒有理解查詢意圖；(2) 畫面上「參考圖片引用」列出約 9 筆同一份文件、相似度皆為 0.75 的圖片，但 AI 的結論只總結了其中 1 張；(3) 這 9 筆圖片的段落編號都顯示「#?」而非實際數字。
+
+### 14.1 問題一：語義解析降級為 fallback（`is_fallback: true`）
+
+**根因**：`backend/services/embedding_service.py` 的 `query_to_semantic_json()`（108-276 行）系統提示詞（117-181 行）的「【嚴格核心規則】」與全部 3 個 Few-Shot 範例（143-179 行：`p_zta.4gl`／`gab_file`／`q_smy`）**清一色都是程式碼/資料庫欄位查詢情境**，核心教學重點是「積極剝除『說明』『用途』『功能』等通用語意詞，只留下精確檔名/識別碼」（規則 5，140-142 行）。這套規則套用在使用者對**一般 Word 文件**的查詢、且查詢中帶有「圖片」這種**內容型態限定詞**時並不合適：
+- 規則 5 沒有排除「圖片」「圖表」「截圖」這類詞——這些詞恰好是本次「圖片內嵌向量化」功能命中圖片 chunk 的關鍵語意訊號（圖片描述文字本身會包含大量與「圖片」「畫面」「圖表」相關的詞彙），若被當成通用稀釋詞剝除，`embeddings_input`／`sparse_keywords` 就會遺漏這個檢索意圖。
+- 3 個少樣本範例全部是「純檔名查詢」，完全沒有「一般文件檔名 + 內容型態限定詞（圖片/圖表/截圖）」這種查詢形狀的示範，地端 Instruct 模型（目前是 `qwen2.5-coder-7b-instruct-q8_0.gguf`，程式碼專用模型）缺乏可依循的模板，對這類非程式碼查詢容易產生不符合既有 3 個схема 認知的輸出格式，導致 `_call_and_parse()`（237-257 行）的 `json.loads()` 解析失敗或缺少 `embeddings_input` 欄位（255-256 行的 `ValueError`），兩次重試（`temperature=[0.1, 0.5]`）都失敗後降級為 `fallback_json`（223-235 行：直接把原始問句整句塞進 `embeddings_input`/`sparse_keywords`）。
+- 本次修正**無法從程式碼層面重現或確認 llama.cpp 實際回傳了什麼**（沒有即時服務可測試），只能從 Prompt 設計面改善「讓模型更容易產生正確格式」與「不要誤刪關鍵檢索詞」，若之後仍持續 fallback，需要使用者提供當下的後端 log（`logger.warning`/`logger.error`，237-276 行已有記錄實際例外訊息）才能進一步精確診斷。
+
+**修正方向**：`backend/services/embedding_service.py` 的 `query_to_semantic_json()` 系統提示詞：
+1. 規則 5 明確加入排除清單：「圖片」「圖表」「截圖」「照片」「畫面」「介面」等**內容型態詞**不屬於稀釋用詞，必須保留在 `embeddings_input`／`sparse_keywords` 中（因為知識庫內確實存在圖片描述類型的 chunk，這些詞是有效的檢索訊號，與「說明」「用途」等純粹的提問客套語不同）。
+2. 新增第 4 個 Few-Shot 範例（「一般文件 + 內容型態限定詞」情境），對齊使用者實際遇到的查詢形狀：
+   - 輸入：`跟我說明 GP5.1建立備份營運中心.docx 圖片`
+   - 良好輸出：`embeddings_input: "GP5.1建立備份營運中心.docx 圖片"`、`sparse_keywords: ["GP5.1建立備份營運中心.docx", "圖片"]`
+   - 錯誤示範：把「圖片」也當通用詞一併剝除，變成只剩檔名（會導致檢索不到圖片說明類型的 chunk，只找到一般文字段落）。
+3. 這兩處修改單純是 Prompt 文字調整，不改變 `query_to_semantic_json()` 的程式邏輯、重試機制或回傳格式。
+
+### 14.2 問題二：同一區塊有多張圖片時，AI 只總結其中一張
+
+**根因**：使用者的文件（多張截圖的教學文件）裡，這 9 張圖片實際上共用**同一個 `parent_id`**（Word 結構化切分時，同一段落/章節下的多張內嵌圖片，依第 3.1／11 節設計會沿用「跟旁邊文字相同的 `parent_id`」）。`backend/services/qdrant_service.py` 的 `search_similar_two_step()` 鄰居合併階段在依 `parent_id` 去重時（708-717 行 `seen_parents`／`deduped_neighbors`）**每個 `parent_id` 只保留一筆結果**，其餘 8 張圖片雖然各自都有 0.75 分的獨立相似度，仍會被去重掉、不會出現在最終的頂層 `raw_results`／`sources` 清單中——牠們只會透過「贏家」那一筆結果呼叫 `get_siblings_and_merge()`／`get_image_siblings()`（729-747 行）時，被當作「同段落圖片」附掛進贏家的 `metadata.image_chunks`（供前端顯示縮圖清單）。
+
+問題在於 `backend/routers/rag.py` 組 `context_str` 送給 vLLM 的迴圈（428-461 行 `for idx, item in enumerate(raw_results):`）**只走訪頂層 `raw_results`**，完全沒有把每筆結果 `metadata.image_chunks`（447 行，目前只附掛給前端顯示用）攤平併入 `context_parts`。也就是說，這 8 張「陪榜」圖片的完整描述其實已經被正確撈出、正確重組（第 11-13 節的成果都有效運作），**卻從未真正送進 LLM 的 context**，AI 自然只看得到、只能總結那 1 張「贏家」圖片。
+
+**修正方向**：`backend/routers/rag.py` 的 `context_parts` 組裝迴圈（428-461 行），在處理完每個頂層 `item` 之後，額外攤平 `meta.get("image_chunks", [])` 併入 `context_parts`（沿用既有「【來源文件：X | 段落編號：Y】\n內容：Z」格式，額外標註「（圖片描述）」以利 LLM 分辨），並用一個貫穿整個迴圈的 `seen_image_filenames` 集合（涵蓋頂層圖片 hit 自己的 `image_filename` 與攤平的巢狀圖片）避免同一張圖片經由不同「贏家」被重複塞進 context 兩次。這個設計呼應既有「同段落文字全部合併進 `parent_content`、不論個別分數」的既有邏輯——同段落圖片本來就該同等對待，不需要各自重新過門檻分數（它們本來就沒有獨立的查詢相似度分數，`get_by_parent_id` 只是單純的 scroll，UI 上顯示的 0.75 其實是繼承自贏家的分數，並非自己的分數）。若攤平後總 token 數變大，沿用既有 `ContextSummarizerService`（`docs/DevelopmentProcess/ContextMapReduceSummaryPlan.md`）Map-Reduce 分批摘要機制即可，不需要新增安全機制。
+
+### 14.3 問題三：圖片段落編號顯示「#?」
+
+**根因**：`backend/services/qdrant_service.py` 的 `_group_and_merge_image_siblings()`（1364-1395 行）組出的 `image_chunks` 項目 `metadata` 只有 `filename`／`page`／`chunk_type`／`image_filename` 四個欄位，**從未包含 `chunk_index`**。前端 `frontend/src/components/chat/SourceChunks.vue`（約 174-177 行）渲染「段落: #」時讀的是 `source.metadata.chunk_index`，讀不到就顯示預設值 `'?'`——這是前端行為完全正確、後端漏給欄位的問題。
+
+**修正方向**：`_group_and_merge_image_siblings()` 組成每筆合併結果時，補上 `"chunk_index": first["metadata"].get("parent_chunk_index_range") or first["metadata"].get("chunk_index")`——直接沿用第 11 節既有已經在計算並存進 payload 的 `parent_chunk_index_range`（每張圖片自己切出的片段範圍，例如單片段圖片是 `"5"`、多片段是 `"5~11"`），不需要新增任何計算或欄位，純粹是「漏寫」的補齊。`get_image_siblings()`（呼叫同一個共用方法）自動一併修正。
+
+### 14.4 影響範圍
+
+- `backend/services/embedding_service.py`：只改系統提示詞文字，不動程式邏輯。
+- `backend/routers/rag.py`：`context_parts` 組裝迴圈新增攤平 `image_chunks` 的邏輯；`sources` 陣列組成（`image_chunks` 欄位本身）不需修改，前端顯示邏輯不受影響（頂層 `sources` 清單筆數不變，只是被送進 LLM 的 `context_str` 內容變多）。
+- `backend/services/qdrant_service.py`：`_group_and_merge_image_siblings()` 補一個既有欄位，`get_siblings_and_merge()`／`get_image_siblings()` 呼叫端不需修改。
+- 前端不需修改：`SourceChunks.vue` 讀取 `metadata.chunk_index` 的邏輯已經正確，只是後端一直沒有給值。
+
+### 14.5 驗證方式
+
+1. Prompt 調整後，需要使用者在實際 vLLM/llama.cpp 環境重新測試「跟我說明 GP5.1建立備份營運中心.docx 圖片」這類查詢，確認 `is_fallback` 不再是 `true`，且 `embeddings_input`/`sparse_keywords` 保留「圖片」關鍵字（本地無法端到端驗證 Prompt 對地端 Instruct 模型實際輸出品質的影響，僅能靜態檢視 Prompt 文字修改是否合理）。
+2. `_group_and_merge_image_siblings()` 補上 `chunk_index` 後，比照既有測試手法（mock siblings 資料）驗證回傳的 `metadata.chunk_index` 正確等於來源片段的 `parent_chunk_index_range`。
+3. `rag.py` 的 `context_parts` 攤平邏輯，用 mock `raw_results`（其中一筆帶 `metadata.image_chunks` 有 3 張圖片）驗證：`context_str` 最終包含所有 3 張圖片的描述文字，且同一個 `image_filename` 不會因為被多個頂層結果引用而重複出現兩次。
+4. 使用者待實機驗證：對含多張圖片的同一段落提問，確認 AI 回答中會提及/總結所有相關圖片（不再只總結 1 張），且畫面上的「參考圖片引用」段落編號不再顯示「#?」。
+
+### 14.6 實作結果（2026-07-07）
+
+1. `backend/services/embedding_service.py`：`query_to_semantic_json()` 系統提示詞規則 5 補上「圖片」「圖表」「截圖」「照片」「畫面」「介面」等內容型態詞的排除例外（不屬於要剝除的通用稀釋詞）；新增「範例 4」示範一般文件檔名 + 內容型態限定詞的正確/錯誤輸出對照，直接對齊使用者實測的查詢形狀。僅調整 Prompt 文字，`query_to_semantic_json()` 的重試/解析邏輯與回傳格式完全未變動。
+2. `backend/services/qdrant_service.py`：`_group_and_merge_image_siblings()` 補上 `metadata.chunk_index`，值取自既有已在計算的 `parent_chunk_index_range`（單片段圖片顯示單一數字、多片段圖片顯示範圍如 `"5~7"`），未新增任何欄位或計算，`get_siblings_and_merge()`／`get_image_siblings()` 呼叫端自動一併受益。
+3. `backend/routers/rag.py`：`context_parts` 組裝迴圈新增攤平 `meta.get("image_chunks", [])` 的邏輯，並用貫穿整個迴圈的 `seen_image_filenames` 集合去重（涵蓋頂層圖片 hit 自己的 `image_filename`，避免圖片自己也出現在自己的巢狀清單中被重複攤平；也避免同一張圖片透過不同「贏家」結果被塞入 context 兩次）。`sources` 陣列組成與 `retrieved_summary`（`vector_search` 步驟訊息）未變動，只有實際送進 LLM 的 `context_str` 內容變多。
+4. **驗證方式**：因本地無可用的即時 llama.cpp 服務可驗證 Prompt 對模型輸出品質的實際影響，該部分僅靜態檢視文字修改。`_group_and_merge_image_siblings()`／`context_parts` 攤平邏輯則用獨立 Python 腳本驗證：單片段圖片正確帶出 `chunk_index`；多片段圖片正確帶出共用範圍；同一 `parent_id` 下的不同圖片各自保留自己的 `chunk_index`（不被誤合併，回歸 11 節既有邏輯）；一筆文字結果附帶 9 張同段落圖片時全部 9 張都會攤平進 context；同一張圖片透過兩筆不同「贏家」結果重複出現時只會被計入一次；圖片本身命中時，其巢狀 `image_chunks` 清單中的「自己」不會被重複攤平、但清單中的其他圖片仍會正確攤平。另重跑既有回歸測試 `backend/tests/test_word_chunker.py`、`tests/test_two_step_search.py`，確認未受影響、全數通過。
+5. 前端 `SourceChunks.vue`／`sources` 回傳結構皆未修改，如規劃預期。

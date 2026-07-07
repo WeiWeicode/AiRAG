@@ -1,4 +1,5 @@
 import httpx
+import json
 import logging
 from typing import List, Dict, Any, AsyncGenerator
 from config import settings
@@ -6,6 +7,17 @@ from config import settings
 logger = logging.getLogger("airag.llm")
 
 class LLMService:
+    @staticmethod
+    def _is_repeating_tail(accumulated: str, ngram_size: int = 25, trigger_count: int = 4) -> bool:
+        """
+        偵測累積文字尾端是否不斷重複同一段內容，用來判斷模型是否陷入無限迴圈。
+        RAG 對話串流（routers/rag.py）與圖片描述生成（describe_image）共用同一套判斷邏輯。
+        """
+        if len(accumulated) < ngram_size * trigger_count:
+            return False
+        tail = accumulated[-ngram_size:]
+        return accumulated.count(tail) >= trigger_count
+
     @classmethod
     async def chat_completion(
         cls, 
@@ -124,13 +136,18 @@ class LLMService:
     @classmethod
     async def describe_image(cls, image_bytes: bytes, mime_type: str, context_hint: str = "") -> tuple:
         """
-        呼叫 vLLM 生成圖片的文字描述。
+        呼叫 vLLM 生成圖片的文字描述。改用串流消費，套用與 RAG 對話串流（routers/rag.py）相同的
+        repetition_penalty/frequency_penalty 生成參數，並對思考(reasoning)內容與正式描述內容分別
+        偵測是否陷入無限重複迴圈：
+        - 思考階段偵測到重複（無限思考、遲遲未產生正式內容）：直接拋出例外，呼叫端依既有 caption_failed
+          邏輯處理，不會誤把思考內容當作描述回傳。
+        - 正式描述內容偵測到重複：中斷串流並回傳目前已累積的內容，truncated 標記為 True。
         回傳 (description, truncated)：truncated 為 True 代表 vLLM 因為 max_tokens 上限強制中斷輸出
-        （常見於表格/BOM 等內容複雜的圖片），呼叫端應將此標記出來，不可當作完整描述處理。
+        （常見於表格/BOM 等內容複雜的圖片）或偵測到重複而提前中斷，呼叫端不可當作完整描述處理。
         """
         import base64
         b64_str = base64.b64encode(image_bytes).decode("utf-8")
-        
+
         messages = [
             {
                 "role": "system",
@@ -148,20 +165,61 @@ class LLMService:
                 ]
             }
         ]
+
+        accumulated_content = ""
+        accumulated_reasoning = ""
+        finish_reason = None
         try:
             # 圖片內容複雜（文字/表格多）時，模型生成長度較大的描述可能需要遠超過一般文字對話的時間，
             # 這裡用較長的 timeout（5 分鐘），避免自架 vLLM 在生成大量 token 時被中途判定逾時失敗
-            description, finish_reason = await cls.chat_completion(
-                messages, temperature=0.3, max_tokens=20480, return_finish_reason=True, timeout=300.0
+            stream = await cls.chat_completion(
+                messages, temperature=0.3, max_tokens=20480, timeout=300.0, stream=True,
+                repetition_penalty=settings.DEFAULT_REPETITION_PENALTY,
+                frequency_penalty=settings.DEFAULT_FREQUENCY_PENALTY
             )
-            truncated = finish_reason == "length"
-            if truncated:
-                logger.warning(
-                    f"Image description was truncated by max_tokens (finish_reason=length), "
-                    f"content may be incomplete (context_hint={context_hint!r})"
-                )
-            return description.strip(), truncated
+            async for raw_chunk in stream:
+                try:
+                    chunk_data = json.loads(raw_chunk)
+                except Exception:
+                    continue
+                choices = chunk_data.get("choices", [])
+                if not choices:
+                    continue
+                choice = choices[0]
+                if choice.get("finish_reason"):
+                    finish_reason = choice.get("finish_reason")
+                delta = choice.get("delta", {})
+                content_chunk = delta.get("content") or ""
+                reasoning_chunk = delta.get("reasoning_content") or delta.get("thought") or delta.get("reasoning") or ""
+
+                if reasoning_chunk:
+                    accumulated_reasoning += reasoning_chunk
+                    if cls._is_repeating_tail(accumulated_reasoning):
+                        logger.warning(
+                            f"Detected repeated reasoning loop while describing image, aborting early "
+                            f"(context_hint={context_hint!r})"
+                        )
+                        raise RuntimeError("圖片描述生成偵測到無限思考迴圈，且尚未產生任何有效描述內容")
+
+                if content_chunk:
+                    accumulated_content += content_chunk
+                    if cls._is_repeating_tail(accumulated_content):
+                        logger.warning(
+                            f"Detected repeated generation loop while describing image, aborting early "
+                            f"(context_hint={context_hint!r})"
+                        )
+                        return accumulated_content.strip(), True
+        except RuntimeError:
+            raise
         except Exception as e:
             logger.error(f"Failed to generate description for image: {type(e).__name__}: {e!r}")
             raise e
+
+        truncated = finish_reason == "length"
+        if truncated:
+            logger.warning(
+                f"Image description was truncated by max_tokens (finish_reason=length), "
+                f"content may be incomplete (context_hint={context_hint!r})"
+            )
+        return accumulated_content.strip(), truncated
 

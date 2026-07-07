@@ -1389,7 +1389,10 @@ class QdrantService:
                     "filename": first["metadata"].get("filename"),
                     "page": first["metadata"].get("page"),
                     "chunk_type": "image",
-                    "image_filename": filename
+                    "image_filename": filename,
+                    # 沿用該圖片自己切出的片段範圍（第 11 節既有欄位），供前端顯示段落編號，
+                    # 避免顯示端因為讀不到 chunk_index 而落到預設值 "?"
+                    "chunk_index": first["metadata"].get("parent_chunk_index_range") or first["metadata"].get("chunk_index")
                 }
             })
         return merged_chunks

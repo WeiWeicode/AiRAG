@@ -428,6 +428,10 @@ async def rag_chat_stream(request: ChatRequest):
                     # 整理 Chunks 為 Context
                     context_parts = []
                     retrieved_summary = []
+                    # 同段落可能有多張圖片，parent_id 去重時只有一筆會留在 raw_results，其餘會附掛在
+                    # 該筆結果的 metadata.image_chunks 中（原本只用來給前端顯示縮圖清單）。這裡用同一個
+                    # 集合追蹤已經送進 context 的 image_filename，避免同張圖片因為被多筆結果引用而重複塞入。
+                    seen_image_filenames = set()
                     for idx, item in enumerate(raw_results):
                         meta = item.get("metadata", {})
                         sources.append({
@@ -452,7 +456,24 @@ async def rag_chat_stream(request: ChatRequest):
                         chunk_idx = meta.get("chunk_index")
                         chunk_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
                         context_parts.append(f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{item.get('content', '')}")
-                        
+                        if meta.get("chunk_type") == "image" and meta.get("image_filename"):
+                            seen_image_filenames.add(meta.get("image_filename"))
+
+                        # 攤平同段落的其他圖片描述併入 context，否則這些圖片只會出現在前端縮圖清單，
+                        # 從未真正送進 LLM 的 context，導致 AI 只看得到 parent_id 去重後倖存的那一張圖
+                        for img_chunk in meta.get("image_chunks", []):
+                            img_filename = img_chunk.get("metadata", {}).get("image_filename")
+                            if not img_filename or img_filename in seen_image_filenames:
+                                continue
+                            seen_image_filenames.add(img_filename)
+                            img_meta = img_chunk.get("metadata", {})
+                            img_chunk_idx = img_meta.get("chunk_index")
+                            img_chunk_idx_str = f"#{img_chunk_idx}" if img_chunk_idx is not None else "?"
+                            context_parts.append(
+                                f"【來源文件：{img_meta.get('filename') or meta.get('filename', '未知')} | 段落編號：{img_chunk_idx_str}（圖片描述）】\n"
+                                f"內容：{img_chunk.get('content', '')}"
+                            )
+
                         score_label = "RRF Score" if search_type in ["hybrid", "semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment"] else "Score"
                         retrieved_summary.append(f"[{idx+1}] 來源文件：{meta.get('filename', '未知')} | P.{meta.get('page', '?')} | {score_label}: {item.get('score', 0.0):.4f}\\n內容預覽：{item.get('content', '')[:100]}...")
 
@@ -607,9 +628,8 @@ async def rag_chat_stream(request: ChatRequest):
         )
 
         # 重複輸出偵測：即使 repetition_penalty 未能完全避免，也要能主動中斷無限迴圈
+        # （判斷邏輯與 LLMService.describe_image() 共用同一個 _is_repeating_tail()）
         accumulated_content = ""
-        repeat_ngram_size = 25
-        repeat_trigger_count = 4
 
         async for raw_chunk in vllm_stream:
             try:
@@ -625,13 +645,11 @@ async def rag_chat_stream(request: ChatRequest):
                         yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': content_chunk}, ensure_ascii=False)}\n\n"
 
                         accumulated_content += content_chunk
-                        if len(accumulated_content) >= repeat_ngram_size * repeat_trigger_count:
-                            tail = accumulated_content[-repeat_ngram_size:]
-                            if accumulated_content.count(tail) >= repeat_trigger_count:
-                                logger.warning("Detected repeated generation loop, aborting stream early.")
-                                warning_msg = "\n\n[系統提示] 偵測到模型重複輸出相同內容，已自動中斷生成。"
-                                yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': warning_msg}, ensure_ascii=False)}\n\n"
-                                break
+                        if LLMService._is_repeating_tail(accumulated_content):
+                            logger.warning("Detected repeated generation loop, aborting stream early.")
+                            warning_msg = "\n\n[系統提示] 偵測到模型重複輸出相同內容，已自動中斷生成。"
+                            yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': warning_msg}, ensure_ascii=False)}\n\n"
+                            break
             except Exception as parse_e:
                 logger.error(f"Error parsing SSE chunk: {raw_chunk}, error: {parse_e}")
     except Exception as llm_e:

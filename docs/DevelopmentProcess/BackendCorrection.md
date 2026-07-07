@@ -1,5 +1,42 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-07-07 修正圖片查詢語義解析降級、同段落多張圖片未進入 AI 摘要、段落編號顯示 #?
+
+### 問題描述
+使用者提問「跟我說明 GP5.1建立備份營運中心.docx 圖片」後回報三個相關問題：
+1. 「地端 AI 語義密集嵌入」輸出 `is_fallback: true`，`embeddings_input`／`sparse_keywords` 直接退化成原始問句，完全沒理解查詢意圖。
+2. 畫面「參考圖片引用」列出約 9 筆同一份文件、相似度皆 0.75 的圖片，但 AI 結論只總結了其中 1 張。
+3. 這 9 筆圖片的段落編號都顯示「#?」而非實際數字。
+
+詳細規劃見 `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 14 節。
+
+### 修改內容
+1. `backend/services/embedding_service.py`：`query_to_semantic_json()` 系統提示詞的「避免檢索詞語意稀釋」規則（原本會積極剝除「說明」「用途」等通用詞，範例又清一色是程式碼查詢情境）補上例外——「圖片」「圖表」「截圖」「照片」「畫面」「介面」等內容型態詞不屬於要剝除的通用詞，必須保留；新增第 4 個 Few-Shot 範例，直接示範使用者實測的查詢形狀（一般文件檔名 + 內容型態限定詞）的正確/錯誤輸出對照。純 Prompt 文字調整，不動程式邏輯。
+2. `backend/services/qdrant_service.py`：`_group_and_merge_image_siblings()` 補上 `metadata.chunk_index`（取自既有已在計算的 `parent_chunk_index_range`），修正前端讀不到欄位、顯示「#?」的問題。
+3. `backend/routers/rag.py`：`context_parts` 組裝迴圈新增攤平每筆結果 `metadata.image_chunks`（同段落其餘圖片，原本因 `parent_id` 去重只留一筆頂層結果，其餘圖片只掛在該筆結果的 metadata 供前端顯示，從未真正送進 LLM context）併入 `context_str`，並用貫穿迴圈的 `seen_image_filenames` 集合避免同一張圖片重複塞入。
+
+### 驗證
+本地無可用即時 llama.cpp 服務驗證 Prompt 對模型輸出品質的實際影響，該部分僅靜態檢視文字修改合理性。`_group_and_merge_image_siblings()`／`context_parts` 攤平邏輯改用獨立 Python 腳本驗證：單/多片段圖片正確帶出 `chunk_index`；不同圖片共用 `parent_id` 時不會被誤合併；一筆結果附帶 9 張圖片時全部攤平進 context；同一張圖片經由不同贏家重複出現時只計入一次；圖片自己命中時巢狀清單中的「自己」正確跳過、其他圖片仍正確攤平。另重跑既有回歸測試 `backend/tests/test_word_chunker.py`、`tests/test_two_step_search.py`，確認未受影響、全數通過。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 14 節。
+
+## 2026-07-07 圖片描述生成套用「重複輸出／無限思考」偵測與中斷
+
+### 問題描述
+使用者提出：圖片解析（`LLMService.describe_image()` 呼叫 vLLM 生成描述）時，若模型陷入「無限思考」（具推理能力的 Qwen3.6-35B-A3B-FP8 在 reasoning/thinking 階段不斷迴圈、遲遲不產生正式內容）或「輸出重複」（不斷重複同一段文字），現行程式碼完全沒有防備——`describe_image()` 是非串流呼叫，且未套用專案在 2026-07-03 已針對 RAG 對話實作過的 `repetition_penalty`/`frequency_penalty` 生成參數與串流層 n-gram 重複偵測（`backend/routers/rag.py` 原 609-634 行），必須等到撞滿 `max_tokens=20480` 或 300 秒 timeout 才會結束，且既有的重複偵測機制也只檢查正式輸出內容，未涵蓋思考內容的重複迴圈。詳細規劃見 `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 13 節。
+
+### 修改內容
+1. `backend/services/llm_service.py`：新增共用 staticmethod `_is_repeating_tail()`（把 `rag.py` 原本內嵌的 n-gram 重複判斷式抽出來，門檻數值不變：最近 25 字在累積內容中出現達 4 次視為重複迴圈）。`describe_image()` 改為串流呼叫 `chat_completion(..., stream=True, repetition_penalty=settings.DEFAULT_REPETITION_PENALTY, frequency_penalty=settings.DEFAULT_FREQUENCY_PENALTY)`，邊消費串流邊分別累積思考內容（`reasoning_content`/`thought`/`reasoning`）與正式內容（`content`），各自套用 `_is_repeating_tail()`：思考內容觸發重複時直接 `raise RuntimeError`（此時必然尚無任何正式描述，交由既有呼叫端的 `try/except` 依現有邏輯標記 `caption_failed=True`）；正式內容觸發重複時提前中斷串流，回傳已累積的部分內容並標記 `truncated=True`（沿用既有 `caption_truncated` 語意）。
+2. `backend/routers/rag.py`：既有的串流重複偵測內嵌判斷式改為呼叫 `LLMService._is_repeating_tail(accumulated_content)`，移除重複維護的門檻數值變數，行為完全不變（零風險重構，避免同一組 magic number 在兩處分別維護）。
+3. `backend/routers/embedding.py`／`schemas/embedding.py`／前端皆未修改：`describe_image()` 對外仍是「回傳 `(description, truncated)`」或「拋出例外」兩種既有型態，既有的 `caption_failed`/`caption_truncated` 處理與顯示邏輯直接適用。
+
+### 驗證
+本地無可觸發真實無限迴圈的 vLLM 服務，改用獨立 Python 腳本 mock `LLMService.chat_completion` 回傳的串流生成器驗證：正常情境完整回傳且 `truncated=False`（回歸）；`finish_reason=="length"` 情境 `truncated=True`（回歸）；`reasoning_content` 重複觸發 `RuntimeError`；`content` 重複時回傳已累積的部分內容並提前中斷串流（實測只消費 6/20 個模擬 chunk，證明有提前中斷）；`_is_repeating_tail()` 獨立字串判斷案例皆正確。另重跑既有回歸測試 `backend/tests/test_word_chunker.py`、`tests/test_two_step_search.py`，確認未受影響、全數通過。
+
+### 對應規劃文件
+`docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 13 節。
+
 ## 2026-07-07 實作 Qdrant 向量刪除時同步清理孤立本地圖片實體檔案
 
 ### 問題描述
