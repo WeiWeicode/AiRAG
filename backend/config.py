@@ -54,6 +54,8 @@ class Settings:
     # 語義混合附件查詢法附件存放目錄
     FILE_ATTACHMENTS_DIR: str = os.getenv("FILE_ATTACHMENTS_DIR", "FileAttachments")
     FILE_ATTACHMENTS_IMAGE_SUBDIR: str = os.getenv("FILE_ATTACHMENTS_IMAGE_SUBDIR", "image")
+    # 圖片描述並行處理的併發數量上限（同時最多幾張圖片一起送給 vLLM 做多模態描述）
+    IMAGE_CAPTION_CONCURRENCY: int = int(os.getenv("IMAGE_CAPTION_CONCURRENCY", "3"))
 
     # 語義資料庫查詢法 (Semantic DB Query)
     AI_DB_QUERY_MAX_ROWS: int = int(os.getenv("AI_DB_QUERY_MAX_ROWS", "50"))

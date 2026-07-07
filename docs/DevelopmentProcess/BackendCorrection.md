@@ -1,5 +1,23 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-07-07 實作 Qdrant 向量刪除時同步清理孤立本地圖片實體檔案
+
+### 問題描述
+圖片內嵌向量化功能會將辨識後的描述寫入 Qdrant，並將圖片實體檔案另存於 `backend/FileAttachments/image/` 下。但「已向量化資料管理」現有的刪除點位與整批刪除檔案 API 僅會刪除 Qdrant 裡的點位，不會清理本地磁碟上的圖片檔案，導致圖片檔案無限累積。
+
+### 修改內容
+1. `backend/services/qdrant_service.py` (修改)：
+   - `delete_points()`：刪除前呼叫 `client.retrieve()` 提取 payload，過濾出 `image_filename`。刪除後呼叫 `_cleanup_orphaned_image_files()`。
+   - `delete_by_filename()`：將既有 scroll 查詢點位的 `with_payload` 設為 `True`，刪除前提取 `image_filename`，刪除後呼叫 `_cleanup_orphaned_image_files()`。
+   - `_get_image_filenames_from_payloads()` (新設)：從 payload 提取 `chunk_type == "image"` 的 `image_filename`。
+   - `_cleanup_orphaned_image_files()` (新設)：對檔名使用 `client.scroll()` 進行最後引用檢查，無其他點位引用時，進行路徑穿越防護檢查後刪除本地磁碟實體。單一檔案例外僅記錄 warning，不中斷其他處理。
+2. `tests/test_image_cleanup_on_delete.py` (新設)：
+   - 撰寫單元測試覆蓋 `delete_points()` 與 `delete_by_filename()` 在「圖片孤立（刪除實體）」、「圖片仍被引用（不刪除）」、「純文字點位（無檔案操作）」等情境的邏輯，且不影響回傳型別與其餘呼叫端。
+
+### 驗證
+- 執行 `backend\.venv\Scripts\python.exe -m unittest tests/test_image_cleanup_on_delete.py` 測試通過（5/5 測項 OK）。
+- 執行 `backend\.venv\Scripts\python.exe -m unittest discover tests` 確保無任何回歸問題（11/11 測項 OK）。
+
 ## 2026-07-06 程式碼複查：修正附件功能中低風險問題（`created_at` 預設值、`download_url` 缺漏、`retrieval.py` 兩階段判斷式、API/DB 文件同步）
 
 ### 問題描述

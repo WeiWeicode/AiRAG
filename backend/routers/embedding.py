@@ -23,6 +23,56 @@ from utils.security import get_current_user
 logger = logging.getLogger("airag.embedding_router")
 router = APIRouter(prefix="/embedding", tags=["Embedding"], dependencies=[Depends(get_current_user)])
 
+
+def _build_image_chunk_items(images: List[ExtractedImageItem], filename: str, params, start_index: int) -> List[ChunkItem]:
+    """
+    把擷取到的圖片描述轉成 ChunkItem 清單。描述過長時比照一般文字用 ChunkingService.split_text()
+    切成多個片段，同一張圖片切出的所有片段共用同一個 parent_id（Word/Markdown 沿用跟旁邊文字相同的
+    parent_id；其餘情況給每張圖片自己的合成 parent_id，用圖片自身序號 img_idx 而非片段序號，
+    確保同一張圖的多個片段能共用同一個 parent_id），供檢索時依 image_filename 重組回完整描述。
+    """
+    items = []
+    idx = start_index
+    for img_idx, img_item in enumerate(images):
+        p_id = img_item.parent_id or f"{filename or 'unknown'}_img_fallback_{img_idx}"
+        pieces = ChunkingService.split_text(
+            text=img_item.description,
+            chunk_size=params.chunk_size,
+            chunk_overlap=params.chunk_overlap,
+            separator=params.separator
+        )
+        if not pieces:
+            pieces = [{
+                "content": img_item.description,
+                "token_count": ChunkingService.estimate_tokens(img_item.description),
+                "char_count": len(img_item.description)
+            }]
+
+        piece_start = idx
+        for piece in pieces:
+            items.append(ChunkItem(
+                index=idx,
+                content=piece["content"],
+                token_count=piece["token_count"],
+                char_count=piece["char_count"],
+                start_char=0,
+                end_char=piece["char_count"],
+                metadata={
+                    "chunk_type": "image",
+                    "image_filename": img_item.image_filename,
+                    "page": img_item.page or 1,
+                    "filename": filename or "unknown",
+                    "parent_id": p_id
+                }
+            ))
+            idx += 1
+
+        img_range = f"{piece_start}~{idx - 1}" if idx - piece_start > 1 else str(piece_start)
+        for item in items[-(idx - piece_start):]:
+            item.metadata["parent_chunk_index_range"] = img_range
+
+    return items
+
 @router.post("/upload", response_model=UploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
@@ -43,35 +93,40 @@ async def upload_document(
         if extract_images and ext in ["pdf", "docx", "dotx"]:
             # Create directory if not exists
             import os
+            import asyncio
             from config import settings
             image_dir = os.path.join(settings.FILE_ATTACHMENTS_DIR, settings.FILE_ATTACHMENTS_IMAGE_SUBDIR)
             os.makedirs(image_dir, exist_ok=True)
-            
+
             raw_images = []
             if ext == "pdf":
                 raw_images = DocumentParser.extract_images_from_pdf(content_bytes)
             elif ext in ["docx", "dotx"]:
                 raw_images = DocumentParser.extract_images_from_docx(content_bytes)
-                
+
             from services.llm_service import LLMService
             from services.markdown_parent_child_chunker import generate_parent_id
-            
-            for raw_img in raw_images:
+
+            # 併發處理多張圖片的描述生成（比照 EmbeddingService.get_embeddings_batch 的
+            # semaphore + gather 寫法），限制同時打給 vLLM 的請求數，避免一次送出過多多模態請求
+            caption_semaphore = asyncio.Semaphore(settings.IMAGE_CAPTION_CONCURRENCY)
+
+            async def process_one_image(raw_img: dict) -> ExtractedImageItem:
                 img_bytes = raw_img["image_bytes"]
                 img_ext = raw_img["ext"]
-                
+
                 # Create unique filename
                 stored_filename = f"{uuid.uuid4().hex}.{img_ext}"
                 target_path = os.path.join(image_dir, stored_filename)
-                
+
                 # Determine mime type
                 mime_type = f"image/{img_ext}" if img_ext != "jpg" else "image/jpeg"
-                
+
                 # Context hint
                 context_hint = ""
                 page_val = None
                 parent_id_val = None
-                
+
                 if ext == "pdf":
                     page_val = raw_img["page_number"]
                     context_hint = f"第 {page_val} 頁"
@@ -81,16 +136,17 @@ async def upload_document(
                         header_vals = [header_path[k] for k in sorted(header_path.keys())]
                         context_hint = " > ".join(header_vals)
                         parent_id_val = generate_parent_id(file.filename, header_path)
-                        
+
                 caption_failed = False
                 caption_truncated = False
                 description = ""
                 try:
-                    description, caption_truncated = await LLMService.describe_image(
-                        image_bytes=img_bytes,
-                        mime_type=mime_type,
-                        context_hint=context_hint
-                    )
+                    async with caption_semaphore:
+                        description, caption_truncated = await LLMService.describe_image(
+                            image_bytes=img_bytes,
+                            mime_type=mime_type,
+                            context_hint=context_hint
+                        )
                 except Exception as ex:
                     # 逾時等例外字串化常為空字串，補上例外類別名稱與 repr 才看得出真正原因
                     logger.error(
@@ -99,19 +155,23 @@ async def upload_document(
                     caption_failed = True
                     description = f"[圖片描述產生失敗：{file.filename}_img{raw_img['image_index']}]"
 
-                # Write to disk
+                # Write to disk（不論描述是否成功都照樣落地存檔，供下載/顯示使用）
                 with open(target_path, "wb") as f_out:
                     f_out.write(img_bytes)
 
-                extracted_images.append(ExtractedImageItem(
+                return ExtractedImageItem(
                     image_filename=stored_filename,
                     description=description,
                     page=page_val,
                     parent_id=parent_id_val,
                     caption_failed=caption_failed,
                     caption_truncated=caption_truncated
-                ))
-                
+                )
+
+            # 一次送出所有圖片的處理任務，由 semaphore 控制實際同時進行的數量（預設 3 張）；
+            # asyncio.gather 保證回傳順序與 raw_images 一致，不影響後續 image_index 的指派
+            extracted_images = list(await asyncio.gather(*[process_one_image(img) for img in raw_images]))
+
         return UploadResponse(
             file_id=file_id,
             filename=file.filename,
@@ -247,30 +307,12 @@ async def chunk_text(request: ChunkRequest):
             
             # Append image chunks if present
             if request.images:
-                start_index = len(all_children)
-                for idx_offset, img_item in enumerate(request.images):
-                    chunk_idx = start_index + idx_offset
-                    p_id = img_item.parent_id
-                    if not p_id and (is_word or is_md):
-                        p_id = f"{request.filename or 'unknown'}_img_fallback_{chunk_idx}"
-                    meta = {
-                        "chunk_type": "image",
-                        "image_filename": img_item.image_filename,
-                        "page": img_item.page or 1,
-                        "parent_chunk_index_range": str(chunk_idx),
-                        "filename": request.filename or "unknown"
-                    }
-                    if p_id:
-                        meta["parent_id"] = p_id
-                    all_children.append(ChunkItem(
-                        index=chunk_idx,
-                        content=img_item.description,
-                        token_count=ChunkingService.estimate_tokens(img_item.description),
-                        char_count=len(img_item.description),
-                        start_char=0,
-                        end_char=len(img_item.description),
-                        metadata=meta
-                    ))
+                all_children.extend(_build_image_chunk_items(
+                    images=request.images,
+                    filename=request.filename,
+                    params=request.params,
+                    start_index=len(all_children)
+                ))
 
             avg_tokens = int(sum(c.token_count for c in all_children) / len(all_children)) if all_children else 0
             return ChunkResponse(
@@ -293,26 +335,13 @@ async def chunk_text(request: ChunkRequest):
             
         # Append image chunks if present
         if request.images:
-            start_index = len(items)
-            for idx_offset, img_item in enumerate(request.images):
-                chunk_idx = start_index + idx_offset
-                meta = {
-                    "chunk_type": "image",
-                    "image_filename": img_item.image_filename,
-                    "page": img_item.page or 1,
-                    "parent_chunk_index_range": str(chunk_idx),
-                    "filename": request.filename or "unknown"
-                }
-                items.append(ChunkItem(
-                    index=chunk_idx,
-                    content=img_item.description,
-                    token_count=ChunkingService.estimate_tokens(img_item.description),
-                    char_count=len(img_item.description),
-                    start_char=0,
-                    end_char=len(img_item.description),
-                    metadata=meta
-                ))
-            
+            items.extend(_build_image_chunk_items(
+                images=request.images,
+                filename=request.filename,
+                params=request.params,
+                start_index=len(items)
+            ))
+
         avg_tokens = int(sum(c.token_count for c in items) / len(items)) if items else 0
         
         return ChunkResponse(

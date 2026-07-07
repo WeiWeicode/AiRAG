@@ -1,7 +1,7 @@
 import logging
 import time
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from qdrant_client import AsyncQdrantClient, models
 from config import settings
 
@@ -487,19 +487,25 @@ class QdrantService:
                         # 為取得同 parent_id 下的圖片，只需要撈取圖片型兄弟節點，不需要重複執行文字合併運算
                         image_chunks = await cls.get_image_siblings(collection_name, parent_id)
 
-                    # 圖片 chunk 本身被命中時，保留自己的圖片描述內容，不能被同段落純文字合併結果覆蓋
-                    # （get_siblings_and_merge 回傳的 parent_content 已排除圖片自己的內容，只含文字兄弟節點）
-                    if parent_content and not is_image_chunk:
-                        item["content"] = parent_content
-                    if parent_range:
-                        item["metadata"]["chunk_index"] = parent_range
                     if is_image_chunk:
-                        # 圖片自己不需要出現在自己的「同段落圖片」清單中
+                        # 圖片 chunk 本身被命中時：圖片描述若因過長被切成多個片段，命中的可能只是其中一段，
+                        # 換成同一張圖片重組後的完整描述，而不是只顯示命中的那一小段
                         self_image_filename = meta.get("image_filename")
+                        self_entry = next(
+                            (ic for ic in image_chunks if ic.get("metadata", {}).get("image_filename") == self_image_filename),
+                            None
+                        )
+                        if self_entry:
+                            item["content"] = self_entry["content"]
+                        # 圖片自己不需要出現在自己的「同段落圖片」清單中
                         image_chunks = [
                             ic for ic in image_chunks
                             if ic.get("metadata", {}).get("image_filename") != self_image_filename
                         ]
+                    elif parent_content:
+                        item["content"] = parent_content
+                    if parent_range:
+                        item["metadata"]["chunk_index"] = parent_range
                     item["metadata"]["image_chunks"] = image_chunks
 
                 final_results.append(item)
@@ -739,17 +745,23 @@ class QdrantService:
                                 )
                             # 為取得同 parent_id 下的圖片，只需要撈取圖片型兄弟節點，不需要重複執行文字合併運算
                             image_chunks = await cls.get_image_siblings(collection_name, parent_id)
-                        # 圖片 chunk 本身被命中時，保留自己的圖片描述內容，不能被同段落純文字合併結果覆蓋
-                        if parent_content and not is_image_chunk:
-                            item["content"] = parent_content
-                        if parent_range:
-                            item["metadata"]["chunk_index"] = parent_range
                         if is_image_chunk:
+                            # 圖片 chunk 本身被命中時，換成同一張圖片重組後的完整描述，而非命中的單一片段
                             self_image_filename = meta.get("image_filename")
+                            self_entry = next(
+                                (ic for ic in image_chunks if ic.get("metadata", {}).get("image_filename") == self_image_filename),
+                                None
+                            )
+                            if self_entry:
+                                item["content"] = self_entry["content"]
                             image_chunks = [
                                 ic for ic in image_chunks
                                 if ic.get("metadata", {}).get("image_filename") != self_image_filename
                             ]
+                        elif parent_content:
+                            item["content"] = parent_content
+                        if parent_range:
+                            item["metadata"]["chunk_index"] = parent_range
                         item["metadata"]["image_chunks"] = image_chunks
                     final_neighbors.append(item)
             else:
@@ -903,6 +915,21 @@ class QdrantService:
         """
         client = cls.get_client()
         try:
+            # 1. 刪除前先取得即將被刪除的 points 的 payload
+            image_filenames = set()
+            try:
+                records = await client.retrieve(
+                    collection_name=collection_name,
+                    ids=point_ids,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                payloads = [r.payload for r in records if r.payload is not None]
+                image_filenames = cls._get_image_filenames_from_payloads(payloads)
+            except Exception as pe:
+                logger.warning(f"Failed to retrieve payloads before deleting points: {pe}")
+
+            # 2. 執行刪除
             await client.delete(
                 collection_name=collection_name,
                 points_selector=models.PointIdsList(
@@ -910,6 +937,11 @@ class QdrantService:
                 )
             )
             logger.info(f"Successfully deleted {len(point_ids)} points from collection '{collection_name}'.")
+
+            # 3. 刪除成功後，清理孤立圖片檔案
+            if image_filenames:
+                await cls._cleanup_orphaned_image_files(collection_name, image_filenames)
+
             return True
         except Exception as e:
             logger.error(f"Failed to delete points from collection '{collection_name}': {e}")
@@ -922,7 +954,7 @@ class QdrantService:
         """
         client = cls.get_client()
         try:
-            # 1. 先 Scroll 獲取該 filename 的所有點以計算數量，並取得 ID 進行刪除
+            # 1. 先 Scroll 獲取該 filename 的所有點以計算數量，並取得 ID 進行刪除，同時獲取 payload
             scroll_result = await client.scroll(
                 collection_name=collection_name,
                 scroll_filter=models.Filter(
@@ -934,23 +966,94 @@ class QdrantService:
                     ]
                 ),
                 limit=10000,  # 預期單個檔案的 Chunks 不會超過 10000
-                with_payload=False,
+                with_payload=True,
                 with_vectors=False
             )
             points = scroll_result[0]
             count = len(points)
             
             if count > 0:
+                payloads = [p.payload for p in points if p.payload is not None]
+                image_filenames = cls._get_image_filenames_from_payloads(payloads)
+                
                 point_ids = [p.id for p in points]
                 await client.delete(
                     collection_name=collection_name,
                     points_selector=models.PointIdsList(points=point_ids)
                 )
                 logger.info(f"Successfully deleted {count} points for filename '{filename}' from collection '{collection_name}'.")
+
+                # 2. 刪除成功後，清理孤立圖片檔案
+                if image_filenames:
+                    await cls._cleanup_orphaned_image_files(collection_name, image_filenames)
             return count
         except Exception as e:
             logger.error(f"Failed to delete points by filename '{filename}' from collection '{collection_name}': {e}")
             raise e
+
+    @staticmethod
+    def _get_image_filenames_from_payloads(payloads: List[dict]) -> Set[str]:
+        """
+        從一批 payload 中挑出圖片 chunk 的 image_filename，回傳去重集合。
+        """
+        image_filenames = set()
+        for payload in payloads:
+            if payload and payload.get("chunk_type") == "image":
+                img_fn = payload.get("image_filename")
+                if img_fn:
+                    image_filenames.add(img_fn)
+        return image_filenames
+
+    @classmethod
+    async def _cleanup_orphaned_image_files(cls, collection_name: str, image_filenames: Set[str]) -> None:
+        """
+        對每個檔名做「是否仍被引用」的 Qdrant 查詢，沒有才刪除實體檔案，單一檔案例外不中斷其餘檔案的清理。
+        """
+        import os
+        from config import settings
+        
+        if not image_filenames:
+            return
+            
+        client = cls.get_client()
+        image_dir = os.path.abspath(os.path.join(settings.FILE_ATTACHMENTS_DIR, settings.FILE_ATTACHMENTS_IMAGE_SUBDIR))
+        
+        for filename in image_filenames:
+            try:
+                # 用 client.scroll() 確認是否還有其他 point 仍引用這個檔名
+                scroll_result = await client.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="image_filename",
+                                match=models.MatchValue(value=filename)
+                            )
+                        ]
+                    ),
+                    limit=1,
+                    with_payload=False,
+                    with_vectors=False
+                )
+                remaining_points = scroll_result[0]
+                if not remaining_points:
+                    # 沒有其他 point 引用了，比照 embedding.py 進行路徑安全驗證並刪除
+                    file_path = os.path.abspath(os.path.join(image_dir, filename))
+                    # Check directory traversal
+                    if not file_path.startswith(image_dir + os.sep) and file_path != image_dir:
+                        logger.warning(f"Path traversal detected and blocked for image file: {filename}")
+                        continue
+                        
+                    if os.path.exists(file_path) and os.path.isfile(file_path):
+                        os.remove(file_path)
+                        logger.info(f"Successfully deleted orphaned image file: {filename}")
+                    else:
+                        logger.warning(f"Orphaned image file not found on disk: {filename}")
+                else:
+                    logger.info(f"Image file {filename} is still referenced by {len(remaining_points)}+ points. Skipping deletion.")
+            except Exception as e:
+                # 檔案刪除是 best-effort，單一檔案例外不影響其他檔案
+                logger.warning(f"Failed to cleanup image file '{filename}': {e}")
 
     @classmethod
     async def update_links_to_by_filename(cls, collection_name: str, filename: str, links_to: List[str]) -> int:
@@ -1236,27 +1339,71 @@ class QdrantService:
                 return content[idx + len(marker):]
         return content
 
+    @staticmethod
+    def _merge_overlap_texts(pieces: list) -> str:
+        """
+        依序把多段文字去重拼接（解決切分時 overlap 造成的重複文字問題）。
+        文字段落合併與圖片描述片段合併共用同一套邏輯。
+        """
+        if not pieces:
+            return ""
+
+        def merge_two_strings_with_overlap(s1: str, s2: str) -> str:
+            max_overlap = min(len(s1), len(s2), 200)
+            for i in range(max_overlap, 4, -1):
+                if s1[-i:] == s2[:i]:
+                    return s1 + s2[i:]
+            return s1 + "\n" + s2
+
+        merged = pieces[0]
+        for next_piece in pieces[1:]:
+            merged = merge_two_strings_with_overlap(merged, next_piece)
+        return merged
+
+    @classmethod
+    def _group_and_merge_image_siblings(cls, image_siblings: list) -> list:
+        """
+        圖片描述若因過長被切成多個片段，同一張圖片的所有片段會共用同一個 parent_id，
+        依 image_filename 分組、組內依 chunk_index 排序後合併回完整描述，
+        確保每個 image_filename 只對應一筆內容完整的 image_chunks 項目
+        （前端與檢索端的自我排除邏輯皆假設一個 image_filename = 一筆完整內容）。
+        """
+        groups: dict = {}
+        order: list = []
+        for sib in image_siblings:
+            filename = sib["metadata"].get("image_filename")
+            if filename not in groups:
+                groups[filename] = []
+                order.append(filename)
+            groups[filename].append(sib)
+
+        merged_chunks = []
+        for filename in order:
+            group = sorted(groups[filename], key=lambda s: s["metadata"].get("chunk_index") or 0)
+            pieces = [cls._strip_structured_content_prefix(sib.get("content") or "") for sib in group]
+            first = group[0]
+            merged_chunks.append({
+                "chunk_id": first.get("chunk_id"),
+                "content": cls._merge_overlap_texts(pieces),
+                "metadata": {
+                    "filename": first["metadata"].get("filename"),
+                    "page": first["metadata"].get("page"),
+                    "chunk_type": "image",
+                    "image_filename": filename
+                }
+            })
+        return merged_chunks
+
     @classmethod
     async def get_image_siblings(cls, collection_name: str, parent_id: str) -> list:
         """
-        只取得同一個 parent_id 下的圖片型兄弟節點（不執行文字去重合併運算）。
+        只取得同一個 parent_id 下的圖片型兄弟節點並依 image_filename 重組（不執行文字去重合併運算）。
         供已有快取 parent_content、只需要補上 image_chunks 顯示用途的情境使用，
         避免重複跑一次 get_siblings_and_merge() 的完整文字合併計算。
         """
         siblings = await cls.get_by_parent_id(collection_name, parent_id)
-        return [
-            {
-                "chunk_id": sib.get("chunk_id"),
-                "content": cls._strip_structured_content_prefix(sib.get("content") or ""),
-                "metadata": {
-                    "filename": sib["metadata"].get("filename"),
-                    "page": sib["metadata"].get("page"),
-                    "chunk_type": "image",
-                    "image_filename": sib["metadata"].get("image_filename")
-                }
-            }
-            for sib in siblings if sib["metadata"].get("chunk_type") == "image"
-        ]
+        image_siblings = [sib for sib in siblings if sib["metadata"].get("chunk_type") == "image"]
+        return cls._group_and_merge_image_siblings(image_siblings)
 
     @classmethod
     async def get_siblings_and_merge(cls, collection_name: str, parent_id: str, orig_content: str, metadata: dict) -> tuple:
@@ -1271,21 +1418,10 @@ class QdrantService:
         text_siblings = [sib for sib in siblings if sib["metadata"].get("chunk_type") != "image"]
         image_siblings = [sib for sib in siblings if sib["metadata"].get("chunk_type") == "image"]
 
-        # 收集圖片資訊（content 一併去除結構化樣板前綴，與文字兄弟節點使用同一套清洗邏輯，
+        # 收集圖片資訊：同一張圖片若因過長被切成多個片段，依 image_filename 分組重組回完整描述
+        # （content 一併去除結構化樣板前綴，與文字兄弟節點使用同一套清洗邏輯，
         # 避免啟用「結構化 Prompt 強化」時圖片描述預覽多出重複的檔名/段落編號/標籤樣板文字）
-        image_chunks = [
-            {
-                "chunk_id": sib.get("chunk_id"),
-                "content": cls._strip_structured_content_prefix(sib.get("content") or ""),
-                "metadata": {
-                    "filename": sib["metadata"].get("filename"),
-                    "page": sib["metadata"].get("page"),
-                    "chunk_type": "image",
-                    "image_filename": sib["metadata"].get("image_filename")
-                }
-            }
-            for sib in image_siblings
-        ]
+        image_chunks = cls._group_and_merge_image_siblings(image_siblings)
 
         if not text_siblings:
             return orig_content, str(metadata.get("chunk_index") or ""), image_chunks

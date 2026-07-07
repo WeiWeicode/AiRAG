@@ -1,4 +1,59 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
+## 2026-07-07 刪除向量資料時一併清除本地圖片檔案
+
+### 功能描述
+當在「已向量化資料管理」頁面進行單筆/多選段落刪除，或整批刪除某檔案時，系統會自動清理落地存放在 `backend/FileAttachments/image/` 目錄下的實體圖片檔案。為了避免在「圖片描述過長切分」情境下，誤刪仍被同一圖片其他片段引用的實體檔案，實作了「最後引用檢查」機制——僅在 Qdrant 中已無任何 point 引用該圖片檔案時，才真正執行實體檔案刪除。
+
+### 實作內容
+1. `backend/services/qdrant_service.py`：
+   - 新增 `_get_image_filenames_from_payloads()` 靜態方法，從批次點位的 payload 中過濾提取所有 chunk_type 為 "image" 的 `image_filename` 並進行去重。
+   - 新增 `_cleanup_orphaned_image_files()` 類別方法，接受待清理的圖片檔名集合，對每個檔名在 Qdrant 中執行一次 scroll 查詢，確認是否仍有剩餘的點引用此檔名。若無引用，比照 `embedding.py` 的路徑安全驗證（防止路徑穿越），確認路徑安全後，以 `os.remove` 刪除本地實體檔案。
+   - 修改 `delete_points()`：在呼叫 `client.delete()` 前，先使用 `client.retrieve(..., with_payload=True)` 撈取即將被刪除點位的 payload，萃取出所有關聯的 `image_filename`。Qdrant 點位刪除成功後，呼叫 `_cleanup_orphaned_image_files()` 執行實體清理。
+   - 修改 `delete_by_filename()`：將原本 scroll 撈取點位時的 `with_payload=False` 改為 `with_payload=True`，在 `delete` 之前萃取出所有 `image_filename`，於 Qdrant 點位刪除成功後同樣呼叫 `_cleanup_orphaned_image_files()`。
+2. 檔案刪除採 best-effort 方式，單一檔案清理失敗（例如已被手動刪除）會記錄 warning log，不影響已經成功的 Qdrant 點位刪除結果，符合 AGENT.md「fail loudly」原則。
+
+### 影響範圍
+修改完全封裝在 `QdrantService` 既有的兩個刪除方法內部，不改變對外回傳型別，對既有呼叫端（如 `database_indexing.py` 與 `delete_db_query_profile_point` 等）零影響，且不影響前端與 RAG 對話流程。
+
+### 修改檔案
+- `backend/services/qdrant_service.py`
+- `tests/test_image_cleanup_on_delete.py`（新增單元測試）
+
+## 2026-07-07 圖片描述過長時加入切分，向量檢索命中時重組回完整描述
+
+### 功能描述
+使用者提出：圖片的 AI 描述（`describe_image()` 產生的文字）不論多長都只變成一個 Qdrant chunk；自 `max_tokens` 提高到 20480 後，複雜表格/BOM 截圖的描述可能非常長，塞進單一個 embedding 向量會稀釋語意精準度。改為比照一般文字切分邏輯，把過長的圖片描述也切成多個 chunk 分別向量化，並在向量搜尋命中任一片段時，於檢索階段把同一張圖片的所有片段重新組合回完整描述。完全複用既有「`parent_id` + child chunk 同段落合併」架構，未新增其他機制。詳細規劃見 `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 11 節。
+
+### 實作內容
+1. `backend/routers/embedding.py`：新增 `_build_image_chunk_items()`，把每張圖片的描述呼叫既有 `ChunkingService.split_text()`（沿用該次 `/chunk` 請求同一份 `chunk_size`/`chunk_overlap`/`separator`）切分；短描述天然只產生 1 個 chunk（行為不變）。同一張圖片切出的所有片段共用同一個 `parent_id`（Word/Markdown 沿用跟旁邊文字相同的 `parent_id`；其餘情況給每張圖片自己的合成 `parent_id`，鍵值改用圖片自身序號 `img_idx` 而非片段序號，確保同一張圖的多個片段能共用同一個 `parent_id`——這也讓原本完全不掛 `parent_id` 的 PDF 圖片，第一次能支援「同一張圖片多片段」的重組）。`/chunk` 端點的 `parent_child` 與標準兩個分支皆改呼叫此共用函式。
+2. `backend/services/qdrant_service.py`：新增共用方法 `_merge_overlap_texts()`（原本 `get_siblings_and_merge()` 內部的巢狀去重合併函式提升為共用 staticmethod）與 `_group_and_merge_image_siblings()`（依 `image_filename` 分組、組內依 `chunk_index` 排序、逐片段清除結構化樣板前綴後合併回完整描述）。`get_siblings_and_merge()`／`get_image_siblings()` 皆改用此共用方法組成 `image_chunks`，確保每個 `image_filename` 只對應一筆內容完整的項目（不再是「每個片段各自一筆」）。
+3. `search_similar()`／`search_similar_two_step()`：圖片 chunk 本身被命中時，改成用同一張圖片的完整重組內容取代 `item["content"]`（原本是保留命中的單一片段內容不被覆蓋），確保 AI 與畫面看到的一定是完整描述，不會只看到命中的那一小段。
+
+### 影響範圍
+前端 `SourceChunks.vue`/`MessageBubble.vue` 與 `backend/routers/rag.py` 的 `sources` 組裝均不需修改——消費的資料形狀（每個 `image_filename` 對應一筆完整內容的 `image_chunks` 項目）維持不變，只是內容現在保證完整。已用獨立腳本驗證：短描述行為不變、長描述正確切分並共用 `parent_id`、依 `chunk_index` 重組不受輸入順序影響、同一 `parent_id` 下的不同圖片不會被誤合併；並重跑 `backend/tests/test_word_chunker.py`、`tests/test_two_step_search.py` 確認既有測試皆通過。
+
+### 修改檔案
+- `backend/routers/embedding.py`
+- `backend/services/qdrant_service.py`
+- `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md`（記錄規劃與實作結果）
+
+## 2026-07-07 圖片描述改為並行處理（預設同時 3 張），縮短多圖文件的上傳等待時間
+
+### 功能描述
+使用者觀察到「資料切分與向量化寫入」上傳含多張圖片的文件時，是逐張依序送給 vLLM 做多模態描述、等前一張完成才處理下一張，整份文件的圖片辨識總耗時會隨圖片數量線性增加。改為併發處理，預設同時最多 3 張圖片一起送給 vLLM，縮短整體等待時間。詳細規劃見 `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 10 節。
+
+### 實作內容
+1. `backend/config.py`：新增 `IMAGE_CAPTION_CONCURRENCY`（預設 `3`，可透過環境變數調整），控制同時對 vLLM 發送多少個圖片描述請求。
+2. `backend/routers/embedding.py`：`/upload` 端點原本序列處理圖片的 `for` 迴圈，重構為內部 async 函式 `process_one_image()` + `asyncio.Semaphore(settings.IMAGE_CAPTION_CONCURRENCY)` + `asyncio.gather()`，寫法比照既有 `EmbeddingService.get_embeddings_batch()` 的併發慣例；單張圖片描述失敗仍只影響該張（不中斷整批），且不論成功與否都照樣落地存檔；`asyncio.gather` 保證回傳順序與原始擷取順序一致，不影響後續 `image_index`／`parent_chunk_index_range` 的指派邏輯。
+
+### 影響範圍
+只影響 `/api/embedding/upload` 內部處理方式，對外的 request/response 格式不變；「資料切分與向量化寫入」與「自動分批寫入」兩個分頁皆共用此端點，自動一併受益，無需個別調整前端。若目標 vLLM 部署的顯存/運算資源吃緊，可將 `IMAGE_CAPTION_CONCURRENCY` 環境變數調低，不需要改動程式碼。
+
+### 修改檔案
+- `backend/config.py`
+- `backend/routers/embedding.py`
+- `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md`（記錄規劃與實作結果）
+
 ## 2026-07-07 向量化寫入圖片段落時自動加上「圖片」分類標籤
 
 ### 功能描述

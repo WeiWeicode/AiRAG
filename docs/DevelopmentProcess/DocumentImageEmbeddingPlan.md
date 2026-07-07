@@ -341,3 +341,137 @@ if parent_content:
 2. `describe_image()` 呼叫 `chat_completion(...)` 時改傳入 `timeout=300.0`（5 分鐘），讓內容複雜、`max_tokens` 設得較大的圖片有足夠時間完整生成描述，不會被過早判定逾時。
 3. `chat_completion()`、`describe_image()`、`routers/embedding.py` 三處的例外 log 訊息，全部從 `f"...: {e}"` 改成 `f"...: {type(e).__name__}: {e!r}"`——即使例外本身字串化是空字串，也一定會印出例外類別名稱（例如 `ReadTimeout`）與 `repr()`，未來若再發生類似失敗能直接從 log 判斷是逾時、連線失敗還是其他原因，不需要再靠使用者事後回報猜測。
 4. 若提高到 300 秒後仍然逾時（例如 vLLM 硬體資源嚴重不足），現象會從「訊息空白」變成 log 明確印出 `ReadTimeout`/`ConnectTimeout` 等字樣，此時才需要考慮進一步降低 `max_tokens`、簡化提示詞或提升 vLLM 部署的運算資源，本次先解決「診斷不出原因」與「常見情境下 60 秒明顯不夠」兩個問題。
+
+## 10. 圖片描述並行處理最佳化（已實作 2026-07-07）
+
+> 狀態：**已實作 2026-07-07**。使用者觀察到目前一份文件內有多張圖片時，是「上傳一張、等 AI（vLLM）產生完整描述、再處理下一張」的序列式處理（9.11 的 log 也印證：三次 `POST /v1/chat/completions` 請求間隔約 35～40 秒，代表確實是逐張依序發送，而非同時發送），要求改成「一次送 3 張給 AI 平行處理」以縮短整份文件的圖片辨識總耗時。實作內容請對照 `docs/DevelopmentProcess/NewFeatures.md` 2026-07-07 條目。
+
+### 10.1 現況
+
+`backend/routers/embedding.py` 的 `/upload` 端點（約 59-114 行）用一個同步 `for raw_img in raw_images:` 迴圈依序處理每張圖片：組出 `context_hint`／`parent_id_val` → `await LLMService.describe_image(...)` → 寫入磁碟 → 組成 `ExtractedImageItem` 加進 `extracted_images` 清單。因為是 `for` 迴圈內逐一 `await`，第 2 張圖片的請求要等第 1 張完全處理完（含 vLLM 生成、寫檔）才會送出，N 張圖片的總耗時 ≈ N × 單張耗時。
+
+### 10.2 設計方向
+
+比照專案內已有的批次併發慣例——`backend/services/embedding_service.py` 的 `get_embeddings_batch()`／`get_semantic_embeddings_batch()`（73-102 行）：用 `asyncio.Semaphore(N)` 限制同時併發數量、包成一個內部 async 函式、最後用 `asyncio.gather(*tasks)` 一次送出並收集結果，本次沿用同一套寫法，只是併發數量依需求設為 3（而非既有的 5，因為影像多模態請求的算力/顯存成本比純文字 embedding 高很多，先用使用者要求的 3 張作為預設）。
+
+具體改法：
+1. 把迴圈內「組 context_hint/parent_id → 呼叫 describe_image → 寫檔 → 組 ExtractedImageItem」整段邏輯抽成一個內部 async 函式 `process_one_image(raw_img) -> ExtractedImageItem`，函式內部維持現有的 per-image `try/except`（不讓單張圖片失敗中斷整批，仍會標記 `caption_failed`），且維持「不論描述成功或失敗，圖片實體檔案都照樣落地存檔」的既有行為不變。
+2. 建立 `semaphore = asyncio.Semaphore(settings.IMAGE_CAPTION_CONCURRENCY)`（新設定項，預設 `3`，見 10.3），每個 `process_one_image` 內用 `async with semaphore:` 包住「呼叫 vLLM」這段最耗時的部分（檔案讀取/寫入這種本地 I/O 不需要被信號量卡住，只需要限制同時打給 vLLM 的請求數）。
+3. 用 `extracted_images = await asyncio.gather(*[process_one_image(img) for img in raw_images], return_exceptions=False)` 一次送出所有圖片的任務；因為每個 `process_one_image` 內部已經自行 `try/except` 並保證一定回傳 `ExtractedImageItem`（不會讓例外往外拋），`asyncio.gather` 不需要額外設 `return_exceptions=True` 就能安全收集全部結果，且**保證回傳順序與輸入的 `raw_images` 順序一致**（`asyncio.gather` 的既有保證），不影響後續 `/chunk` 端點依序給 `image_index`／`parent_chunk_index_range` 的邏輯。
+
+### 10.3 新增設定項
+
+`backend/config.py` 新增：
+```python
+# 圖片描述並行處理的併發數量上限（同時最多幾張圖片一起送給 vLLM 做多模態描述）
+IMAGE_CAPTION_CONCURRENCY: int = int(os.getenv("IMAGE_CAPTION_CONCURRENCY", "3"))
+```
+做成可設定值（而非寫死 3），方便之後依 vLLM 實際承載能力調整，不需要改程式碼重新部署。
+
+### 10.4 預期效益與風險（誠實評估，避免過度承諾）
+
+- **樂觀情境**：vLLM 本身支援 continuous batching（多個請求可以在 GPU 上一起排程執行，非單純排隊），此時 3 張圖片同時送達，vLLM 內部能一定程度平行運算，總耗時可能明顯小於「3 張耗時總和」，效果接近使用者期待的「3 倍加速」。
+- **保守情境**：若目前 vLLM 部署的瓶頸主要是單一 GPU 的運算資源已經被單一請求佔滿（例如 9.11 log 顯示的每張圖約 35-40 秒很大一部分是模型生成大量 token 的時間），那麼同時送 3 個請求，vLLM 端可能還是得排隊依序處理，此時併發送出本身不會讓總運算時間縮短，但至少不會比現在更慢——差別只在於「由這個專案的程式碼排隊」改成「由 vLLM 自己排隊」，網路請求的排程開銷會降低，且如果 vLLM 確實有任何併發處理能力，都能自動受益，不需要之後再改程式碼。
+- **需要使用者評估的風險**：3 個並發的多模態請求，每個 base64 圖片本體 + 8192 max_tokens 的生成空間，會同時佔用 vLLM 的顯存/運算資源，如果目前的 vLLM 部署顯存或 `--max-num-seqs`／`--gpu-memory-utilization` 等啟動參數是抓得很緊繃的，同時 3 個請求有機會造成顯存不足（OOM）或請求被 vLLM 自己的排隊機制拒絕，需要使用者依實際部署資源決定 `IMAGE_CAPTION_CONCURRENCY` 設多少合適（有問題的話可以直接調低這個設定值，不需要改動程式碼）。
+
+### 10.5 影響範圍
+
+- 只影響 `backend/routers/embedding.py` 的 `/upload` 端點與新增的 `backend/config.py` 設定項，`/chunk`／`/vectorize` 與前端完全不需要改動——因為並行化只是讓同一個 `/upload` HTTP 請求內部處理圖片的方式改變，對外的 request/response 格式（`UploadResponse.images` 陣列的內容與順序）完全不變。
+- 「資料切分與向量化寫入」與「自動分批寫入」兩個分頁都會自動受益（兩者都是呼叫同一個 `/api/embedding/upload` 端點），不需要個別調整前端。
+- 9.9 已經處理的「上傳中 spinner + 提示文字」不受影響，仍然是同一個請求從送出到收到回應之間顯示同一組提示；此次優化只會讓這段等待時間變短，不會改變 UI 的顯示方式（若之後想在畫面上呈現「目前正在處理第幾批 / 第幾張」，仍然需要 9.9 規劃中提到的「後端改造成可回報中間進度的機制」，不在本次規劃範圍內）。
+
+### 10.6 實作結果（2026-07-07）
+
+1. `backend/config.py` 新增 `IMAGE_CAPTION_CONCURRENCY: int = int(os.getenv("IMAGE_CAPTION_CONCURRENCY", "3"))`。
+2. `backend/routers/embedding.py` 的 `/upload` 端點：原本的 `for raw_img in raw_images:` 序列迴圈重構為內部 async 函式 `process_one_image(raw_img) -> ExtractedImageItem`（保留原有的 per-image try/except、失敗時仍照樣落地存檔的行為），搭配 `caption_semaphore = asyncio.Semaphore(settings.IMAGE_CAPTION_CONCURRENCY)` 與 `extracted_images = list(await asyncio.gather(*[process_one_image(img) for img in raw_images]))` 一次送出全部圖片的任務，寫法比照既有 `EmbeddingService.get_embeddings_batch()` 的 semaphore + gather 慣例。`asyncio.gather` 保證回傳順序與輸入的 `raw_images` 順序一致，`/chunk` 端點依序指派 `image_index`／`parent_chunk_index_range` 的邏輯不受影響。
+3. 已用 `python -c "import ast; ast.parse(...)"` 驗證 `config.py`／`routers/embedding.py` 語法正確；`/chunk`、`/vectorize` 與所有前端元件皆未變動（如 10.5 節分析，並行化只影響 `/upload` 內部處理方式，對外的 request/response 格式不變）。
+4. **待使用者實機驗證**：上傳一份含 3 張以上圖片的文件，比對總耗時是否有感縮短，並觀察 vLLM 服務端（或其所在主機）在同時處理 3 個請求時的顯存/資源使用狀況是否穩定；若觀察到 OOM 或請求被拒絕，可將 `IMAGE_CAPTION_CONCURRENCY` 環境變數調低（例如 2 或 1）而不需要改動程式碼。
+
+## 11. 圖片描述加入切分、向量搜尋時重組（已實作，2026-07-07）
+
+> 狀態：**已實作 2026-07-07**。實作異動請對照 `docs/DevelopmentProcess/NewFeatures.md` 2026-07-07 條目「圖片描述過長時加入切分，向量檢索命中時重組回完整描述」。使用者提出：圖片的 AI 描述（`describe_image()` 產生的文字）目前不論多長都只變成一個 Qdrant chunk；自 9.8 節把 `max_tokens` 大幅提高後，複雜表格/BOM 截圖的描述可能非常長，塞進單一個 embedding 向量會稀釋語意精準度（跟一開始要把長文件切成小 chunk 的理由相同）。使用者要求：比照一般文字切分邏輯，把過長的圖片描述也切成多個 chunk 分別向量化，並在向量搜尋命中任一片段時，於檢索階段把同一張圖片的所有片段重新組合回完整描述。
+
+### 11.1 設計原則
+
+完全複用現有「`parent_id` + child chunk」架構，把「一張圖片的描述」視為跟「一個 Word 段落」同構的可切分單位，不新增另一套機制：
+
+1. **切分**：`/chunk` 端點（`backend/routers/embedding.py`）把每張圖片的 `description` 呼叫既有 `ChunkingService.split_text()`（`backend/services/chunking_service.py:20-141`，沿用一般文字同一份 `chunk_size`/`chunk_overlap`/`separator`，不新增設定項）。已驗證：文字長度未超過 `chunk_size` 時 `split_text()` 原樣回傳單一 chunk，因此不需要額外的「是否要切」判斷，直接無條件呼叫即可，短描述（多數情況）行為與現況完全一致，只有長描述才會真的產生多個片段。
+2. **關聯**：同一張圖片切出的所有片段共用**同一個 `parent_id`**：
+   - Word/Markdown 情境沿用現有「跟旁邊文字同一個 `parent_id`」的掛法（`img_item.parent_id`）。
+   - PDF／無結構文件目前完全不掛 `parent_id`（`backend/routers/embedding.py:304-324` 標準分支），改成給每張圖片自己一個**以圖片本身為單位**的合成 `parent_id`（例如 `f"{filename}_img_fallback_{img_idx}"`，用圖片自身序號 `img_idx`，而不是切出來的 chunk 序號，否則同一張圖的多個片段會各自拿到不同 parent_id 而無法重組）。這只讓「同一張圖片的多片段」能重組，**不擴大**到「PDF 圖文同段落合併」——PDF 文字本身仍然沒有 `parent_id`，第 6 節既有限制不變。
+3. **重組**：`backend/services/qdrant_service.py` 現有的 `get_siblings_and_merge()`（1262 行起）／`get_image_siblings()`（1240 行起）改成依 `image_filename` 分組、組內依 `chunk_index` 排序，用既有的 overlap 去重合併函式（`get_siblings_and_merge()` 內部現有的 `merge_two_strings_with_overlap`，計畫抽成共用 staticmethod）重新拼回完整描述；`search_similar()`／`search_similar_two_step()` 命中圖片本身時，把 `item["content"]` 換成「自己這張圖片的完整重組描述」，而不是像現在只保留命中的那一個片段。
+
+前端（`SourceChunks.vue`/`MessageBubble.vue`）與 `routers/rag.py` 的 `sources` 組裝**預期不需要修改**——它們消費的資料形狀（每個 `image_filename` 對應一筆完整內容的 `image_chunks` 項目）維持不變，只是這筆內容現在會保證完整、不再受限於單一片段。
+
+### 11.2 後端改動範圍
+
+**`backend/routers/embedding.py` — `/chunk` 端點的圖片轉 chunk 邏輯**（`parent_child` 分支約 258-283 行、標準分支約 304-324 行，兩分支需套用同一段邏輯）：
+- 拿掉現行「`p_id = img_item.parent_id`；`if not p_id and (is_word or is_md): p_id = ...`」的格式限制，讓**每張圖片一律**都會有 `parent_id`（PDF 圖片也是）。
+- 對每張圖片的 `description` 呼叫 `ChunkingService.split_text()`，切出的每個片段各自成為一個 `ChunkItem`（沿用同一個 `parent_id`、依序遞增的全域 `index`），並計算該圖片自己片段範圍的 `parent_chunk_index_range`（`"start~end"`，供除錯／顯示用，非重組邏輯必要欄位）。
+- `ChunkResponse.total_chunks`/`avg_token_count`（285-290、326-332 行）不需要另外調整，list 長度自然反映片段數增加。
+
+**`backend/services/qdrant_service.py`**：
+- 新增共用 staticmethod：`_merge_overlap_texts(pieces: List[str]) -> str`（把現有巢狀函式 `merge_two_strings_with_overlap` 提升出來共用）與 `_group_and_merge_image_siblings(image_siblings: List[Dict]) -> List[Dict]`（依 `image_filename` 分組 → 依 `chunk_index` 排序 → 逐片段先用既有 `_strip_structured_content_prefix()` 去除結構化樣板前綴 → 用 `_merge_overlap_texts()` 拼回完整描述 → 每組輸出一筆，回傳格狀維持現有 `image_chunks` 的 dict 結構）。
+- `get_siblings_and_merge()`／`get_image_siblings()` 內組成 `image_chunks` 的地方改呼叫上述共用方法。
+- `search_similar()`（456-503 行）與 `search_similar_two_step()`（同構鄰居合併段落，約 718-753 行）：圖片命中時（`is_image_chunk`），從 `image_chunks` 中找出自己 `image_filename` 對應的完整重組內容並賦值給 `item["content"]`（取代現行「保留自己原本片段內容不被覆蓋」的寫法），再把該筆從回傳的 `image_chunks` 中排除（維持「圖片自己不出現在自己的同段落圖片清單」的既有行為）。
+
+**不需要改動**：`routers/rag.py` 的 `sources` 組裝、前端 `SourceChunks.vue`/`MessageBubble.vue`（皆已依 `image_filename` 去重、假設一個 filename 對應一筆完整內容，此假設在新設計下依然成立）、`/vectorize` 端點（`metadata` 白名單外欄位已自動合併進 payload，`chunk_index` 已確認由 `chunk.index` 寫入，`embedding.py:413`，足夠支撐片段排序需求）。
+
+### 11.3 驗證方式
+
+使用者手動測試（依專案慣例不開瀏覽器驗證）：
+1. 上傳含複雜表格/BOM 截圖的 Word 文件並勾選擷取圖片，確認該圖片描述若很長，`/chunk` 回傳的 chunk 清單中出現同一 `image_filename`、相同 `parent_id`、不同 `chunk_index` 的多筆 `chunk_type: image` 項目。
+2. 向量化後於「已向量化資料管理」頁確認 Qdrant 內確實寫入對應的多筆 point。
+3. RAG 測試頁針對該圖片細節提問，確認命中來源在 `SourceChunks.vue` 呈現的內容/hover 預覽是**完整**描述（不是被切斷的片段），且同一張圖片不會重複列出多次。
+4. 額外測試一張「短描述」圖片（原本不會被切分），確認行為與修改前完全一致（回歸測試）。
+5. 上傳含圖片的 PDF，確認 PDF 圖片描述若被切分也能在檢索時正確重組，且 PDF 文字本身仍然沒有 `parent_id` 的既有行為不受影響。
+
+### 11.4 實作結果（2026-07-07）
+
+1. `backend/routers/embedding.py` 新增 `_build_image_chunk_items()`，`/chunk` 端點的 `parent_child` 分支（原 258-283 行）與標準分支（原 304-324 行）皆改呼叫此共用函式；`parent_id` 一律賦值（拿掉原本 `is_word or is_md` 的格式限制），合成 `parent_id` 鍵值改用圖片自身序號 `img_idx`。
+2. `backend/services/qdrant_service.py` 新增 `_merge_overlap_texts()`（原 `get_siblings_and_merge()` 內部巢狀函式提升為共用 staticmethod）與 `_group_and_merge_image_siblings()`（依 `image_filename` 分組、依 `chunk_index` 排序後合併）；`get_siblings_and_merge()`／`get_image_siblings()` 改用共用方法組成 `image_chunks`；`search_similar()`／`search_similar_two_step()` 圖片命中時改為賦值「自己完整重組後的描述」而非保留原本命中的單一片段。
+3. **驗證方式**：因本次改動不牽涉前端與需要真實 vLLM／Qdrant 服務的行為（純屬 chunk 切分與檢索時的資料重組邏輯），改用獨立 Python 腳本直接呼叫 `_build_image_chunk_items()`／`_group_and_merge_image_siblings()`／`_merge_overlap_texts()` 驗證以下情境皆符合預期：短描述維持 1 個 chunk 且內容/`parent_id`不變（回歸）；長描述正確切分成多個 chunk 並共用同一個 `parent_id`；用打亂順序的模擬 siblings 呼叫 `_group_and_merge_image_siblings()` 仍能正確依 `chunk_index` 排序重組回完整描述（驗證不依賴 Qdrant scroll 回傳順序）；不同圖片各自取得不同的合成 `parent_id`；同一個 `parent_id` 下的兩張不同圖片（Word 同段落內有多張圖）分組後仍保持各自獨立、不會被誤合併成一筆。另外重跑既有回歸測試 `backend/tests/test_word_chunker.py`、`tests/test_two_step_search.py`，確認未受影響、全數通過。
+4. 依規劃，前端 `SourceChunks.vue`/`MessageBubble.vue` 與 `backend/routers/rag.py` 的 `sources` 組裝皆未修改。
+5. **待使用者實機驗證**：上傳含複雜表格/BOM 截圖的 Word/PDF 文件，確認長描述確實被切分並在 RAG 對話中能看到完整重組後的描述內容（本次未使用真實 vLLM 服務驗證端到端行為，僅驗證切分/重組的邏輯正確性）。
+
+## 12. 刪除向量資料時一併清除本地圖片檔案 (已完成，2026-07-07)
+
+> 狀態：**已完成**。圖片內嵌向量化功能會把每張圖片的 AI 描述寫入 Qdrant，同時把圖片原始檔另外落地存放於 `backend/FileAttachments/image/`。但「已向量化資料管理」頁面目前的刪除功能（刪除單一/多筆段落，或整批刪除某個檔案）只會刪除 Qdrant 裡的向量點，完全不會清除對應的本地圖片檔案，導致圖片檔案只會不斷累積、永遠沒有機會被清掉。
+>
+> 於 2026-07-07 實作完成，在刪除區段或整批刪除時，一併刪除無其餘點位引用的本地圖片檔案，並透過 Mock 寫好單元測試，在 `tests/test_image_cleanup_on_delete.py` 驗證所有情境皆正常。
+
+### 12.1 需特別注意的正確性問題
+
+第 11 節剛完成的「圖片描述過長時切分」功能，代表**同一張圖片現在可能對應多個 Qdrant point，共用同一個 `image_filename`**。若使用者只刪除其中一個片段（例如管理頁面上單選某一小段刪除），不能直接刪除該圖片檔案，否則會讓同一張圖其餘還沒被刪除的片段變成「引用一個已經不存在的檔案」（縮圖/下載全部失效）。因此**刪除本地圖片檔案前，必須先確認 Qdrant 中已經沒有任何 point 還引用這個 `image_filename`**，才能真正刪除檔案。
+
+### 12.2 現況調查
+
+- 前端「已向量化資料管理」（`frontend/src/components/embedding/VectorManagementTab.vue`）有三種刪除動作，皆透過 `frontend/src/services/retrievalService.js` 呼叫後端：
+  - 單筆刪除／多選批次刪除 → `POST /api/retrieval/knowledge-bases/{id}/points/batch-delete`（`backend/routers/retrieval.py` 的 `batch_delete_points()`，約 338-380 行）→ 呼叫 `QdrantService.delete_points()`。
+  - 整批刪除某檔案 → `POST /api/retrieval/knowledge-bases/{id}/files/delete-by-filename`（`delete_file_by_filename()`，約 383-427 行）→ 呼叫 `QdrantService.delete_by_filename()`。
+- `backend/services/qdrant_service.py` 的 `delete_points()`（912-928 行）與 `delete_by_filename()`（931-965 行）目前都是「盲刪」：`delete_points()` 直接用 `client.delete(points_selector=PointIdsList(...))`，從未讀取 payload；`delete_by_filename()` 雖然有 `scroll` 撈出所有點，但 `with_payload=False`（948 行），只取得 `p.id`，同樣拿不到 `image_filename`。
+- 圖片檔案的路徑組法與路徑穿越防護，`backend/routers/embedding.py` 的 `GET /images/{stored_filename}` 端點（628-656 行）已有現成寫法可沿用：`os.path.abspath(os.path.join(settings.FILE_ATTACHMENTS_DIR, settings.FILE_ATTACHMENTS_IMAGE_SUBDIR))` 組出圖片目錄，並檢查目標路徑仍在此目錄底下才允許操作。
+- 另外兩處既有呼叫端：`backend/services/qdrant_service.py:1112` 的 `delete_db_query_profile_point()`（刪除「資料庫查詢設定檔」point，與圖片無關）、`backend/routers/database_indexing.py:540`（刪除 `DB_IMPORT_{table_name}` 匯入資料，同樣與圖片無關）——這兩處都呼叫到 `delete_points()`/`delete_by_filename()`，新邏輯對它們是無害的空操作（它們刪除的 point 不會有 `chunk_type == "image"`）。
+
+### 12.3 設計方向
+
+改動集中在 `qdrant_service.py` 既有的兩個刪除方法內部，作為刪除成功後的「順便清理」步驟，**不改變這兩個方法對外的回傳型別**（`delete_points()` 仍回傳 `bool`，`delete_by_filename()` 仍回傳 `int`），因此不會影響其他既有呼叫端，`backend/routers/retrieval.py` 的兩個路由與前端都不需要修改：
+
+1. **刪除前先取得即將被刪除的 points 的 payload**：`delete_points()` 在呼叫 `client.delete()` 之前，先用 `client.retrieve(collection_name=..., ids=point_ids, with_payload=True, with_vectors=False)` 取得 payload；`delete_by_filename()` 把既有 scroll 呼叫的 `with_payload=False` 改成 `with_payload=True`。兩者都從 payload 中挑出 `chunk_type == "image"` 的 `image_filename`（去重）。
+2. **Qdrant 刪除成功後**，對每個蒐集到的 `image_filename`，用 `client.scroll(collection_name, scroll_filter=Filter(must=[FieldCondition(key="image_filename", match=MatchValue(value=filename))]), limit=1, with_payload=False)` 確認是否還有其他 point 仍引用這個檔名——沒有的話，比照 `embedding.py:628-656` 的路徑安全驗證寫法刪除實體檔案；還有的話跳過。
+3. 檔案刪除是 best-effort：單一檔案刪除失敗只記錄 warning log，不影響已經成功的 Qdrant 刪除結果（Qdrant 刪除是主要操作，圖片檔案清理是附帶效果，兩者失敗不應互相拖累，符合 AGENT.md「fail loudly」——清楚記錄但不吞例外）。
+
+新增共用 helper：
+- `_get_image_filenames_from_payloads(payloads: List[dict]) -> Set[str]`：從一批 payload 中挑出圖片 chunk 的 `image_filename`，回傳去重集合。
+- `_cleanup_orphaned_image_files(collection_name: str, image_filenames: Set[str]) -> None`：對每個檔名做「是否仍被引用」的 Qdrant 查詢，沒有才刪除實體檔案，單一檔案例外不中斷其餘檔案的清理。
+
+### 12.4 驗證方式（規劃）
+
+本地沒有可用的即時 Qdrant/Docker 服務可供端到端測試，比照既有 `tests/test_two_step_search.py` 的做法（`sys.modules['qdrant_client'] = MagicMock()`）撰寫驗證腳本／測試涵蓋：
+1. `delete_points()`：mock `client.retrieve()` 回傳一筆 `chunk_type: "image"` 的 payload，且 mock 後續確認引用的 `client.scroll()` 回傳空清單 → 驗證有嘗試刪除本地檔案（`unittest.mock.patch("os.remove")` 驗證有被呼叫、路徑正確）。
+2. 同上情境，但 `client.scroll()` 回傳非空（代表同一張圖還有其他片段存在）→ 驗證**不會**呼叫 `os.remove()`。
+3. 刪除的 point 是純文字 chunk（無 `chunk_type` 或非 `"image"`）→ 驗證完全不會觸發任何檔案系統操作。
+4. `delete_by_filename()` 同樣驗證上述 1、2 情境。
+5. 確認兩個方法回傳值型別與既有行為一致，不影響 `database_indexing.py`、`delete_db_query_profile_point()` 既有呼叫端。
+
+使用者待實機驗證：在「已向量化資料管理」頁面對一份含圖片的文件整批刪除，確認 `backend/FileAttachments/image/` 內對應的圖片檔案消失；再測試「圖片描述被切成多個片段」的情境，只單獨刪除其中一個片段但保留同一張圖的其他片段，確認圖片檔案不會被誤刪、其餘片段的縮圖/下載仍正常。
