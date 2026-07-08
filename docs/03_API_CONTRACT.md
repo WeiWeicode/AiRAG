@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.5（依實際程式碼校正）
+* **文件版本**：V 1.6（依實際程式碼校正）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-06（新增第 14 節「附件管理與語義混合附件查詢法」）
+* **更新日期**：2026-07-08（補齊 §3.1 sources 圖片相關 metadata 欄位，並記錄 2026-07-08 Context 組裝與圖片 token 統計修正）
 * **Base URL**：`http://<host>:8000/api`
 * **認證方式**：JWT Bearer Token（除 `/api/auth/login` 外，所有 API 皆掛載於各 router 的 `Depends(get_current_user)`，須帶 `Authorization: Bearer <token>`）
 
@@ -84,7 +84,13 @@
         "metadata": {
           "filename": "string", "page": 1, "section": "string",
           "chunk_index": 0, "tags": ["string"], "class": ["string"],
-          "links_to": ["string"], "linked_attachments": ["string"]
+          "links_to": ["string"], "linked_attachments": ["string"],
+          "chunk_type": "image | text | null",
+          "image_filename": "string | null",
+          "image_chunks": [
+            { "chunk_id": "string", "content": "圖片描述文字", "metadata": { "chunk_type": "image", "image_filename": "string" }, "token_count": 20 }
+          ],
+          "parent_content": "string | null"
         },
         "score": 0.85,
         "token_count": 512
@@ -107,7 +113,10 @@
     ]
   }
   ```
-  `token_count`（各 chunk）與 `context_summary`（本次檢索的 token 總計與分批摘要統計）為新增欄位。`context_summary.batch_count`/`rounds` 只有在觸發分批摘要時才會大於 0；未觸發時 `was_summarized` 固定為 `false`。`metadata.linked_attachments` 與最外層 `attachments`（2026-07-06 新增）僅在 `search_type == "semantic_hybrid_attachment"` 且命中片段帶有關聯附件時才會非空，其餘四種查詢法固定為空陣列，見第 14 節。
+  `token_count`（各 chunk）與 `context_summary`（本次檢索的 token 總計與分批摘要統計）為新增欄位。`context_summary.batch_count`/`rounds` 只有在觸發分批摘要時才會大於 0；未觸發時 `was_summarized` 固定為 `false`。`metadata.linked_attachments` 與最外層 `attachments`（2026-07-06 新增）僅在 `search_type == "semantic_hybrid_attachment"` 且命中片段帶有關聯附件時才會非空，其餘五種查詢法（`vector`/`hybrid`/`semantic_hybrid`/`semantic_hybrid_feedback`/`semantic_db_query`）固定為空陣列，見第 14 節。
+
+  `metadata.chunk_type`/`image_filename`/`image_chunks`/`parent_content`（見 §15 文件圖片功能，2026-07-07 新增）：命中片段本身是圖片 Chunk 時 `chunk_type` 為 `"image"` 且帶 `image_filename`；不論命中片段本身是文字或圖片，只要它與同一個 `parent_id` 底下存在圖片 Chunk（Word/PDF 結構化切分且有擷取圖片），`image_chunks` 就會列出該同段落下其餘圖片各自的描述與 `token_count`（供前端縮圖與確認 AI 實際讀到的圖片描述內容，每筆 `token_count` 為該圖片描述自身的真實 token 數，2026-07-08 修正——先前版本誤用宿主片段的分數且固定顯示 0 token）；`parent_content` 為圖片 Chunk 命中時的周邊文字（若無預先快取則即時由 `get_siblings_and_merge` 重組）。這些欄位在一般純文字 Chunk 命中、且該段落沒有圖片時均為 `null`／空陣列。
+  **2026-07-08 修正**：分批摘要判斷與「未觸發門檻時直接合併」所使用的 Context 區塊，現在直接沿用組裝 `event: sources` 時攤平出的完整文字（含核心命中內容、圖片周邊文字、同段落其他圖片描述），而非重新從 `sources` 陣列組裝，因此 `context_summary.total_tokens` 與實際送進 LLM 的 System Prompt 大小更為一致；`sources` 陣列中命中片段若同段落含 2 張以上圖片，System Prompt 會額外附加一條規則，要求模型逐一說明每張圖片內容而非只挑一張代表。
 
 ### 3.2 GET `/api/rag/history` — 取得對話歷史 **[Stub]**
 固定回傳 `{"total": 0, "items": []}`，不查詢資料庫，目前尚未串接任何 `chat_sessions` 持久化邏輯。
@@ -148,7 +157,9 @@
         "filename": "string", "page": 1, "section": "string", "chunk_index": 0,
         "tags": ["string"], "class": ["string"], "parent_id": "string",
         "function_name": "string", "type": "string", "links_to": ["string"],
-        "linked_attachments": ["string"]
+        "linked_attachments": ["string"],
+        "chunk_type": "image | text | null", "image_filename": "string | null",
+        "image_chunks": ["array（結構同 §3.1 sources，僅語義混合類模式才會經過 get_siblings_and_merge 填入）"]
       },
       "score": 0.95,
       "distance": 0.05
@@ -527,7 +538,7 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
 
 ### 13.4 三處測試整合方式
 
-* `POST /api/rag/chat`：`params.search_type = "semantic_db_query"` 時走此查詢法。**兩階段串流**：第一次請求（未帶 `selected_db_profile_id`）在指定知識庫時僅回傳 SSE `step: "profile_candidates"` 事件（`content.candidates`）後即結束串流，前端顯示候選清單，使用者選定後帶 `selected_db_profile_id` 重新呼叫同一端點才會真正產生 SQL、查詢並讓主模型總結；未指定知識庫（不限定知識庫）時則在同一次請求中依序對前 N 個候選產生 SQL、查詢、合併結果後直接交給主模型總結，不中斷等待選擇。摘要階段使用專屬於 `semantic_db_query` 的 System Prompt（強調內容是真實資料庫查詢結果、不套用文件段落引用格式），與其餘四種查詢法的摘要 Prompt 分開、互不影響。
+* `POST /api/rag/chat`：`params.search_type = "semantic_db_query"` 時走此查詢法。**兩階段串流**：第一次請求（未帶 `selected_db_profile_id`）在指定知識庫時僅回傳 SSE `step: "profile_candidates"` 事件（`content.candidates`）後即結束串流，前端顯示候選清單，使用者選定後帶 `selected_db_profile_id` 重新呼叫同一端點才會真正產生 SQL、查詢並讓主模型總結；未指定知識庫（不限定知識庫）時則在同一次請求中依序對前 N 個候選產生 SQL、查詢、合併結果後直接交給主模型總結，不中斷等待選擇。摘要階段使用專屬於 `semantic_db_query` 的 System Prompt（強調內容是真實資料庫查詢結果、不套用文件段落引用格式），與其餘五種查詢法（`vector`/`hybrid`/`semantic_hybrid`/`semantic_hybrid_feedback`/`semantic_hybrid_attachment`）的摘要 Prompt 分開、互不影響。
 * `GET/POST` 檢索測試頁：前端直接呼叫 13.3 的 `match-profiles`/`execute`，不經過 `/api/retrieval/search`（回應格式與一般 chunk 檢索不同）。
 * `POST /api/evaluation/run`：`params.search_type = "semantic_db_query"` 時，因批次評估無真人可選候選，自動取 AI 選擇結果中排序最高的候選（Top-1）執行，`EvalDetail.db_query_note` 會標記「自動選取設定檔（非人工確認）」或失敗原因。
 

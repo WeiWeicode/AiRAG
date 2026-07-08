@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.5（依實際程式碼校正）
+* **文件版本**：V 1.6（依實際程式碼校正）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-06（新增 `attachments` collection 與 `linked_attachments` Qdrant payload 欄位）
+* **更新日期**：2026-07-08（修正 `source == "db_query_profile"` 隔離規則的查詢法計數，補上 `semantic_hybrid_attachment`）
 * **資料庫類型**：
   * **應用資料庫**：MongoDB（對話紀錄、設定、測試集、評估報告、回饋標註、資料庫連線設定、標籤與類別選項、Prompt 測試歷史紀錄）
   * **既有知識庫 / 自訂 DB**：SQL Server & Oracle Database（唯讀連線，存取既有的文章與表單欄位等資料）
@@ -338,7 +338,7 @@
 
 **`linked_attachments` 用途**【新增，2026-07-06】：內容為 `attachments` collection（見 3.13 節）的 `Attachment._id` 字串清單。與 `links_to` 不同的是，這個欄位**不會**在 `backend/routers/embedding.py` 的向量化寫入路徑時自動帶入，只會透過 `POST /api/retrieval/knowledge-bases/{id}/files/update-attachments`（見 `03_API_CONTRACT.md` §4.7）事後批次覆蓋指定檔名底下所有 Point 的這個欄位；未呼叫過此端點的既有 Point 不會有這個 key（`get_unique_metadata()`／檢索程式碼皆以 `payload.get("linked_attachments", [])` 防禦性讀取，缺欄位時視為空陣列，不影響既有資料）。是「語義混合附件查詢法」（`search_type == "semantic_hybrid_attachment"`）的核心欄位——命中片段若帶有 `linked_attachments`，`backend/routers/rag.py` 會據此查詢 `attachments` collection 並在回答中附上附件下載點（可選擇是否讓 AI 讀取附件描述內容），詳見 `03_API_CONTRACT.md` 第 14 節。
 
-**`source == "db_query_profile"` 的隔離規則**【新增，2026-07-03】：`QdrantService.search_similar()`/`search_similar_two_step()` 固定加上 `must_not: source == "db_query_profile"` 過濾條件，因此語義資料庫查詢法的 Profile 向量雖與一般文件 Chunk 共存於同一個 KnowledgeBase collection，但永遠不會出現在 `vector`/`hybrid`/`semantic_hybrid`/`semantic_hybrid_feedback` 這四種既有查詢法的結果中；反之，`QdrantService.search_db_query_profiles()` 只搜尋 `source == "db_query_profile"` 的點位。
+**`source == "db_query_profile"` 的隔離規則**【新增，2026-07-03】：`QdrantService.search_similar()`/`search_similar_two_step()` 固定加上 `must_not: source == "db_query_profile"` 過濾條件，因此語義資料庫查詢法的 Profile 向量雖與一般文件 Chunk 共存於同一個 KnowledgeBase collection，但永遠不會出現在 `vector`/`hybrid`/`semantic_hybrid`/`semantic_hybrid_feedback`/`semantic_hybrid_attachment` 這五種既有查詢法的結果中；反之，`QdrantService.search_db_query_profiles()` 只搜尋 `source == "db_query_profile"` 的點位。
 
 ### 4.3 向量索引與檢索策略
 * **HNSW 索引**：對密集向量做餘弦相似度 (Cosine) 索引，`m=16`、`ef_construct=100`。

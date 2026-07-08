@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.2 (最新更新)
+* **文件版本**：V 1.3 (最新更新)
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-06
+* **更新日期**：2026-07-08
 * **說明**：本指南為開發人員及 QA 測試工程師提供實用的 API 測試腳本與 cURL 指令，用以獨立驗證系統新舊端點。
 * **基本設定**：
   * API Base URL: `http://localhost:8000/api`
@@ -105,7 +105,7 @@ curl -X POST "http://localhost:8000/api/retrieval/semantic-hybrid-search" \
 curl -X GET "http://localhost:8000/api/knowledge-bases/649c12e4f5b9d3118c8bcf2f/metadata" \
      -H "Authorization: Bearer $TOKEN"
 ```
-*回傳範例*：`{"files": ["規則說明書.docx", "DB_IMPORT_articles"]}`
+*回傳範例*：`{"filenames": ["規則說明書.docx", "DB_IMPORT_articles"], "tags": ["機密等級A"], "structured_metadata": [{"filename": "規則說明書.docx", "class": ["類別1"], "tags": ["機密等級A"], "links_to": [], "linked_attachments": []}]}`（注意：沒有 `files` 這個鍵，見 `03_API_CONTRACT.md` §9.4）
 
 ### 4.2 依據檔案名稱刪除向量點
 * **API 端點**：`POST /api/retrieval/knowledge-bases/{kb_id}/files/delete-by-filename`
@@ -244,3 +244,109 @@ curl -X POST "http://localhost:8000/api/prompt/records" \
   curl -X GET "http://localhost:8000/api/embedding/tags" \
        -H "Authorization: Bearer $TOKEN"
   ```
+
+---
+
+## 8. 語義資料庫查詢法測試 (Semantic DB Query)
+
+### 8.1 建立查詢設定檔
+* **API 端點**：`POST /api/ai-db-query/profiles`
+```bash
+curl -X POST "http://localhost:8000/api/ai-db-query/profiles" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "ERP品號查詢",
+       "database_config_id": "649c...",
+       "knowledge_base_id": "649c12e4f5b9d3118c8bcf2f",
+       "platform_description": "ERP 系統品號主檔",
+       "table_name": "dbo.products",
+       "table_purpose": "查詢品號、品名與規格",
+       "columns": [
+         {"column_name": "ITEM_ID", "enabled": true, "meaning": "品號"},
+         {"column_name": "ITEM_NAME", "enabled": true, "meaning": "品名"}
+       ],
+       "is_default": false
+     }'
+```
+
+### 8.2 語意比對候選設定檔
+* **API 端點**：`POST /api/ai-db-query/match-profiles`
+```bash
+curl -X POST "http://localhost:8000/api/ai-db-query/match-profiles" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"question": "品號A123的規格是什麼？", "knowledge_base_id": "649c12e4f5b9d3118c8bcf2f", "limit": 5}'
+```
+*預期回傳*：`{"candidates": [{"profile_id": "...", "name": "ERP品號查詢", "table_name": "dbo.products", "table_purpose": "...", "score": 1.0}], "selection_reason": "..."}`
+
+### 8.3 執行查詢（選定候選後）
+* **API 端點**：`POST /api/ai-db-query/execute`
+```bash
+curl -X POST "http://localhost:8000/api/ai-db-query/execute" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"question": "品號A123的規格是什麼？", "profile_id": "上一步取得的 profile_id"}'
+```
+*預期回傳*：`{"profile_id": "...", "profile_name": "...", "generated_sql": "SELECT ... WHERE ITEM_ID LIKE '%A123%'", "row_count": 1, "context_text": "...", "elapsed_ms": 120}`
+
+---
+
+## 9. 附件管理測試 (Attachment)
+
+### 9.1 上傳附件
+* **API 端點**：`POST /api/attachments/upload`
+```bash
+curl -X POST "http://localhost:8000/api/attachments/upload" \
+     -H "Authorization: Bearer $TOKEN" \
+     -F "file=@/path/to/規格附件.xlsx" \
+     -F "knowledge_base_id=649c12e4f5b9d3118c8bcf2f" \
+     -F "description=原始規格試算表"
+```
+*預期回傳*：`{"id": "...", "original_filename": "規格附件.xlsx", "has_extracted_content": false, "extraction_error": "不支援的格式...", ...}`（xlsx 目前不支援自動解析，仍會成功上傳）。
+
+### 9.2 關聯文件與附件
+* **API 端點**：`POST /api/retrieval/knowledge-bases/{kb_id}/files/update-attachments`
+```bash
+curl -X POST "http://localhost:8000/api/retrieval/knowledge-bases/649c12e4f5b9d3118c8bcf2f/files/update-attachments" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"filename": "規則說明書.docx", "attachment_ids": ["上一步取得的附件 id"]}'
+```
+
+### 9.3 測試語義混合附件查詢法對話
+* **API 端點**：`POST /api/rag/chat`
+```bash
+curl -N -X POST "http://localhost:8000/api/rag/chat" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "question": "規則說明書有附什麼補充資料？",
+       "knowledge_base_id": "649c12e4f5b9d3118c8bcf2f",
+       "chat_history": [],
+       "params": {"search_type": "semantic_hybrid_attachment", "read_attachment_content": true}
+     }'
+```
+*預期串流內容*：命中關聯附件的片段時，`event: step` 會出現 `attachment_extraction`（列出讀取到的附件內容），`event: sources` 的 `attachments` 陣列會附上下載點 `/api/attachments/{id}/download`。
+
+---
+
+## 10. 文件圖片擷取測試 (Image Extraction)
+
+### 10.1 上傳並擷取圖片
+* **API 端點**：`POST /api/embedding/upload`
+```bash
+curl -X POST "http://localhost:8000/api/embedding/upload" \
+     -H "Authorization: Bearer $TOKEN" \
+     -F "file=@/path/to/架構說明.docx" \
+     -F "extract_images=true"
+```
+*預期回傳*：`{"file_id": "...", "content": "...", "images": [{"image_filename": "img_xxx.png", "page": 1, "description": "這是一張系統架構圖...", "caption_failed": false}]}`
+
+### 10.2 讀取擷取出的圖片
+* **API 端點**：`GET /api/embedding/images/{stored_filename}`
+```bash
+curl -X GET "http://localhost:8000/api/embedding/images/img_xxx.png" \
+     -H "Authorization: Bearer $TOKEN" \
+     --output preview.png
+```

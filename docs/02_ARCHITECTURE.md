@@ -2,12 +2,12 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.3（依實際程式碼校正）
+* **文件版本**：V 1.4（依實際程式碼校正）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-06
+* **更新日期**：2026-07-08
 * **對應 PRD**：01_RPD.md
 
-> 本版本已對照 `backend/`、`frontend/src/` 實際目錄與 `docs/DevelopmentProcess/*.md` 修改紀錄校正專案結構與核心資料流，移除前一版文件中尚未實作的檔案（`middleware/`、`eval_service.py`、`feedback_service.py`、`prompt_engine.py`、`helpers.py`），並補上 2026-07-01 新增的雙階段關聯檢索（Two-Step Hybrid Retrieval）與知識庫關聯地圖機制。
+> 本版本已對照 `backend/`、`frontend/src/` 實際目錄與 `docs/DevelopmentProcess/*.md` 修改紀錄校正專案結構與核心資料流，移除前一版文件中尚未實作的檔案（`middleware/`、`eval_service.py`、`feedback_service.py`、`prompt_engine.py`、`helpers.py`），並補上 2026-07-01 新增的雙階段關聯檢索（Two-Step Hybrid Retrieval）與知識庫關聯地圖機制。**2026-07-08 校正**：補上前一版遺漏的 `ai_db_query.py`／`attachment.py` routers、`rerank_service.py`／`feedback_boost_service.py`／`context_summarizer_service.py`／`ai_db_query_service.py` services、`attachment.py`／`db_query_profile.py` models 與對應 schemas、前端附件管理／DB查詢設定檔/圖片相關元件，並補上 LLM Rerank 重排序與回饋加權（Feedback Boost）步驟於核心管道資料流。
 
 ---
 
@@ -37,6 +37,10 @@
 │  ┌─────────────────────┐ ┌──────────────────────────────┐  │
 │  │ Database Indexing   │ │ Parent-Child Chunker         │  │
 │  │ Router (SQL/Oracle) │ │ (Word, MD, 4GL, 4FD)         │  │
+│  └─────────────────────┘ └──────────────────────────────┘  │
+│  ┌─────────────────────┐ ┌──────────────────────────────┐  │
+│  │ AI DB Query Router  │ │ Attachment Router             │  │
+│  │ (語義資料庫查詢法)  │ │ (附件 CRUD/下載/內容擷取)     │  │
 │  └─────────────────────┘ └──────────────────────────────┘  │
 └─────┬──────────┬────────────┬──────────────┬───────────────┘
       │          │            │              │
@@ -108,11 +112,13 @@ src/
 │   │   ├── FileUploader.vue       # 檔案上傳
 │   │   ├── ChunkPreview.vue       # Chunk 預覽
 │   │   ├── TokenCounter.vue       # Token 計數
-│   │   ├── SingleIndexingTab.vue  # 單筆索引面板
+│   │   ├── SingleIndexingTab.vue  # 單筆索引面板 (含圖片擷取 extract_images 開關)
 │   │   ├── SemanticJSONTab.vue    # 地端 AI 語義 JSON 匯入分頁
-│   │   ├── BatchIndexingTab.vue   # 自動分批寫入面板 (含雙層切分、Word 支援)
+│   │   ├── BatchIndexingTab.vue   # 自動分批寫入面板 (含雙層切分、Word 支援、圖片擷取)
 │   │   ├── DatabaseIndexingTab.vue # 資料庫連線匯入分頁
-│   │   └── VectorManagementTab.vue # 向量管理頁面 (含 links_to 關聯檔案管理與徽章顯示)
+│   │   ├── DBQueryProfileManager.vue # 語義資料庫查詢法之查詢設定檔 CRUD 分頁
+│   │   ├── AttachmentManagerTab.vue # 附件上傳/列表/刪除/關聯管理分頁
+│   │   └── VectorManagementTab.vue # 向量管理頁面 (含 links_to/linked_attachments 關聯管理與徽章顯示)
 │   └── common/
 │       ├── AppSidebar.vue         # 側邊導航列
 │       ├── AppHeader.vue          # 頂部導航列
@@ -129,6 +135,9 @@ src/
 │   ├── retrievalService.js        # 支援 points 批次刪除、檔案過濾與 updateLinks
 │   ├── embeddingService.js        # 支援標籤、類別與 JSON 匯入
 │   ├── databaseIndexingService.js # 資料庫匯入 API
+│   ├── aiDbQueryService.js        # 語義資料庫查詢法：Profile CRUD、match-profiles、execute
+│   ├── attachmentService.js       # 附件上傳/列表/刪除，含 blob 下載 (帶 Bearer Token)
+│   ├── imageService.js            # 讀取文件擷取圖片 (GET /api/embedding/images/{stored_filename})
 │   ├── evalService.js
 │   └── feedbackService.js
 └── router/
@@ -167,18 +176,24 @@ backend/
 │   ├── retrieval.py               # 向量搜尋、語義混合搜尋、Points 批次刪除/刪檔/更新關聯
 │   ├── evaluation.py               # 測試集 CRUD + SSE 評估跑分（含 structured_metadata 傳遞）
 │   ├── prompt.py                  # Prompt 預覽/A-B測試(SSE)/範本/歷史 CRUD（/generate 為 stub）
-│   ├── embedding.py               # 上傳/切分預覽/向量化/JSON匯入/標籤/類別
+│   ├── embedding.py               # 上傳(含 extract_images 圖片擷取)/切分預覽/向量化/JSON匯入/標籤/類別/圖片讀取
 │   ├── feedback.py                # 人工回饋刪除與批次刪除
 │   ├── knowledge_base.py          # 知識庫 CRUD 與檔案元資料/結構化地圖
 │   ├── database_indexing.py       # 自訂資料庫（SQL Server/Oracle）連線與匯入向量化
+│   ├── ai_db_query.py             # 語義資料庫查詢法：Profile CRUD、schema 探索、match-profiles/execute
+│   ├── attachment.py              # 附件上傳/列表/刪除/下載，上傳時自動呼叫 DocumentParser 解析內容
 │   └── sqlserver.py               # 既有 SQL Server 文章分頁查詢與導入
 ├── services/
 │   ├── llm_service.py             # vLLM 封裝
 │   ├── embedding_service.py       # llama.cpp 封裝，含 query_to_semantic_json（語義結構 JSON 分析 + 反幻想 Prompt + 結構化地圖注入）
 │   ├── sparse_embedding_service.py # fastembed 封裝 (SPLADE 稀疏向量)
-│   ├── qdrant_service.py          # Qdrant 操作：建立/刪除 collection、RRF 混合搜尋 (search_similar)、雙階段關聯檢索 (search_similar_two_step)、取得結構化 metadata (get_unique_metadata)、更新 links_to (update_links_to_by_filename)、Points 刪除、Parent-Child 動態拼接還原 (get_siblings_and_merge)
+│   ├── qdrant_service.py          # Qdrant 操作：建立/刪除 collection、RRF 混合搜尋 (search_similar)、雙階段關聯檢索 (search_similar_two_step)、取得結構化 metadata (get_unique_metadata)、更新 links_to/linked_attachments、Points 刪除、Parent-Child 動態拼接還原 (get_siblings_and_merge)、同段落圖片兄弟節點重組 (get_image_siblings)
+│   ├── rerank_service.py          # RerankService：借用地端 Instruct LLM 對 RRF 候選片段做語意重排序，失敗時優雅降級為原始順序
+│   ├── feedback_boost_service.py  # FeedbackBoostService：依歷史人工回饋（filename+chunk_index 比對）對檢索分數加權，供 semantic_hybrid_feedback 使用
+│   ├── context_summarizer_service.py # ContextSummarizerService：Map-Reduce 分批摘要 (maybe_summarize)，Context 超過門檻時遞迴呼叫 LLM 摘要
+│   ├── ai_db_query_service.py     # AIDBQueryService：Profile 篩選(match_profiles)、SQL 產生與驗證(execute)、唯讀安全檢查
 │   ├── chunking_service.py        # 標準文本切分
-│   ├── document_parser.py         # 文件解析 (整合 Word 與 4GL 格式)
+│   ├── document_parser.py         # 文件解析 (整合 Word 與 4GL 格式)，含 extract_images_from_pdf/extract_images_from_docx 圖片擷取
 │   ├── word_parent_child_chunker.py # Word 結構化與雙層切分服務
 │   ├── markdown_parent_child_chunker.py # MD 雙層標題路徑切分工具
 │   └── parent_child_chunker.py    # 4GL 與 4FD 語法/結構雙層切分
@@ -186,6 +201,8 @@ backend/
 │   ├── mongodb.py                 # init_beanie 註冊清單 + 啟動 seed 邏輯（預設 KB/測試集/範本/A-B紀錄）
 │   ├── sqlserver.py               # SQL Server 連線輔助函式（非 beanie Document）
 │   ├── database_config.py         # 資料庫連線配置模型
+│   ├── db_query_profile.py        # 語義資料庫查詢法之查詢設定檔模型 (DBQueryProfile)
+│   ├── attachment.py              # 附件 metadata 模型 (Attachment，含 extracted_content/extraction_error)
 │   ├── tag.py                     # 分類標籤模型
 │   ├── class_option.py            # 自訂類別選項模型
 │   ├── prompt_test_record.py      # Prompt 測試歷史與結果模型
@@ -198,17 +215,19 @@ backend/
 │   └── app_config.py
 ├── schemas/                       # Pydantic Schema（僅部分模組使用獨立檔案，其餘定義於各 router 內）
 │   ├── auth.py
-│   ├── retrieval.py                # SearchParams / RetrievalMetadata(含 links_to) / UpdateLinksRequest 等
+│   ├── retrieval.py                # SearchParams / RetrievalMetadata(含 links_to/linked_attachments/chunk_type/image_filename/image_chunks) / UpdateLinksRequest 等
 │   ├── embedding.py
 │   ├── knowledge_base.py
 │   ├── database_indexing.py
+│   ├── ai_db_query.py              # DBQueryProfile 請求/回應 schema (含 is_default)
+│   ├── attachment.py                # AttachmentResponse 等
 │   └── sqlserver.py
 │   # 註：rag / evaluation / prompt / feedback 的 request/response 模型目前定義於對應 routers/*.py 內，未拆分至 schemas/
 └── utils/
     └── security.py                # bcrypt + JWT (verify_password / create_access_token / get_current_user)
 ```
 
-> **與前一版文件的差異**：`middleware/`（`auth_middleware.py`/`cors.py`）、`services/eval_service.py`、`services/feedback_service.py`、`services/prompt_engine.py`、`utils/helpers.py` 於目前程式碼中**皆不存在**，對應邏輯已內聯在各 router 檔案中，不應視為獨立模組。
+> **與前一版文件的差異**：`middleware/`（`auth_middleware.py`/`cors.py`）、`services/eval_service.py`、`services/feedback_service.py`、`services/prompt_engine.py`、`utils/helpers.py` 於目前程式碼中**皆不存在**，對應邏輯已內聯在各 router 檔案中，不應視為獨立模組。**2026-07-08 補充**：`ai_db_query.py`／`attachment.py` routers 與 `rerank_service.py`／`feedback_boost_service.py`／`context_summarizer_service.py`／`ai_db_query_service.py` 於前一版文件中遺漏未收錄，現已補上。
 
 ---
 
@@ -216,7 +235,7 @@ backend/
 
 ### 5.1 RAG 與雙階段關聯檢索流程 (Two-Step Hybrid Retrieval)
 
-當使用者在前端啟用「**語義混合查詢 (semantic_hybrid)**」時（`/api/rag/chat`、`/api/retrieval/search`、`/api/retrieval/semantic-hybrid-search`、`/api/evaluation/run` 皆共用同一套邏輯），系統資料流如下：
+當使用者在前端啟用「**語義混合查詢 (semantic_hybrid)**」及其兩個變體「**語義混合回饋查詢法 (semantic_hybrid_feedback)**」「**語義混合附件查詢法 (semantic_hybrid_attachment)**」時（`backend/routers/rag.py` 對這三種 `search_type` 皆一視同仁地呼叫同一套雙階段邏輯；`/api/retrieval/search`、`/api/retrieval/semantic-hybrid-search`、`/api/evaluation/run` 亦共用），系統資料流如下：
 
 ```
 Query (原始提問)
@@ -259,6 +278,27 @@ Structured JSON { "embeddings_input": "...", "sparse_keywords": [...] }
         與第一階段結果合併，依內容 .strip() 去重
                         │
                         ▼
+      [RerankService.rerank：LLM 相關性重排序]
+      候選數 > top_k 時，借用地端 Instruct LLM 對候選片段
+      重新評分排序（彌補 RRF 只看排名的限制）；
+      呼叫失敗時優雅降級為保留原始順序，不中斷檢索
+                        │
+        ┌───────────────┴───────────────┐
+        │ search_type ==                 │ 其餘 semantic_hybrid* 模式
+        │ semantic_hybrid_feedback       │
+        ▼                                 │
+[FeedbackBoostService.apply_feedback_boost]│
+以 filename+chunk_index 比對歷史人工回饋   │
+（✅/❌ 標註）對分數加權後重新排序          │
+        └───────────────┬───────────────┘
+                        ▼
+        [同段落圖片兄弟節點合併]（若命中片段所屬 parent_id
+        底下存在圖片 chunk）：qdrant_service.get_siblings_and_merge /
+        get_image_siblings 依 image_filename 分組重組，附掛
+        metadata.image_chunks／parent_content，供前端縮圖與
+        LLM context 攤平引用（見 `03_API_CONTRACT.md` §3.1、§15）
+                        │
+                        ▼
                      [召回段落排序]
                                                  │
                                                  ▼
@@ -270,7 +310,7 @@ Structured JSON { "embeddings_input": "...", "sparse_keywords": [...] }
 
 **設計動機**（見 `docs/DevelopmentProcess/BugFix.md` 2026-07-01）：早期版本的第二階段對 `links_to` 關聯檔案直接用無差別 `scroll` 撈出全部（最多 50 筆）Chunks，會造成大量無關段落稀釋 Context；現行版本改為「有查詢向量時使用語意/關鍵字混合搜尋 + `score_threshold` 過濾」，僅在無查詢向量時（如單元測試）才降級為 `scroll`。
 
-`vector`、`hybrid` 兩種模式仍呼叫單階段的 `search_similar()`，不會觸發雙階段鄰居搜尋。
+`vector`、`hybrid` 兩種模式仍呼叫單階段的 `search_similar()`，不會觸發雙階段鄰居搜尋，也不會呼叫 Rerank/FeedbackBoost。`semantic_hybrid_attachment` 額外會在完成上述流程後，依命中片段的 `linked_attachments` 欄位查詢 MongoDB `attachments` collection 並組出下載點（見 `03_API_CONTRACT.md` 第 14 節），檢索邏輯本身與 `semantic_hybrid` 完全相同。
 
 ### 5.2 Map-Reduce 上下文分批摘要機制
 
