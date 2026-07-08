@@ -578,3 +578,22 @@ IMAGE_CAPTION_CONCURRENCY: int = int(os.getenv("IMAGE_CAPTION_CONCURRENCY", "3")
 3. `backend/routers/rag.py`：`context_parts` 組裝迴圈新增攤平 `meta.get("image_chunks", [])` 的邏輯，並用貫穿整個迴圈的 `seen_image_filenames` 集合去重（涵蓋頂層圖片 hit 自己的 `image_filename`，避免圖片自己也出現在自己的巢狀清單中被重複攤平；也避免同一張圖片透過不同「贏家」結果被塞入 context 兩次）。`sources` 陣列組成與 `retrieved_summary`（`vector_search` 步驟訊息）未變動，只有實際送進 LLM 的 `context_str` 內容變多。
 4. **驗證方式**：因本地無可用的即時 llama.cpp 服務可驗證 Prompt 對模型輸出品質的實際影響，該部分僅靜態檢視文字修改。`_group_and_merge_image_siblings()`／`context_parts` 攤平邏輯則用獨立 Python 腳本驗證：單片段圖片正確帶出 `chunk_index`；多片段圖片正確帶出共用範圍；同一 `parent_id` 下的不同圖片各自保留自己的 `chunk_index`（不被誤合併，回歸 11 節既有邏輯）；一筆文字結果附帶 9 張同段落圖片時全部 9 張都會攤平進 context；同一張圖片透過兩筆不同「贏家」結果重複出現時只會被計入一次；圖片本身命中時，其巢狀 `image_chunks` 清單中的「自己」不會被重複攤平、但清單中的其他圖片仍會正確攤平。另重跑既有回歸測試 `backend/tests/test_word_chunker.py`、`tests/test_two_step_search.py`，確認未受影響、全數通過。
 5. 前端 `SourceChunks.vue`／`sources` 回傳結構皆未修改，如規劃預期。
+
+# 15. 圖片描述與 RAG 重複偵測演算法升級（2026-07-08 修正）
+
+### 15.1 問題描述
+
+使用者在實測解析圖片（`describe_image`）時，多張圖片頻繁觸發 `LLMService._is_repeating_tail` 導致圖片描述生成失敗（顯示為「描述失敗」或「描述可能被截斷」）。
+根本原因為舊有的 `_is_repeating_tail` 採用全局字串出現次數統計（`accumulated.count(tail) >= 4`），當模型在正常長推理/描述過程中多次提及上下文提示或長技術名詞（如 `Createdb dbname 4 ---> 建立一個指定來源的資料庫(非DS資料庫 )`）時，極易將其誤判為生成無限迴圈。
+
+### 15.2 解決方案與實作結果
+
+1. **升級為連續週期性重複（Consecutive Loop）演算法**：
+   重構 `backend/services/llm_service.py` 中的 `_is_repeating_tail()`。設定偵測週期 P 介於 3 到 250 之間。唯有當累積字串尾部最後長度為 P 的區塊，在局部滑動視窗（大小限制為 P * 5）內連續重覆出現達 `trigger_count` 次時，才判定為無限迴圈。
+2. **加入 Alphanumeric 過濾機制**：
+   在判斷週期時，要求重複區塊 `suffix` 中必須含有至少一個 `isalnum()` 字母或數字。藉此正確忽略 Markdown 表格線（如 `|---|---|---|`）、純空格、換行、點號 `...` 等排版性符號的連續重複，防範其被誤判為內容迴圈。
+3. **影響與相容性**：
+   - 封裝簽章與回傳型別完全不變，無須修改 RAG 路由（`rag.py`）或前端。
+   - `rag.py` 因為同樣呼叫 `LLMService._is_repeating_tail`，因此自動繼承並受益於此升級，解決對話串流的重複誤判風險。
+4. **驗證方式**：
+   已透過獨立 Python 測試腳本，完整覆蓋並通過「正常分散提及關鍵字」、「寬 Markdown 表格線不誤觸」以及「真實連續重複精準攔截」等多情境驗證，成功排除所有 False Positive。原本創建的所有暫存測試檔案已全部刪除，保持環境衛生。

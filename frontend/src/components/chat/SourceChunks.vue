@@ -35,7 +35,8 @@ const imageSources = computed(() => {
             filename: img.metadata?.filename || s.metadata?.filename,
             page: img.metadata?.page || s.metadata?.page,
             chunk_type: 'image',
-            image_filename: img.metadata?.image_filename
+            image_filename: img.metadata?.image_filename,
+            chunk_index: img.metadata?.chunk_index
           },
           score: s.score,
           token_count: 0

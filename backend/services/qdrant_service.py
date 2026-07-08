@@ -299,6 +299,9 @@ class QdrantService:
                 ]
             )
 
+            # 若需要進行 parent 去重合併，應擴大從 Qdrant 查詢點位的數量限制，以免去重後數量不足 top_k
+            search_limit = top_k if disable_parent_merge else max(top_k * 4, 20)
+
             if search_type in ["hybrid", "semantic_hybrid"] and query_vector is not None and query_text is not None and query_text.strip():
                 try:
                     from services.sparse_embedding_service import SparseEmbeddingService
@@ -307,14 +310,14 @@ class QdrantService:
                     prefetch_dense = models.Prefetch(
                         query=query_vector,
                         using="",  # 預設密集向量空間
-                        limit=top_k * 2,
+                        limit=search_limit * 2,
                         filter=query_filter
                     )
                     
                     prefetch_sparse = models.Prefetch(
                         query=query_sparse,
                         using="sparse-text",  # 稀疏向量空間
-                        limit=top_k * 2,
+                        limit=search_limit * 2,
                         filter=query_filter
                     )
                     
@@ -358,7 +361,7 @@ class QdrantService:
                         prefetch_exact = models.Prefetch(
                             query=query_sparse,
                             using="sparse-text",
-                            limit=top_k * 2,
+                            limit=search_limit * 2,
                             filter=exact_filter
                         )
                         prefetch_list.append(prefetch_exact)
@@ -371,7 +374,7 @@ class QdrantService:
                         query=models.FusionQuery(
                             fusion=models.Fusion.RRF
                         ),
-                        limit=top_k
+                        limit=search_limit
                     )
                     results = response.points
                     logger.info("Hybrid search executed successfully via Qdrant RRF (with exact keyword boost).")
@@ -381,7 +384,7 @@ class QdrantService:
                     response = await client.query_points(
                         collection_name=collection_name,
                         query=query_vector,
-                        limit=top_k,
+                        limit=search_limit,
                         score_threshold=score_threshold,
                         query_filter=query_filter
                     )
@@ -390,7 +393,7 @@ class QdrantService:
                 # 執行無向量條件的 Scroll 查詢
                 scroll_result = await client.scroll(
                     collection_name=collection_name,
-                    limit=top_k,
+                    limit=search_limit,
                     scroll_filter=query_filter,
                     with_payload=True,
                     with_vectors=False
@@ -401,7 +404,7 @@ class QdrantService:
                 response = await client.query_points(
                     collection_name=collection_name,
                     query=query_vector,
-                    limit=top_k,
+                    limit=search_limit,
                     score_threshold=score_threshold,
                     query_filter=query_filter
                 )
@@ -452,6 +455,9 @@ class QdrantService:
                     seen_parents.add(parent_id)
                 deduped_results.append(item)
             
+            # 2.5 限制去重後的結果最多為 top_k 筆，避免回傳過多 Context
+            deduped_results = deduped_results[:top_k]
+            
             # 3. 處理 Parent-Child 的還原與合併
             final_results = []
             for item in deduped_results:
@@ -463,7 +469,7 @@ class QdrantService:
                     parent_content = meta.get("parent_content")
                     parent_range = meta.get("parent_chunk_index_range")
                     image_chunks = []
-
+ 
                     # 情況 A：若元資料中沒有預存的 parent_content，則從資料庫中撈取所有兄弟節點進行合併 (相容舊資料)
                     if not parent_content:
                         parent_content, parent_range, image_chunks = await cls.get_siblings_and_merge(
@@ -486,7 +492,7 @@ class QdrantService:
                             )
                         # 為取得同 parent_id 下的圖片，只需要撈取圖片型兄弟節點，不需要重複執行文字合併運算
                         image_chunks = await cls.get_image_siblings(collection_name, parent_id)
-
+ 
                     if is_image_chunk:
                         # 圖片 chunk 本身被命中時：圖片描述若因過長被切成多個片段，命中的可能只是其中一段，
                         # 換成同一張圖片重組後的完整描述，而不是只顯示命中的那一小段
@@ -502,12 +508,15 @@ class QdrantService:
                             ic for ic in image_chunks
                             if ic.get("metadata", {}).get("image_filename") != self_image_filename
                         ]
+                        # 額外保留周邊純文字內容於 metadata 中，供 RAG router 併入 LLM 提示詞脈絡中
+                        if parent_content:
+                            item["metadata"]["parent_content"] = parent_content
                     elif parent_content:
                         item["content"] = parent_content
                     if parent_range:
                         item["metadata"]["chunk_index"] = parent_range
                     item["metadata"]["image_chunks"] = image_chunks
-
+ 
                 final_results.append(item)
                 
             return final_results

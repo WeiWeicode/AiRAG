@@ -1,5 +1,55 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-07-08 修正 RAG 檢索段落去重飢餓、圖片 Chunk 命中遺失周邊文字、以及圖片索引號顯示 #? 錯誤
+
+### 問題描述
+使用者在進行 RAG 測試提問「跟我說明 GP51 建立備份營運中心.docx 文件與圖片」時，發現以下問題：
+1. **去重飢餓與段落遺失**：AI 只總結了 1 筆包含圖片的段落，其他純文字段落（段落 0, 1, 2）完全沒有被加入總結中。
+2. **段落索引顯示錯誤**：前端的引用來源區中，圖片對應的段落編號顯示為 `#?`。
+
+**根本原因**：
+1. **去重飢餓**：`qdrant_service.py` 相似度檢索在 Qdrant 查詢時直接使用 `limit=top_k`（如 5）。當檢索出的 top_k 點位均為同一段落（`parent_id` 相同）下的不同圖片區塊時，經依 `parent_id` 去重後僅剩 1 筆結果，造成嚴重的結果飢餓（Starvation），其他段落無法被召回。
+2. **圖片命中時遺失周邊文字**：當圖片 Chunk 自己是 top hit 時，其內容維持為圖片描述。但此時去重邏輯完全丟棄了該 `parent_id` 對應的 `parent_content`（純文字段落），導致 AI 只看得到該圖片描述，卻看不到旁邊的純文字段落內容。
+3. **圖片索引 `#?`**：前端 `SourceChunks.vue` 在攤平收集 `image_chunks` 兄弟節點時，未將 metadata 中的 `chunk_index` 複製過去，導致前端 template 因讀不到 `chunk_index` 而 fallback 顯示為 `?`。
+4. **缺少 RAG 檔名過濾**：語義解析轉出的 `source_file` 資訊未被透傳給 Qdrant 檢索，導致檢索範圍未限定在使用者指定的單一檔案。
+
+### 解決方案
+1. **擴大查詢召回**：在 `qdrant_service.py` 的 `search_similar()` 中，若啟用 parent 融合去重（`disable_parent_merge=False`），則 Qdrant 查詢的 limit 擴大至 `max(top_k * 4, 20)`，在完成 `parent_id` 去重後再 slice 限制回 `top_k`，確保召回數量足夠且不飢餓。
+2. **保留並併入周邊文字**：在 `qdrant_service.py` 的 `search_similar()` 中，當 `is_image_chunk` 為真時，額外將 `parent_content` 儲存於 `item["metadata"]["parent_content"]` 中。並在 `rag.py` 組合 `context_parts` 時，若命中圖片 Chunk 且存在 `parent_content`，則將其以「`【來源文件：... | 段落編號：#X（周邊文字）】`」的格式作為獨立 context 區塊塞入，確保 AI 能同時接收圖片描述與相鄰純文字。
+3. **修復前端欄位對齊**：修改 `SourceChunks.vue` 的 `nestedImages` 收集 mapping 邏輯，補上 `chunk_index: img.metadata?.chunk_index`。
+4. **套用檔名過濾**：在 `rag.py` 的語義混合檢索分支中，從 `semantic_json` 中提取 `source_file` 並作為 `filter_filename` 參數傳遞給 `search_similar_two_step`。
+
+### 修改檔案
+- `backend/services/qdrant_service.py`
+- `backend/routers/rag.py`
+- `frontend/src/components/chat/SourceChunks.vue`
+
+### 驗證
+- **程式碼編譯與語法**：使用 `py_compile` 驗證 Python 檔案語法正確。
+- **前端編譯**：使用 `npm run build` 驗證 Vite 專案編譯正常。
+
+## 2026-07-08 修正圖片描述重複偵測因全局長技術詞統計而導致的誤判（False Positive）失敗問題
+
+### 問題描述
+使用者上傳包含 `Createdb dbname 4 ---> 建立一個指定來源的資料庫(非DS資料庫 )` 上下文段落之 Word 文件時，多張圖片在解析描述階段（`describe_image`）頻繁觸發「`Detected repeated reasoning loop while describing image, aborting early``」警告，導致圖片描述大量顯示為「描述失敗」或「描述可能被截斷」狀態。
+
+**根本原因**：既有的 `_is_repeating_tail` 重複偵測邏輯為「取累積文字的最後 25 個字（`tail`），若其在整個已累積字串中的出現次數 >= 4 次即視為迴圈」。這在技術型圖片描述中極易誤判：模型在長推理/描述過程中，正常地多次提及上下文提示或長技術名詞（如上述長達 45 字的詞），使得最後結尾包含該名詞時，整個段落中的計數直接達到 4 次，進而觸發誤判（非真正無限迴圈）。
+
+### 解決方案
+將 `backend/services/llm_service.py` 中的 `_is_repeating_tail` 升級為**連續週期性重複（Consecutive Loop）**演算法：
+1. **連續性重複判定**：只有在最近的尾端區域中（視窗大小限制為 `ngram_size * (trigger_count + 1)`，預設 125 字），該長度為 P（3 <= P <= 250）的區塊連續重覆出現達 `trigger_count` 次時，才判定為無限迴圈。
+2. **Alphanumeric 字元過濾保護**：為避免 Markdown 排版（如寬表格分隔線 `|---|---|---|`）、純空格、換行或標點符號的連續出現被誤判為內容迴圈，過濾要求重複區塊中必須包含至少一個字母或數字（`any(c.isalnum() for c in suffix)`）。
+3. **完全向前相容**：維持原本的 `ngram_size` 與 `trigger_count` 參數介面不變，RAG 路由及其他呼叫端無須進行任何調整。
+
+### 修改檔案
+- `backend/services/llm_service.py`
+
+### 驗證
+使用獨立測試腳本進行多情境模擬驗證：
+- **正常技術描述（分散提及同一關鍵字 4 次）** -> 正常通過（不誤判）
+- **寬 Markdown 表格排版分隔符號** -> 正常通過（不誤判）
+- **真實的連續重複迴圈** -> 精準中斷（觸發攔截）
+
 ## 2026-07-07 修正圖片描述因固定 60 秒逾時而失敗、且錯誤訊息空白無法診斷的問題（9.11）
 
 ### 問題描述（詳見 `docs/DevelopmentProcess/DocumentImageEmbeddingPlan.md` 第 9 節 9.11）

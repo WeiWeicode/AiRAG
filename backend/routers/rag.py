@@ -279,6 +279,7 @@ async def rag_chat_stream(request: ChatRequest):
                     }
                     yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
                     
+                    filter_filename = None
                     # 取得提問向量
                     if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment"):
                         # 先發送進行中事件表示在進行 Instruct 語義分析
@@ -306,6 +307,10 @@ async def rag_chat_stream(request: ChatRequest):
 
                         embeddings_input = semantic_json.get("embeddings_input", question)
                         sparse_keywords = semantic_json.get("sparse_keywords", [])
+                        
+                        metadata = semantic_json.get("metadata", {})
+                        if metadata and metadata.get("source_file"):
+                            filter_filename = metadata.get("source_file")
                         
                         # 顯示結構化 JSON
                         json_str = json.dumps(semantic_json, indent=2, ensure_ascii=False)
@@ -378,6 +383,7 @@ async def rag_chat_stream(request: ChatRequest):
                             top_k=top_k,
                             score_threshold=score_threshold,
                             filter_tags=filter_tags,
+                            filter_filename=filter_filename,
                             sparse_keywords=sparse_keywords
                         )
                         # 借用 Instruct LLM 對融合後的候選片段做相關性重排序，取前 top_k 筆
@@ -448,7 +454,8 @@ async def rag_chat_stream(request: ChatRequest):
                                 "linked_attachments": meta.get("linked_attachments", []),
                                 "chunk_type": meta.get("chunk_type"),
                                 "image_filename": meta.get("image_filename"),
-                                "image_chunks": meta.get("image_chunks", [])
+                                "image_chunks": meta.get("image_chunks", []),
+                                "parent_content": meta.get("parent_content")
                             },
                             "score": item.get("score", 0.0),
                             "token_count": count_tokens(item.get("content", ""))
@@ -458,6 +465,15 @@ async def rag_chat_stream(request: ChatRequest):
                         context_parts.append(f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{item.get('content', '')}")
                         if meta.get("chunk_type") == "image" and meta.get("image_filename"):
                             seen_image_filenames.add(meta.get("image_filename"))
+
+                        # 若該命中的圖片 Chunk 帶有周邊文字 (parent_content)，併入脈絡以補全文字資訊
+                        if meta.get("chunk_type") == "image" and meta.get("parent_content"):
+                            parent_content = meta.get("parent_content")
+                            parent_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
+                            context_parts.append(
+                                f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{parent_idx_str}（周邊文字）】\n"
+                                f"內容：{parent_content}"
+                            )
 
                         # 攤平同段落的其他圖片描述併入 context，否則這些圖片只會出現在前端縮圖清單，
                         # 從未真正送進 LLM 的 context，導致 AI 只看得到 parent_id 去重後倖存的那一張圖

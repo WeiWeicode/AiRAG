@@ -12,11 +12,34 @@ class LLMService:
         """
         偵測累積文字尾端是否不斷重複同一段內容，用來判斷模型是否陷入無限迴圈。
         RAG 對話串流（routers/rag.py）與圖片描述生成（describe_image）共用同一套判斷邏輯。
+        採用「連續週期性重複（Consecutive Loop）」演算法，避免非連續重複造成的誤判，
+        並排除純標點符號與排版符號（如 Markdown 表格線、空格、換行）的干擾。
         """
-        if len(accumulated) < ngram_size * trigger_count:
+        n = len(accumulated)
+        min_period = 3
+        # 週期上限設為 ngram_size * 10（預設 250）或總長度的一半，能完全涵蓋長技術名詞或上下文提示的長度
+        max_period = max(250, ngram_size * 10)
+        
+        if n < min_period * trigger_count:
             return False
-        tail = accumulated[-ngram_size:]
-        return accumulated.count(tail) >= trigger_count
+            
+        for p in range(min_period, min(max_period + 1, n // trigger_count + 1)):
+            suffix = accumulated[-p:]
+            # 區塊內必須包含至少一個字母或數字（避免 Markdown 分隔線 |---| 或純換行空格觸發）
+            if not any(c.isalnum() for c in suffix):
+                continue
+                
+            is_loop = True
+            for i in range(1, trigger_count):
+                start = n - (i + 1) * p
+                end = n - i * p
+                if accumulated[start:end] != suffix:
+                    is_loop = False
+                    break
+            if is_loop:
+                return True
+                
+        return False
 
     @classmethod
     async def chat_completion(
