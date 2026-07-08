@@ -1,5 +1,88 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-07-08（已實作，後續發現）標頭格式修正後問題仍在：Map-Reduce 分批摘要區塊重建時遺漏攤平的圖片描述，且 Citation 範例數量錨定模型只引用少數段落
+
+### 問題描述
+延續同日稍早的「Context 標頭格式污染」修正（見下一則條目），使用者依相同問題（「說明GP51建立備份營運中心.docx包含圖片」）重新測試後，畫面確認：
+- 前端「同段落」標籤與 Token 統計已正常顯示（上一次修正的前端／Token 部分確認有效）。
+- 但 AI 回覆的結論**仍然**只引用總結 1~2 筆段落，其餘 10 幾筆同段落圖片描述依然完全沒有出現在回答中——證明「標頭格式污染」並非唯一根因，該修正是必要但不充分的。
+
+再次透過 Explore／Plan 子代理交叉調查並逐一核對現行程式碼後，定位出兩個疊加的新根因。
+
+### 根本原因
+
+**1.（主因，新發現）Map-Reduce 分批摘要重建 `blocks` 時只採用 `sources`，遺漏攤平進 `context_parts` 的周邊文字與圖片描述，導致「未達門檻直接合併」的分支用不完整內容覆蓋掉原本正確的 `context_str`**
+
+`backend/routers/rag.py`：
+- 第 439-514 行組裝的 `context_parts`／`context_str` 是完整的（核心命中＋周邊文字＋攤平的同段落圖片描述皆在內）。
+- 但第 563-578 行另外重建的 `blocks`（供 `ContextSummarizerService.maybe_summarize` 判斷是否需要分批摘要）**只從 `sources` 陣列逐筆建立**，而 `sources` 只有每個 `raw_results` 核心命中一筆，從未包含攤平進 `context_parts` 的周邊文字／圖片描述區塊。
+- `ContextSummarizerService.maybe_summarize`（`context_summarizer_service.py:113-120`）在 `blocks` 總 token 數未達門檻（本例遠低於預設 50,000）時，會直接 `result["context_str"] = "\n---\n".join(b["text"] for b in blocks)`——用這個**不完整的 `blocks`** 重建 `context_str`。
+- `rag.py:599-600` 再把這個不完整的重建結果**覆蓋掉**原本正確、完整的 `context_str`。
+
+也就是說，不論標頭格式再乾淨，這些同段落圖片描述在送進最終 `system_prompt` 之前就已經被這個重建流程整批丟棄，LLM 根本沒看到它們。畫面顯示的「總計 Token」是在這個覆蓋動作**之前**另外計算的（`rag.py:561`），因此完全看不出內容已經被砍掉，這也是為何先前的 Token 數字檢查沒能抓到這個問題。
+
+**2.（次因，新發現）System Prompt 的引用格式範例只示範 3 筆，可能錨定模型只引用少量段落**
+
+`rag.py` 的 `elif context_str:` system prompt 規則 1 只說「儘量使用參考資料中的資訊來回答」（軟性、非強制窮盡），規則 4 唯一示範「引用多個段落」的範例固定只列出 3 個段落編號（`#43`、`#45`、`#10`），且沒有任何說明表示實際數量可以遠不只 3 筆。全專案 grep 未發現任何「必須逐一列舉所有相關內容」的既有規則寫法。這很可能讓模型即使真的收到 10 幾筆圖片描述，也會被這個範例錨定，傾向只挑 2~3 筆具代表性的段落引用。
+
+### 解決方案
+1. **`rag.py` 第 571-578 行附近**：`blocks`（非 `is_db` 分支）改為直接沿用組裝 `context_parts` 時已完整組好的文字區塊清單（`for idx, part_text in enumerate(context_parts): blocks.append({"text": part_text, "label": f"context_block_{idx + 1}"})`），取代原本只從 `sources` 重建的邏輯，確保分批摘要門檻判斷與「未達門檻直接合併」的結果都以實際送進 LLM 的完整內容為準，不會再遺漏周邊文字／圖片描述。同時修正了一個潛在的正確性問題：若真實 context（含攤平圖片）超過摘要門檻但 `sources`-only 加總沒超過，先前會誤判不需要摘要。
+2. **`rag.py` 的 `elif context_str:` system prompt**：規則 4 補上一句明確說明「範例僅為格式示範，並非引用數量上限」，並新增條件式規則 5——僅在 `context_str.count("[圖片描述]") >= 2`（確實存在多張圖片描述）時才附加，要求模型針對每一張圖片逐一說明或至少提及，不要只挑一張作代表；並保留「若問題明顯只針對特定圖片則可聚焦」的例外，避免影響一般大 `top_k` 純文字問答的正常摘要行為。
+
+### 修改檔案
+- `backend/routers/rag.py`
+
+### 驗證
+- `python -c "import ast; ast.parse(...)"` 驗證語法正確。
+- **待使用者實機驗證**：重新提問同一問題，確認 AI 回覆會引用/提及大多數（而非僅 1~2 筆）圖片段落；並用先前 top_k=23 的一般純文字問題回歸測試，確認規則 5 不會被觸發、答案不會被強迫塞入過多不必要的引用。
+
+## 2026-07-08（已實作）Context 標頭格式污染導致 AI 排除多筆圖片來源引用，且前端相似度／Token 統計皆為失真數值
+
+### 問題描述
+使用者在 RAG 測試頁提問「說明GP51建立備份營運中心.docx包含圖片」，發現：
+- 前端「參考圖片引用 (Image Chunks)」列表成功顯示 7 筆圖片區塊（`#3~5`、`#6~10`、`#11`、`#12~14`、`#15`、`#16~20`、`#21~24`）。
+- 但 AI 回覆的結論中，僅引用並總結了其中 1 筆（`#3~5`），其餘 6 筆圖片描述完全沒有出現在回答文字中（雖然仍正常顯示在畫面下方的來源清單）。
+- 另外前端列表中這 7 筆圖片的 `Similarity` 全部顯示相同的 `1.50`，「總計 Token」也明顯偏低（僅 1,079）。
+
+本問題先由 Claude 與 Gemini 分別進行根因排查並交叉比對，取交集中證據最充分、且已對照實際程式碼行號驗證屬實的三項根因，記錄如下，待使用者確認後再進行實作。
+
+### 根本原因
+
+**1.（主因，已核對程式碼確認）Context 標頭格式污染，導致 LLM 為遵守嚴格引用規則而排除格式不乾淨的來源**
+
+`backend/routers/rag.py` 組裝 `context_parts` 時，把附加說明直接寫進「段落編號」欄位本體：
+- `rag.py:473-476`（周邊文字區塊）：`f"【來源文件：{filename} | 段落編號：{parent_idx_str}（周邊文字）】"`
+- `rag.py:488-491`（圖片描述區塊）：`f"【來源文件：{filename} | 段落編號：{img_chunk_idx_str}（圖片描述）】"`
+
+但 system prompt（`rag.py:615-617`）明確要求引用格式必須是乾淨的 `#段落編號`（例如「依據 [文件名] 段落: #6~10 做出以下結論」）。當某筆來源的段落編號被寫成 `#6~10（圖片描述）` 時，不符合這個乾淨格式規範；LLM 為了遵守「只能引用參考資料、不可編造內容」的嚴格規則，傾向直接不引用/不使用這些格式不乾淨的來源，只保留格式乾淨的核心命中結果（`#3~5`，無後綴），這解釋了為何只有一筆圖片被總結、其餘 6 筆（皆帶有 `（圖片描述）` 後綴）被完全忽略。
+
+**2.（已核對程式碼確認）前端「同段落圖片」的 Similarity 分數是偽造的**
+
+`frontend/src/components/chat/SourceChunks.vue:22-60` 的 `imageSources` 在組「同段落圖片」（`nestedImages`）時，直接沿用帶出這些圖片的宿主來源的 `score`：
+```js
+nestedImages.push({ ..., score: s.score, ... })
+```
+但這些圖片其實是透過 `parent_id` 撈出的「同段落兄弟節點」（`get_image_siblings`/`get_siblings_and_merge`，`backend/services/qdrant_service.py:1409-1479`），本身是用 Qdrant `scroll` 取得、完全沒有相似度分數，前端卻讓全部 7 筆圖片顯示同一個繼承來的分數（`1.50`），讓使用者誤以為 7 張圖片都被向量檢索獨立、高度命中，但實際上只有 1 張是查詢真正命中的。
+
+**3.（已核對程式碼確認）Token 統計低估，未涵蓋攤平塞入 Context 的周邊文字與圖片描述**
+
+- 前端 `SourceChunks.vue:42` 的 `nestedImages` 項目把 `token_count` 硬編碼為 `0`。
+- 後端 `rag.py:544`：`context_summary["total_tokens"] = sum(s.get("token_count", 0) for s in sources) + att_tokens` 只加總 `sources` 陣列（本次為 3 筆文字來源）自身的 token 數，完全沒有計入 `rag.py:473-476`／`rag.py:488-491` 額外攤平進 `context_parts` 的「周邊文字」與 7 張圖片描述的 token 數。畫面顯示的「總計 Token: 1,079」是低估值，實際送進 LLM 的 context 更大，也可能影響「是否超過分批摘要門檻（50,000）」判斷的準確性。
+
+### 解決方案
+1. **淨化 Context 標頭（對應主因）**：`rag.py` 的周邊文字／圖片描述區塊，「段落編號」欄位改回純數字/純區間格式（例如 `段落編號：#6~10`，不再附加後綴），附加說明改成內容區塊的類型前綴（`內容：[周邊文字] ...`／`內容：[圖片描述] ...`），符合 system prompt 要求的 `#段落編號` 乾淨引用格式。
+2. **Token 統計精確化**：新增 `extra_context_tokens` 累加變數，在組裝周邊文字／圖片描述 context 片段時同步累加其 token 數，`context_summary["total_tokens"]` 計算時一併納入（`sum(...) + att_tokens + extra_context_tokens`）；`sources[].metadata.image_chunks` 內每筆也補上真實 `token_count`（`count_tokens(ic["content"])`），不再是前端寫死的 `0`。
+3. **前端相似度顯示修正**：`SourceChunks.vue` 的 `nestedImages` 不再沿用宿主 source 的 `score`，改標記 `isSibling: true`；樣板依此條件顯示灰色「同段落」標籤取代假造的 `Similarity` 數字（真正被向量檢索命中的圖片——`directImages`——仍正常顯示真實分數），`token_count` 改用後端補上的真實值。
+
+### 修改檔案
+- `backend/routers/rag.py`
+- `frontend/src/components/chat/SourceChunks.vue`
+
+### 驗證
+- **程式碼語法**：使用 `python -c "import ast; ast.parse(...)"` 驗證 `rag.py` 語法正確。
+- **前端編譯**：使用 `npm run build` 驗證 Vite 專案編譯正常。
+- **待使用者實機驗證**：重新提問「說明GP51建立備份營運中心.docx包含圖片」，確認 AI 回覆會引用全部（或明顯更多筆）圖片段落而非只有 1 筆；確認「同段落圖片」改顯示「同段落」標籤而非假造的 `Similarity: 1.50`；確認「總計 Token」數值提高（反映實際攤平進 context 的周邊文字與圖片描述）。
+
 ## 2026-07-08 修正 RAG 檢索段落去重飢餓、圖片 Chunk 命中遺失周邊文字、以及圖片索引號顯示 #? 錯誤
 
 ### 問題描述

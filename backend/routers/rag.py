@@ -248,6 +248,10 @@ async def rag_chat_stream(request: ChatRequest):
     attachments_to_send = []
     attachments_data = []
     context_str = ""
+    # 除了 sources 陣列本身各筆的 token_count 之外，context_parts 還會額外攤平塞入圖片命中的
+    # 周邊文字與同段落圖片描述（見下方 vector/hybrid 檢索分支），這裡另外累加這部分的 token 數，
+    # 讓 context_summary["total_tokens"] 能反映實際送進 LLM 的完整 context 大小，而非只計入 sources。
+    extra_context_tokens = 0
     context_summary = {
         "total_tokens": 0,
         "batch_count": 0,
@@ -440,6 +444,13 @@ async def rag_chat_stream(request: ChatRequest):
                     seen_image_filenames = set()
                     for idx, item in enumerate(raw_results):
                         meta = item.get("metadata", {})
+                        # 同段落圖片（image_chunks）是靠 parent_id 撈出的兄弟節點，並非各自被向量檢索
+                        # 獨立命中，本身沒有相似度分數；這裡補上各自真實的 token_count（原本前端會誤植
+                        # 為宿主的分數與寫死 0 token，讓使用者誤以為每張圖都被獨立高度檢索命中）。
+                        enriched_image_chunks = [
+                            {**ic, "token_count": count_tokens(ic.get("content", ""))}
+                            for ic in meta.get("image_chunks", [])
+                        ]
                         sources.append({
                             "chunk_id": item.get("chunk_id"),
                             "content": item.get("content", ""),
@@ -454,7 +465,7 @@ async def rag_chat_stream(request: ChatRequest):
                                 "linked_attachments": meta.get("linked_attachments", []),
                                 "chunk_type": meta.get("chunk_type"),
                                 "image_filename": meta.get("image_filename"),
-                                "image_chunks": meta.get("image_chunks", []),
+                                "image_chunks": enriched_image_chunks,
                                 "parent_content": meta.get("parent_content")
                             },
                             "score": item.get("score", 0.0),
@@ -466,14 +477,18 @@ async def rag_chat_stream(request: ChatRequest):
                         if meta.get("chunk_type") == "image" and meta.get("image_filename"):
                             seen_image_filenames.add(meta.get("image_filename"))
 
-                        # 若該命中的圖片 Chunk 帶有周邊文字 (parent_content)，併入脈絡以補全文字資訊
+                        # 若該命中的圖片 Chunk 帶有周邊文字 (parent_content)，併入脈絡以補全文字資訊。
+                        # 附加說明（周邊文字/圖片描述）改放進內容區塊的類型前綴，「段落編號」欄位維持
+                        # 純數字/純區間格式，避免不符合 system prompt 要求的 #段落編號 引用格式，
+                        # 導致 LLM 為了遵守嚴格引用規則而直接排除這些來源、不放進回答中。
                         if meta.get("chunk_type") == "image" and meta.get("parent_content"):
                             parent_content = meta.get("parent_content")
                             parent_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
                             context_parts.append(
-                                f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{parent_idx_str}（周邊文字）】\n"
-                                f"內容：{parent_content}"
+                                f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{parent_idx_str}】\n"
+                                f"內容：[周邊文字] {parent_content}"
                             )
+                            extra_context_tokens += count_tokens(parent_content)
 
                         # 攤平同段落的其他圖片描述併入 context，否則這些圖片只會出現在前端縮圖清單，
                         # 從未真正送進 LLM 的 context，導致 AI 只看得到 parent_id 去重後倖存的那一張圖
@@ -485,10 +500,12 @@ async def rag_chat_stream(request: ChatRequest):
                             img_meta = img_chunk.get("metadata", {})
                             img_chunk_idx = img_meta.get("chunk_index")
                             img_chunk_idx_str = f"#{img_chunk_idx}" if img_chunk_idx is not None else "?"
+                            img_content = img_chunk.get("content", "")
                             context_parts.append(
-                                f"【來源文件：{img_meta.get('filename') or meta.get('filename', '未知')} | 段落編號：{img_chunk_idx_str}（圖片描述）】\n"
-                                f"內容：{img_chunk.get('content', '')}"
+                                f"【來源文件：{img_meta.get('filename') or meta.get('filename', '未知')} | 段落編號：{img_chunk_idx_str}】\n"
+                                f"內容：[圖片描述] {img_content}"
                             )
+                            extra_context_tokens += count_tokens(img_content)
 
                         score_label = "RRF Score" if search_type in ["hybrid", "semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment"] else "Score"
                         retrieved_summary.append(f"[{idx+1}] 來源文件：{meta.get('filename', '未知')} | P.{meta.get('page', '?')} | {score_label}: {item.get('score', 0.0):.4f}\\n內容預覽：{item.get('content', '')[:100]}...")
@@ -541,7 +558,7 @@ async def rag_chat_stream(request: ChatRequest):
             for att in attachments_data:
                 att_text, _ = _get_attachment_effective_text(att)
                 att_tokens += count_tokens(att_text or "")
-        context_summary["total_tokens"] = sum(s.get("token_count", 0) for s in sources) + att_tokens
+        context_summary["total_tokens"] = sum(s.get("token_count", 0) for s in sources) + att_tokens + extra_context_tokens
 
         blocks = []
         is_db = (search_type == "semantic_db_query")
@@ -552,13 +569,13 @@ async def rag_chat_stream(request: ChatRequest):
                     "label": src["metadata"].get("filename", f"DB_QUERY_{idx}")
                 })
         else:
-            for src in sources:
-                meta = src.get("metadata", {})
-                chunk_idx = meta.get("chunk_index")
-                chunk_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
-                text = f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{src.get('content', '')}"
-                label = f"{meta.get('filename', '未知')} {chunk_idx_str}"
-                blocks.append({"text": text, "label": label})
+            # 直接沿用組裝 context_parts 時的完整文字區塊（含核心命中、周邊文字、攤平的同段落圖片
+            # 描述），確保分批摘要門檻判斷與「未達門檻時直接合併」的結果都以實際送進 LLM 的完整
+            # 內容為準。先前改用 sources 陣列重新組裝 blocks，遺漏了額外攤平進 context_parts 的
+            # 周邊文字／圖片描述區塊，導致未達門檻時 context_str 被這裡重建出的不完整版本覆蓋，
+            # 這些內容從未真正送進最終的 system_prompt。
+            for idx, part_text in enumerate(context_parts):
+                blocks.append({"text": part_text, "label": f"context_block_{idx + 1}"})
             
             # 語義混合附件查詢法：若啟用讀取附件內容，將附件的實際內容（優先自動擷取，見 _get_attachment_effective_text）作為額外區塊加入
             if search_type == "semantic_hybrid_attachment" and read_attachment_content:
@@ -606,6 +623,16 @@ async def rag_chat_stream(request: ChatRequest):
             f"【資料庫查詢結果】\n{context_str}"
         )
     elif context_str:
+        # 圖片攤平後可能有多張圖片各自的獨立描述被塞進 context_str，用 [圖片描述] 標記出現次數
+        # 判斷是否為多圖情境，只有在確實有多張圖片時才額外提醒模型逐一交代每張圖片，避免這條規則
+        # 影響一般大 top_k 純文字問答（大量段落彼此重複/僅次要佐證時，仍應允許模型自行摘要整合）。
+        multi_image_note = (
+            "5. 若參考資料中出現多筆各自描述不同「圖片」的內容（標記為 [圖片描述]，通常是同一份文件、"
+            "同一段落區塊底下的多張圖片各自的描述），代表每一張圖片提供的資訊都不相同。請針對每一張圖片"
+            "逐一說明或至少提及其重點內容，並各自標註其段落編號，不要只挑其中一張圖片作為代表、略過其餘"
+            "圖片的描述；但如果使用者的問題明顯只與特定幾張圖片有關，則只需聚焦於相關的那幾張即可。\n"
+            if context_str.count("[圖片描述]") >= 2 else ""
+        )
         system_prompt = (
             "你是一個專業的 RAG 智慧對話助理。請根據以下提供的「參考資料」回答使用者的問題。\n"
             "規則：\n"
@@ -614,7 +641,10 @@ async def rag_chat_stream(request: ChatRequest):
             "3. 保持回答清晰、專業且符合邏輯。\n"
             "4. 回答時，必須明確在回答的開頭或結尾指出你是參考了哪些文檔引用段落，格式範例：\n"
             "   「依據 [文件名] 段落: #段落編號 做出以下結論：」或是「（參考來源：[文件名] 段落: #段落編號）」\n"
-            "   若是引用多個段落，請使用頓號（、）或逗號分隔，例如：「依據[知識庫操作說明.md] 段落: #43、[知識庫操作說明.md] 段落: #45、[知識庫操作說明.md] 段落: #10 做出以下結論：」\n\n"
+            "   若是引用多個段落，請使用頓號（、）或逗號分隔，例如：「依據[知識庫操作說明.md] 段落: #43、[知識庫操作說明.md] 段落: #45、[知識庫操作說明.md] 段落: #10 做出以下結論：」\n"
+            "   以上範例僅為引用格式示範，並非引用數量上限：請如實列出你在回答中實際用到的所有段落編號，"
+            "可能只有 1、2 筆，也可能有 10 筆以上，數量沒有固定上限，不要為了精簡而省略其他同樣被你實際引用的段落。\n"
+            f"{multi_image_note}\n"
             f"【參考資料】\n{context_str}"
         )
     else:

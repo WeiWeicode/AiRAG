@@ -1,5 +1,19 @@
 <!-- 前端修正紀錄 -->
 
+## 2026-07-08 「同段落圖片」不再假冒宿主相似度分數，改顯示「同段落」標籤
+
+### 問題描述
+詳見 `docs/DevelopmentProcess/BugFix.md` 2026-07-08「Context 標頭格式污染導致 AI 排除多筆圖片來源引用」條目。「參考圖片引用 (Image Chunks)」列表中，透過 `parent_id` 帶出的同段落兄弟圖片全部顯示與宿主來源相同的 `Similarity` 分數（例如全部都是 `1.50`），但這些圖片本身是用 Qdrant `scroll` 撈出的，並非各自被向量檢索獨立命中，沒有真實相似度分數，此顯示方式會讓使用者誤以為多張圖片都被高度命中。同時 `token_count` 也被硬編碼為 `0`。
+
+### 修改內容
+`frontend/src/components/chat/SourceChunks.vue`：
+1. `imageSources` computed 中的 `nestedImages` 不再沿用宿主 source 的 `score`，改標記 `isSibling: true`，`token_count` 改讀取後端（`rag.py`）新補上的真實值。
+2. 樣板中的圖片來源徽章依 `source.isSibling` 條件渲染：`true` 時顯示灰色「同段落」標籤（取代假造的相似度數字），`false`（真正被向量檢索命中的圖片）維持原本的 `Similarity: X.XX` 顯示。
+
+### 驗證
+- `npm run build` 編譯通過，無樣板錯誤。
+- 待使用者實機驗證：RAG 對話中同段落帶出的圖片來源改顯示「同段落」標籤而非重複的假分數。
+
 ## 2026-07-07 RAG 對話圖片來源改採「參考文檔引用」列表樣式，取代小縮圖網格畫廊
 
 ### 問題描述

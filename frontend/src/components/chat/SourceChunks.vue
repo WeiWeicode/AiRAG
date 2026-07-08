@@ -23,7 +23,10 @@ const imageSources = computed(() => {
   // Collect direct image sources
   const directImages = props.sources.filter(s => s.metadata?.chunk_type === 'image')
 
-  // Collect nested image chunks from text sources
+  // Collect nested image chunks from text sources.
+  // 這些圖片是靠 parent_id 撈出的「同段落兄弟節點」，並非各自被向量檢索獨立命中，
+  // 本身沒有相似度分數——不可沿用宿主 source 的 score（會讓使用者誤以為每張圖都被
+  // 獨立高度檢索命中），改標記 isSibling 讓樣板改顯示「同段落」而非假造的相似度數字。
   const nestedImages = []
   props.sources.forEach(s => {
     if (s.metadata?.image_chunks && Array.isArray(s.metadata.image_chunks)) {
@@ -38,8 +41,8 @@ const imageSources = computed(() => {
             image_filename: img.metadata?.image_filename,
             chunk_index: img.metadata?.chunk_index
           },
-          score: s.score,
-          token_count: 0
+          isSibling: true,
+          token_count: img.token_count || 0
         })
       })
     }
@@ -183,7 +186,14 @@ const downloadImage = (filename) => {
           >
             Tokens: {{ source.token_count }}
           </span>
-          <span class="bg-[#8b5cf6]/15 text-[#a78bfa] font-semibold font-display px-1.5 py-0.5 rounded text-[10px]">
+          <span
+            v-if="source.isSibling"
+            class="bg-white/8 text-[#9ca3af] font-semibold font-display px-1.5 py-0.5 rounded text-[10px]"
+            title="透過同一段落 (parent_id) 帶出，非查詢獨立命中，無相似度分數"
+          >
+            同段落
+          </span>
+          <span v-else class="bg-[#8b5cf6]/15 text-[#a78bfa] font-semibold font-display px-1.5 py-0.5 rounded text-[10px]">
             Similarity: {{ (source.score !== undefined ? source.score : 0).toFixed(2) }}
           </span>
           <!-- 下載圖片 icon -->

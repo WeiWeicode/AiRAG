@@ -1,5 +1,31 @@
 <!-- 後端修正紀錄 -->
 
+## 2026-07-08 修正 Map-Reduce 分批摘要重建 blocks 時遺漏攤平圖片描述，並補強 Citation 範例的數量錨定問題
+
+### 問題描述
+詳見 `docs/DevelopmentProcess/BugFix.md` 2026-07-08「標頭格式修正後問題仍在」條目。上一則「淨化 Context 標頭格式」修正部署後，使用者重新測試同一問題，AI 回覆仍只引用 1~2 筆段落。追查發現這是兩個疊加根因造成：① `rag.py` 供 Map-Reduce 分批摘要判斷用的 `blocks` 只從 `sources` 重建、遺漏攤平進 `context_parts` 的周邊文字與圖片描述，導致未達摘要門檻時會用這個不完整的 `blocks` 覆蓋掉原本正確完整的 `context_str`，圖片描述在送進 LLM 之前就已被砍掉；② system prompt 的引用格式範例只示範 3 筆段落編號，可能錨定模型只引用少量段落。
+
+### 修改內容
+1. `backend/routers/rag.py`（約第 571-578 行）：`blocks`（非 `is_db` 分支）改為直接沿用 `context_parts` 已組好的完整文字區塊清單，取代原本只從 `sources` 重建、會遺漏額外攤平區塊的邏輯，確保分批摘要門檻判斷與「未達門檻直接合併」的結果都以實際送進 LLM 的完整內容為準。
+2. `backend/routers/rag.py`（`elif context_str:` system prompt，約第 625-649 行）：規則 4 補上「範例僅為格式示範，並非引用數量上限」的說明；新增條件式規則 5（僅在 `context_str.count("[圖片描述]") >= 2` 時附加），要求模型針對每張圖片逐一說明或至少提及、不要只挑一張作代表，並保留「問題明顯只針對特定圖片時可聚焦」的例外。
+
+### 驗證
+- `python -c "import ast; ast.parse(...)"` 驗證 `rag.py` 語法正確。
+- 待使用者實機驗證：重新提問同一問題，確認 AI 回覆會引用/提及大多數圖片段落；並回歸測試先前 top_k=23 的一般純文字問題，確認新規則 5 不會誤觸發、不影響一般問答的正常摘要行為。
+
+## 2026-07-08 淨化 RAG Context 標頭格式，修正 AI 排除多筆圖片來源引用，並補上遺漏的 Token 統計
+
+### 問題描述
+詳見 `docs/DevelopmentProcess/BugFix.md` 2026-07-08「Context 標頭格式污染導致 AI 排除多筆圖片來源引用」條目。提問「說明GP51建立備份營運中心.docx包含圖片」時，畫面成功列出 7 筆圖片來源，但 AI 回覆只引用總結了其中 1 筆。追查發現 `context_parts` 組裝時，把 `（周邊文字）`／`（圖片描述）` 附加說明直接寫進「段落編號」欄位本體（如 `#6~10（圖片描述）`），不符合 system prompt 要求的乾淨 `#段落編號` 引用格式，導致 LLM 為遵守嚴格引用規則而直接排除這些來源；另外「總計 Token」統計也遺漏了這部分攤平進 context 的內容。
+
+### 修改內容
+1. `backend/routers/rag.py`：組裝周邊文字（`parent_content`）與同段落圖片描述（`image_chunks`）的 context 片段時，「段落編號」欄位改回純數字/純區間格式，附加說明改成內容區塊的類型前綴（`內容：[周邊文字] ...`／`內容：[圖片描述] ...`）。
+2. `backend/routers/rag.py`：新增 `extra_context_tokens` 累加變數，於組裝上述兩類額外 context 片段時同步累加 token 數，`context_summary["total_tokens"]` 計算納入此變數（原本只加總 `sources` 陣列本身的 token_count，遺漏攤平進 context 的周邊文字與圖片描述）；`sources[].metadata.image_chunks` 內每筆也補上真實 `token_count`（供前端顯示，取代原本前端寫死的 `0`）。
+
+### 驗證
+- `python -c "import ast; ast.parse(...)"` 驗證 `rag.py` 語法正確。
+- 待使用者實機驗證：重新提問同一問題，確認 AI 回覆會引用更多筆圖片段落，且「總計 Token」數值提高反映實際 context 大小。
+
 ## 2026-07-08 升級圖片描述與 RAG 串流重複輸出偵測為連續週期性重複（Consecutive Loop）演算法
 
 ### 問題描述
