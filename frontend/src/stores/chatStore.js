@@ -107,6 +107,13 @@ export const useChatStore = defineStore('chat', {
 
         // 語義資料庫查詢法且勾選「不限定知識庫」時，不帶 knowledge_base_id，讓後端掃描所有知識庫的查詢設定檔
         const useAutoKb = paramsStore.searchMode === 'semantic_db_query' && paramsStore.dbQueryAutoKb
+
+        // autoContextEnabled 為 false 時強制送出 0（明確關閉），不論 historyTurnCount 欄位內容為何
+        const rawTurns = paramsStore.autoContextEnabled ? paramsStore.historyTurnCount : 0
+        // 正規化：<input type="number"> 被清空時 v-model.number 可能保留為空字串 ''（parseFloat('') 是 NaN，
+        // Vue 的 .number 修飾符會退回原始字串），若原樣送出會被 Pydantic Optional[int] 判成 422 Validation Error
+        const historyContextTurns = (rawTurns === '' || rawTurns === null || Number.isNaN(rawTurns)) ? null : rawTurns
+
         const payload = {
           question,
           knowledge_base_id: useAutoKb ? null : paramsStore.knowledgeBaseId,
@@ -121,7 +128,9 @@ export const useChatStore = defineStore('chat', {
             filter_tags: parsedFilterTags.length > 0 ? parsedFilterTags : undefined,
             search_type: paramsStore.searchMode,
             context_summarize_trigger_tokens: paramsStore.contextSummarizeThreshold || undefined,
-            read_attachment_content: paramsStore.readAttachmentContent
+            read_attachment_content: paramsStore.readAttachmentContent,
+            history_context_turns: historyContextTurns,
+            pinned_filename: paramsStore.pinnedFilename
           }
         }
 

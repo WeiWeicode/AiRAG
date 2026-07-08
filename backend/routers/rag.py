@@ -36,6 +36,8 @@ class ChatParams(BaseModel):
     search_type: Optional[str] = "vector"
     context_summarize_trigger_tokens: Optional[int] = None
     read_attachment_content: Optional[bool] = False
+    history_context_turns: Optional[int] = None
+    pinned_filename: Optional[str] = None
 
 class ChatRequest(BaseModel):
     question: str
@@ -60,6 +62,19 @@ def _get_attachment_effective_text(att) -> tuple:
         note = f"（無法自動擷取此檔案格式的內容：{att.extraction_error}，改用使用者填寫的備註）" if att.extraction_error else "（使用者填寫的備註，未提供自動擷取內容）"
         return att.description, note
     return None, "（此附件無可讀取的內容：自動擷取失敗且未填寫備註）"
+
+def _build_history_window(chat_history, max_turns: Optional[int]) -> Optional[list]:
+    """
+    截取最近 N 則訊息（非 user+assistant 成對計算，
+    與既有塞入最終回答 Prompt 時「整份 chat_history 全帶」的作法不同，
+    此處刻意限縮視窗，避免語義 JSON 轉換的 Prompt 過長影響 Instruct LLM 精準度）。
+    只保留 user／assistant 訊息，避免未來若混入其他 role 污染指代消解用的歷史脈絡。
+    """
+    if not chat_history or max_turns is None or max_turns <= 0:
+        return None
+    filtered = [m for m in chat_history if m.role in ("user", "assistant")]
+    recent = filtered[-max_turns:]
+    return [{"role": m.role, "content": m.content} for m in recent] or None
 
 async def _run_semantic_db_query(request: "ChatRequest", question: str, result: dict):
     """
@@ -221,6 +236,8 @@ async def rag_chat_stream(request: ChatRequest):
     search_type = "vector"
     context_summarize_trigger_tokens = settings.DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS
     read_attachment_content = False
+    history_context_turns = settings.SEMANTIC_JSON_HISTORY_TURNS
+    pinned_filename_param = None
 
     if request.params:
         if request.params.temperature is not None:
@@ -243,6 +260,10 @@ async def rag_chat_stream(request: ChatRequest):
             context_summarize_trigger_tokens = request.params.context_summarize_trigger_tokens
         if request.params.read_attachment_content is not None:
             read_attachment_content = request.params.read_attachment_content
+        if request.params.history_context_turns is not None:
+            history_context_turns = request.params.history_context_turns
+        if request.params.pinned_filename is not None:
+            pinned_filename_param = request.params.pinned_filename
 
     sources = []
     attachments_to_send = []
@@ -283,7 +304,7 @@ async def rag_chat_stream(request: ChatRequest):
                     }
                     yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
                     
-                    filter_filename = None
+                    filter_filename = pinned_filename_param  # 使用者手動鎖定優先；若未鎖定則為 None
                     # 取得提問向量
                     if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment"):
                         # 先發送進行中事件表示在進行 Instruct 語義分析
@@ -293,7 +314,7 @@ async def rag_chat_stream(request: ChatRequest):
                             "content": f"正在發送提問至地端 AI ({settings.DENSE_VECTOR_INSTRUCT_MODEL}) 進行語義分析與結構化轉換...\n原始提問：\"{question}\""
                         }
                         yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
-                        
+
                         # 取得該知識庫的 metadata
                         metadata_info = await QdrantService.get_unique_metadata(kb.qdrant_collection_name)
                         filenames = metadata_info.get("filenames", [])
@@ -302,20 +323,26 @@ async def rag_chat_stream(request: ChatRequest):
                         logger.info(
                             f"[RAG] 已從 Qdrant 取得結構化元資料 - 檔案數: {len(filenames)}, 標籤數: {len(tags)}, 結構化項目數: {len(structured_metadata)}, 檔名樣例: {filenames[:5]}, 標籤: {tags}"
                         )
-                        
+
+                        # 多輪對話指代消解：擷取最近幾則歷史供語義 JSON 轉換階段參考
+                        history_window = _build_history_window(request.chat_history, history_context_turns)
+                        history_note = f"帶入歷史訊息數：{len(history_window) if history_window else 0} 則（設定值：{history_context_turns} 則）"
+                        pinned_note = f"手動鎖定檔案：{pinned_filename_param}" if pinned_filename_param else "手動鎖定檔案：未指定（由 AI 自動判斷）"
+
                         # 呼叫 Instruct AI 轉 JSON
                         semantic_json = await EmbeddingService.query_to_semantic_json(
-                            question, filenames=filenames, tags=tags, structured_metadata=structured_metadata
+                            question, filenames=filenames, tags=tags, structured_metadata=structured_metadata,
+                            chat_history=history_window, pinned_filename=pinned_filename_param
                         )
                         logger.info(f"[RAG] 已從 Instruct AI 取得結構化 JSON，以下是結構化內容: {semantic_json}")
 
                         embeddings_input = semantic_json.get("embeddings_input", question)
                         sparse_keywords = semantic_json.get("sparse_keywords", [])
-                        
+
                         metadata = semantic_json.get("metadata", {})
-                        if metadata and metadata.get("source_file"):
+                        if metadata and metadata.get("source_file") and not filter_filename:
                             filter_filename = metadata.get("source_file")
-                        
+
                         # 顯示結構化 JSON
                         json_str = json.dumps(semantic_json, indent=2, ensure_ascii=False)
                         step_data = {
@@ -323,22 +350,24 @@ async def rag_chat_stream(request: ChatRequest):
                             "status": "running",
                             "content": (
                                 f"【地端 AI 語義分析結果】\n"
+                                f"{history_note}\n{pinned_note}\n"
                                 f"結構化 JSON：\n"
                                 f"```json\n{json_str}\n```\n"
                                 f"正在產生密集向量（輸入：\"{embeddings_input}\"，模型：{settings.EMBEDDING_MODEL}）..."
                             )
                         }
                         yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
-                        
+
                         # 轉換 embeddings_input 為密集向量
                         query_vector = await EmbeddingService.get_semantic_embedding(embeddings_input)
                         vector_preview = str(query_vector[:10]) + "..."
-                        
+
                         step_data = {
                             "step": "semantic_analysis",
                             "status": "success",
                             "content": (
                                 f"【地端 AI 語義密集嵌入】\n"
+                                f"{history_note}\n{pinned_note}\n"
                                 f"結構化 JSON：\n"
                                 f"```json\n{json_str}\n```\n"
                                 f"密集向量模型: {settings.EMBEDDING_MODEL}\n"

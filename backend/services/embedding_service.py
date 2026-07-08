@@ -105,7 +105,10 @@ class EmbeddingService:
         return await asyncio.gather(*tasks)
 
     @classmethod
-    async def query_to_semantic_json(cls, question: str, filenames: list = None, tags: list = None, structured_metadata: list = None) -> dict:
+    async def query_to_semantic_json(
+        cls, question: str, filenames: list = None, tags: list = None, structured_metadata: list = None,
+        chat_history: list = None, pinned_filename: str = None
+    ) -> dict:
         """
         將使用者的問題傳給 Instruct 語義化 AI，轉換成結構化 JSON 格式。
         """
@@ -219,7 +222,28 @@ class EmbeddingService:
                 system_prompt += f"- 已存在的檔案名稱清單 (請優先在比對後將原始簡寫檔名，擴展重寫為這些已存在的完整名稱，並於 sparse_keywords 輸出完整名稱)：{json.dumps(filenames, ensure_ascii=False)}\n"
             if tags:
                 system_prompt += f"- 已存在的標籤清單 (若用戶提及相關意圖，可在 category 與 sparse_keywords 中參考對齊使用)：{json.dumps(tags, ensure_ascii=False)}\n"
-        
+
+        if pinned_filename:
+            system_prompt += (
+                f"\n\n【使用者已手動鎖定檔案】\n"
+                f"使用者已明確指定本次查詢範圍為檔案「{pinned_filename}」，"
+                f"請優先針對此檔案內容組織 embeddings_input／sparse_keywords，"
+                f"不需要再自行從歷史對話猜測要查詢的文件；metadata.source_file 請直接填入「{pinned_filename}」。\n"
+            )
+        if chat_history:
+            system_prompt += "\n\n【近期對話歷史（由舊到新，僅供指代消解與背景理解，不可作為新增檢索關鍵字的唯一依據）】\n"
+            for msg in chat_history:
+                role_label = "使用者" if msg.get("role") == "user" else "AI助手"
+                system_prompt += f"- {role_label}：{msg.get('content', '')}\n"
+            system_prompt += (
+                "\n【指代消解規則】\n"
+                "若當前問題出現「那個」「這份」「剛才」「上面提到的」等指示詞，"
+                "請優先參考上方近期對話歷史，將其解析回具體的檔案名稱、實體或關鍵字，"
+                "並反映在 embeddings_input 與 sparse_keywords 中；"
+                "但仍必須遵守【反幻想限制】（規則2）：只能基於歷史對話或當前問題中明確出現過的實體進行解析，"
+                "不可自行想像歷史對話中未提及的新背景。\n"
+            )
+
         url = f"{settings.DENSE_VECTOR_LLAMACPP_BASE_URL.rstrip('/')}/v1/chat/completions"
         base_payload = {
             "model": settings.DENSE_VECTOR_INSTRUCT_MODEL,

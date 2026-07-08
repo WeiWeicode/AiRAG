@@ -64,4 +64,8 @@ class Settings:
     # 不限定知識庫（全域掃描自動選取）模式下，最多同時執行幾個候選設定檔的查詢並合併結果
     AI_DB_QUERY_MAX_PROFILES_PER_QUERY: int = int(os.getenv("AI_DB_QUERY_MAX_PROFILES_PER_QUERY", "3"))
 
+    # 多輪對話指代消解：語義 JSON 轉換階段納入的最近對話則數之後端預設值，
+    # 僅在使用者於前端未輸入 history_context_turns（留空）時採用
+    SEMANTIC_JSON_HISTORY_TURNS: int = int(os.getenv("SEMANTIC_JSON_HISTORY_TURNS", "3"))
+
 settings = Settings()

@@ -49,11 +49,13 @@
     "filter_tags": ["string"],
     "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_hybrid_attachment | semantic_db_query",
     "context_summarize_trigger_tokens": 50000,
-    "read_attachment_content": false
+    "read_attachment_content": false,
+    "history_context_turns": 3,
+    "pinned_filename": null
   }
 }
 ```
-> 注意：`params` 內**沒有** `top_p` 欄位（此為前一版文件的錯誤）。上方數值為程式碼中未帶入時使用的預設值。`read_attachment_content`（2026-07-06 新增）僅在 `search_type == "semantic_hybrid_attachment"` 時有意義，見第 14 節。
+> 注意：`params` 內**沒有** `top_p` 欄位（此為前一版文件的錯誤）。上方數值為程式碼中未帶入時使用的預設值。`read_attachment_content`（2026-07-06 新增）僅在 `search_type == "semantic_hybrid_attachment"` 時有意義，見第 14 節。`history_context_turns`／`pinned_filename`（2026-07-08 新增，多輪對話指代消解）僅在 `search_type` 為 `semantic_hybrid`／`semantic_hybrid_feedback`／`semantic_hybrid_attachment` 時有意義，對 `vector`/`hybrid`/`semantic_db_query` 無效：`history_context_turns` 是語義 JSON 轉換階段（`EmbeddingService.query_to_semantic_json`）納入的最近對話則數，`null` 時採用後端預設值 `settings.SEMANTIC_JSON_HISTORY_TURNS`（預設 3），`0` 等同關閉此功能；`pinned_filename` 是使用者手動鎖定的檔案名稱，優先權高於 AI 自動判斷出的 `filter_filename`。
 
 **Response**：`text/event-stream` (SSE)，事件如下（實際欄位為 `step` / `status` / `content`，並非 `event` / `detail`）：
 
@@ -63,6 +65,7 @@
   data: {"step": "semantic_analysis", "status": "running | success | failed", "content": "..."}
   ```
   固定步驟依序為 `semantic_analysis` → `vector_search` → （視情況插入 `attachment_extraction`，見下） → （視情況插入分批摘要步驟，見下） → `llm_thinking` → `conclusion`；`status` 為 `running`、`success`、`failed` 或（`conclusion` 步驟固定送出一次）`pending`。
+  **多輪對話指代消解透明度【新增，2026-07-08】**：`search_type` 為 `semantic_hybrid`／`semantic_hybrid_feedback`／`semantic_hybrid_attachment` 時，`semantic_analysis` 步驟（`running` 與 `success` 兩次 `content` 皆會包含，因為後者會覆蓋前者）額外附帶兩行文字：「帶入歷史訊息數：N 則（設定值：M 則）」與「手動鎖定檔案：X」／「手動鎖定檔案：未指定（由 AI 自動判斷）」，反映本次請求 `params.history_context_turns`／`params.pinned_filename` 實際生效的結果。
   **`attachment_extraction`（擷取附件內容）動態步驟【新增，2026-07-06】**：僅當 `search_type == "semantic_hybrid_attachment"` 且 `params.read_attachment_content == true` 且本次確實找到關聯附件時，會在 `vector_search` 之後、分批摘要判斷之前插入此步驟，`content` 逐一列出每個關聯附件的檔名、Token 數與**實際餵給 AI 的文字內容**，讓使用者能親眼確認 AI 實際讀取了哪些附件內容。此文字內容優先取自附件上傳時自動解析出的檔案實際內容（`Attachment.extracted_content`），僅在該檔案格式無法自動解析時才會退回使用者填寫的備註（`description`），並在內容旁註明來源（見第 14.1/14.3 節）；未勾選 `read_attachment_content` 或無關聯附件時完全不會出現。
   **分批摘要（Map-Reduce Context Summary）動態步驟**：當檢索出的上下文 token 數超過 `context_summarize_trigger_tokens` 門檻時，會在 `vector_search`（或 `attachment_extraction`，若有）之後、`llm_thinking` 之前動態插入以下步驟（筆數依實際分批數量而定，非固定）：
   * `context_summarize_r{N}_batch_{i}`：第 N 輪第 i 批的分批整理，`content` 附帶 `label` 欄位（如「第 1 輪・分批整理 1/3（3 個區塊，約 45000 tokens）」）與原始內容/整理結果預覽。

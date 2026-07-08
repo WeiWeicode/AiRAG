@@ -1,6 +1,6 @@
 # 多輪對話指代消解（Conversational Reference Resolution）規劃文件
 
-> 狀態：規劃中，待使用者確認後執行（2026-07-08 已與使用者確認所有開放問題，細節見第 8 節）
+> 狀態：Batch 1-3、5 已實作完成（2026-07-08）；Batch 4 人工測試待使用者驗證，見第 9 節 Checklist（2026-07-08 已與使用者確認所有開放問題，細節見第 8 節）
 > 影響範圍：`backend/services/embedding_service.py`（`query_to_semantic_json` 新增可選參數）、`backend/routers/rag.py`（呼叫處新增 chat_history／pinned_filename 傳遞邏輯、`semantic_analysis` 步驟新增透明度顯示）、`backend/config.py`（新增設定值）、`frontend/src/components/params/RagParamsPanel.vue`（新增歷史則數輸入 + 手動指定檔案下拉選單）、`frontend/src/stores/paramsStore.js`／`chatStore.js`（新增對應狀態與 payload 欄位）。**不觸碰** `vector`／`hybrid`／`semantic_db_query` 的既有邏輯。
 
 ## 1. 目標與範圍
@@ -407,23 +407,23 @@ filter_filename = pinned_filename，若無則採用 AI 判斷的 metadata.source
 ## 9. 分階段實作 Checklist
 
 ### Batch 1：後端核心邏輯
-- [ ] `backend/config.py` 新增 `SEMANTIC_JSON_HISTORY_TURNS`（預設 3，作為前端未輸入時的後端預設值）
-- [ ] `backend/services/embedding_service.py`：`query_to_semantic_json()` 新增可選參數 `chat_history: list = None`、`pinned_filename: str = None`，插入【使用者已手動鎖定檔案】＋【近期對話歷史】＋【指代消解規則】區塊（兩者皆為空時系統提示逐字元不變）
-- [ ] `backend/routers/rag.py`：
-  - [ ] 新增 `_build_history_window()` helper（含 `max_turns is None` 防禦性檢查、過濾 `role in ("user", "assistant")`）
-  - [ ] [rag.py:307-309](../../backend/routers/rag.py) 呼叫處傳入 `chat_history`/`pinned_filename`
-  - [ ] [rag.py:286](../../backend/routers/rag.py)／[rag.py:315-317](../../backend/routers/rag.py)：`filter_filename` 優先採用 `pinned_filename`，其次才是 AI 自動判斷
-  - [ ] [rag.py:321-331](../../backend/routers/rag.py)（`running`）與 [rag.py:337-350](../../backend/routers/rag.py)（`success`）**兩處** `semantic_analysis` 步驟卡片內容都要新增歷史則數／鎖定檔案透明度資訊，避免 `success` 覆蓋掉 `running` 顯示的提示
+- [x] `backend/config.py` 新增 `SEMANTIC_JSON_HISTORY_TURNS`（預設 3，作為前端未輸入時的後端預設值）
+- [x] `backend/services/embedding_service.py`：`query_to_semantic_json()` 新增可選參數 `chat_history: list = None`、`pinned_filename: str = None`，插入【使用者已手動鎖定檔案】＋【近期對話歷史】＋【指代消解規則】區塊（兩者皆為空時系統提示逐字元不變）
+- [x] `backend/routers/rag.py`：
+  - [x] 新增 `_build_history_window()` helper（含 `max_turns is None` 防禦性檢查、過濾 `role in ("user", "assistant")`）
+  - [x] [rag.py:307-309](../../backend/routers/rag.py) 呼叫處傳入 `chat_history`/`pinned_filename`
+  - [x] [rag.py:286](../../backend/routers/rag.py)／[rag.py:315-317](../../backend/routers/rag.py)：`filter_filename` 優先採用 `pinned_filename`，其次才是 AI 自動判斷
+  - [x] [rag.py:321-331](../../backend/routers/rag.py)（`running`）與 [rag.py:337-350](../../backend/routers/rag.py)（`success`）**兩處** `semantic_analysis` 步驟卡片內容都要新增歷史則數／鎖定檔案透明度資訊，避免 `success` 覆蓋掉 `running` 顯示的提示
 
 ### Batch 2：API／Schema 串接
-- [ ] `backend/routers/rag.py`：`ChatParams` 新增 `history_context_turns`／`pinned_filename` 欄位
+- [x] `backend/routers/rag.py`：`ChatParams` 新增 `history_context_turns`／`pinned_filename` 欄位
 
 ### Batch 3：前端 UI
-- [ ] `frontend/src/stores/paramsStore.js` 新增 `autoContextEnabled: true`／`historyTurnCount: null`／`pinnedFilename: null`
-- [ ] `frontend/src/components/params/RagParamsPanel.vue`：新增「自動指代消解」勾選框（預設勾選，關閉時歷史則數輸入框連動 disabled）+ 歷史則數數字輸入 + 手動鎖定檔案下拉選單（`watch` 知識庫切換時呼叫 `GET /api/knowledge-bases/{id}/metadata` 取得 `filenames`，並在切換時比對重置殘留的 `pinnedFilename`）
-- [ ] `frontend/src/stores/chatStore.js` payload 組裝新增 `history_context_turns`（`autoContextEnabled ? historyTurnCount : 0`，並正規化空字串/`NaN` 為 `null`）／`pinned_filename`
+- [x] `frontend/src/stores/paramsStore.js` 新增 `autoContextEnabled: true`／`historyTurnCount: null`／`pinnedFilename: null`
+- [x] `frontend/src/components/params/RagParamsPanel.vue`：新增「自動指代消解」勾選框（預設勾選，關閉時歷史則數輸入框連動 disabled）+ 歷史則數數字輸入 + 手動鎖定檔案下拉選單（`watch` 知識庫切換時呼叫 `GET /api/knowledge-bases/{id}/metadata` 取得 `filenames`，並在切換時比對重置殘留的 `pinnedFilename`）
+- [x] `frontend/src/stores/chatStore.js` payload 組裝新增 `history_context_turns`（`autoContextEnabled ? historyTurnCount : 0`，並正規化空字串/`NaN` 為 `null`）／`pinned_filename`
 
-### Batch 4：驗證與回歸測試
+### Batch 4：驗證與回歸測試（待使用者人工測試，見下方逐項；本次僅完成 `python -m py_compile` 與 `npm run build` 靜態驗證）
 - [ ] 人工測試：對同一份知識庫先問「XXX文件講什麼」，追問「那份文件的第二點是什麼」，確認 `embeddings_input`/`sparse_keywords` 正確帶出前一輪提及的檔名，且步驟卡片正確顯示帶入則數（`running`／`success` 兩個狀態都要有）
 - [ ] 人工測試：手動於下拉選單鎖定某檔案後提問，確認 `filter_filename` 確實被鎖定，且步驟卡片顯示鎖定的檔名
 - [ ] 人工測試：取消勾選「自動指代消解」後追問指示詞問題，確認不再自動帶入歷史（`history_context_turns` 送出 `0`），行為等同關閉本功能
@@ -433,5 +433,5 @@ filter_filename = pinned_filename，若無則採用 AI 判斷的 metadata.source
 - [ ] 回歸確認：兩個新參數皆未設定（新對話第一輪、未選鎖定檔案、勾選框維持預設勾選）時，`query_to_semantic_json` 輸出與修改前完全一致（防止意外破壞既有 fallback/重試行為）
 
 ### Batch 5：文件更新
-- [ ] `docs/03_API_CONTRACT.md`：`ChatParams` 補上 `history_context_turns`／`pinned_filename` 欄位說明
-- [ ] `docs/DevelopmentProcess/NewFeatures.md`：實作完成後記錄本次新增
+- [x] `docs/03_API_CONTRACT.md`：`ChatParams` 補上 `history_context_turns`／`pinned_filename` 欄位說明
+- [x] `docs/DevelopmentProcess/NewFeatures.md`：實作完成後記錄本次新增

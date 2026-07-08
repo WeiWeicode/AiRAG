@@ -1,8 +1,33 @@
 <script setup>
+import { ref, watch } from 'vue'
 import { useParamsStore } from '../../stores/paramsStore'
 import KnowledgeBaseSelector from '../common/KnowledgeBaseSelector.vue'
+import api from '../../services/api'
 
 const paramsStore = useParamsStore()
+
+// 手動鎖定檔案：下拉選單選項來源，隨知識庫切換重新取得
+const availableFilenames = ref([])
+
+watch(() => paramsStore.knowledgeBaseId, async (newKbId) => {
+  if (!newKbId) {
+    availableFilenames.value = []
+    paramsStore.pinnedFilename = null
+    return
+  }
+  try {
+    const response = await api.get(`/api/knowledge-bases/${newKbId}/metadata`)
+    availableFilenames.value = response.data?.filenames || []
+    // 切換知識庫後，若原本鎖定的檔案不在新清單中，自動重置，避免無聲檢索 0 筆
+    if (paramsStore.pinnedFilename && !availableFilenames.value.includes(paramsStore.pinnedFilename)) {
+      paramsStore.pinnedFilename = null
+    }
+  } catch (err) {
+    console.error('Failed to fetch filenames:', err)
+    availableFilenames.value = []
+    paramsStore.pinnedFilename = null
+  }
+}, { immediate: true })
 </script>
 
 <template>
@@ -99,6 +124,33 @@ const paramsStore = useParamsStore()
       />
       <div class="text-[10px] text-[#9ca3af] leading-relaxed">
         檢索內容 token 數超過此值時，會先分批摘要再送進主模型，避免超出模型上下文長度而回傳 400。
+      </div>
+    </div>
+
+    <!-- 多輪對話指代消解：語義混合家族查詢法專用（自動指代消解 + 手動鎖定檔案） -->
+    <div v-if="['semantic_hybrid', 'semantic_hybrid_feedback', 'semantic_hybrid_attachment'].includes(paramsStore.searchMode)" class="flex flex-col gap-4 border-t border-white/8 pt-4 animate-fade-in">
+      <div class="flex flex-col gap-2">
+        <label class="flex items-center gap-2 text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">
+          <input type="checkbox" v-model="paramsStore.autoContextEnabled" class="accent-[#8b5cf6]" />
+          自動指代消解（使用對話歷史）(Auto Reference Resolution)
+        </label>
+      </div>
+      <div class="flex flex-col gap-2" :class="{ 'opacity-40 pointer-events-none': !paramsStore.autoContextEnabled }">
+        <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">指代消解歷史則數 (History Turns)</label>
+        <input
+          type="number" min="0"
+          v-model.number="paramsStore.historyTurnCount"
+          :disabled="!paramsStore.autoContextEnabled"
+          placeholder="預設 3（後端設定值）"
+          class="bg-white/5 border border-white/8 rounded-lg text-white px-3 py-2 text-xs focus:outline-none focus:border-[#8b5cf6] transition-all"
+        />
+      </div>
+      <div class="flex flex-col gap-2">
+        <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">手動鎖定檔案 (Pinned Filename)</label>
+        <select v-model="paramsStore.pinnedFilename" class="bg-white/5 border border-white/8 rounded-lg text-white px-3 py-2 text-xs focus:outline-none focus:border-[#8b5cf6] transition-all">
+          <option :value="null" class="bg-[#111827] text-white">不鎖定（由 AI 自動判斷）</option>
+          <option v-for="fn in availableFilenames" :key="fn" :value="fn" class="bg-[#111827] text-white">{{ fn }}</option>
+        </select>
       </div>
     </div>
 

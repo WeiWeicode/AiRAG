@@ -22,6 +22,13 @@ export const useParamsStore = defineStore('params', {
     // 是否讓 AI 讀取關聯附件描述進行摘要總結
     readAttachmentContent: false,
 
+    // 多輪對話指代消解：自動指代消解總開關（預設開啟），關閉時前端強制送出 history_context_turns=0
+    autoContextEnabled: true,
+    // 語義 JSON 轉換階段納入的歷史則數，留空則沿用後端預設值 SEMANTIC_JSON_HISTORY_TURNS
+    historyTurnCount: null,
+    // 手動鎖定檔案，null = 不鎖定，由 AI 自動判斷
+    pinnedFilename: null,
+
     // Generation parameters
     model: 'Qwen3.6-35B-A3B-FP8',
     temperature: 0.3,
