@@ -1,6 +1,6 @@
 # RRF 混合檢索分數與 Score Threshold 尺度不匹配（嚴重問題）規劃文件
 
-> 狀態：問題已確認，**已決議採用方案 C 之子選項 C-2**（見第 7 節決策紀錄），待排入實作。
+> 狀態：**已實作完成**（2026-07-09，方案 C-2，見第 7 節決策紀錄與 [BugFix.md](BugFix.md) 對應紀錄）。程式碼變更已在容器內以真實 RRF 路徑實測驗證；`airag-backend` 執行中的進程仍是修改前載入的舊模組，需重啟容器後 API 才會實際套用新程式碼。
 > 嚴重性：**高** —— 直接影響本專案 signature pipeline（`semantic_hybrid*`）的可觀測性，且是 [`NewFeaturesPlan_RetrievalStatsDashboardPlan.md`](NewFeaturesPlan_RetrievalStatsDashboardPlan.md) Batch 1 的前置阻塞事項。
 > 影響範圍：已決議修改範圍限縮在 `backend/services/qdrant_service.py`（`search_similar()` 新增可比較分數欄位，**不**過濾候選、**不**改變回傳筆數）；`rerank_service.py`／`feedback_boost_service.py`／`config.py` 暫不需修改（詳見第 7 節）。
 

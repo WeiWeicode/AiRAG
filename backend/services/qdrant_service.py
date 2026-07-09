@@ -247,6 +247,42 @@ class QdrantService:
                 logger.error(f"Failed to upsert points to Qdrant collection '{collection_name}': {e}")
                 raise e
 
+    @staticmethod
+    def _extract_dense_vector(vector: Any) -> Optional[List[float]]:
+        """
+        從 Qdrant 回傳的 point.vector 取出預設密集向量。
+        本 collection 同時設定了預設密集向量（未命名）與具名的 sparse-text 稀疏向量，
+        當 with_vectors 帶超過一個向量空間時，point.vector 會是 dict（如 {"": [...], "sparse-text": ...}）。
+        """
+        if vector is None:
+            return None
+        if isinstance(vector, dict):
+            return vector.get("")
+        return vector
+
+    @classmethod
+    def _cosine_similarity(cls, vec1: List[float], vec2: List[float]) -> float:
+        dot = sum(a * b for a, b in zip(vec1, vec2))
+        norm1 = sum(a * a for a in vec1) ** 0.5
+        norm2 = sum(b * b for b in vec2) ** 0.5
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        return dot / (norm1 * norm2)
+
+    @classmethod
+    def _compute_semantic_score(cls, res: Any, query_vector: Optional[List[float]]) -> Optional[float]:
+        """
+        重新計算候選點位與查詢向量的 cosine 相似度，作為與 score_threshold 同尺度的可比較分數。
+        供 RRF 融合路徑使用——RRF 分數本身量級遠低於 score_threshold 的 cosine 相似度尺度，
+        詳見 docs/DevelopmentProcess/NewFeaturesPlan_RRFScoreThresholdMismatchPlan.md。
+        """
+        if query_vector is None:
+            return None
+        dense_vector = cls._extract_dense_vector(getattr(res, "vector", None))
+        if not dense_vector:
+            return None
+        return cls._cosine_similarity(dense_vector, query_vector)
+
     @classmethod
     async def search_similar(
         cls, 
@@ -301,6 +337,9 @@ class QdrantService:
 
             # 若需要進行 parent 去重合併，應擴大從 Qdrant 查詢點位的數量限制，以免去重後數量不足 top_k
             search_limit = top_k if disable_parent_merge else max(top_k * 4, 20)
+
+            # 是否為 RRF 融合路徑：RRF score 與 score_threshold 尺度不同，需另外重算 semantic_score
+            is_rrf_fusion = False
 
             if search_type in ["hybrid", "semantic_hybrid"] and query_vector is not None and query_text is not None and query_text.strip():
                 try:
@@ -368,15 +407,19 @@ class QdrantService:
                         logger.info(f"Hybrid search exact keyword boost active for keywords: {keywords}")
                     
                     # Qdrant 雙路或三路召回與 RRF 融合
+                    # with_vectors=[""] 只取回預設密集向量，用於後續重算 semantic_score；
+                    # 不可用 with_vectors=True，否則會連 sparse-text 向量一併拉回，且 point.vector 會變成 dict。
                     response = await client.query_points(
                         collection_name=collection_name,
                         prefetch=prefetch_list,
                         query=models.FusionQuery(
                             fusion=models.Fusion.RRF
                         ),
-                        limit=search_limit
+                        limit=search_limit,
+                        with_vectors=[""]
                     )
                     results = response.points
+                    is_rrf_fusion = True
                     logger.info("Hybrid search executed successfully via Qdrant RRF (with exact keyword boost).")
                 except Exception as he:
                     logger.warning(f"Hybrid search failed, falling back to pure vector search: {he}")
@@ -416,6 +459,14 @@ class QdrantService:
                 score = getattr(res, "score", 0.0)
                 if score is None:
                     score = 0.0
+                # semantic_score：與 score_threshold 同尺度的可比較分數。
+                # RRF 融合路徑重算 cosine；純向量路徑本身即為 cosine，直接沿用 score；無查詢向量則為 None。
+                if is_rrf_fusion:
+                    semantic_score = cls._compute_semantic_score(res, query_vector)
+                elif query_vector is not None:
+                    semantic_score = score
+                else:
+                    semantic_score = None
                 payload = res.payload or {}
                 temp_results.append({
                     "chunk_id": str(res.id),
@@ -438,9 +489,10 @@ class QdrantService:
                         "image_filename": payload.get("image_filename")
                     },
                     "score": score,
+                    "semantic_score": semantic_score,
                     "distance": 1.0 - score
                 })
-            
+
             if disable_parent_merge:
                 return temp_results
             
@@ -596,6 +648,8 @@ class QdrantService:
                 )
                 
                 points = []
+                # 是否為 RRF 融合路徑：RRF score 與 score_threshold 尺度不同，需另外重算 semantic_score
+                is_rrf_fusion = False
                 # 情況 A：若啟用 Hybrid / Semantic Hybrid，且有向量與查詢文字，則進行帶 Filter 的混合檢索
                 if search_type in ["hybrid", "semantic_hybrid"] and query_vector is not None and query_text is not None and query_text.strip():
                     try:
@@ -643,9 +697,11 @@ class QdrantService:
                             collection_name=collection_name,
                             prefetch=prefetch_list,
                             query=models.FusionQuery(fusion=models.Fusion.RRF),
-                            limit=neighbor_limit
+                            limit=neighbor_limit,
+                            with_vectors=[""]
                         )
                         points = response.points
+                        is_rrf_fusion = True
                         logger.info(f"Two-step neighbor search successfully executed hybrid query for links: {all_links}")
                     except Exception as he:
                         logger.warning(f"Neighbor hybrid search failed, falling back to pure vector search: {he}")
@@ -683,6 +739,13 @@ class QdrantService:
                     score = getattr(p, "score", 0.0)
                     if score is None:
                         score = 0.0
+                    # semantic_score：與 search_similar() 一致的映射規則，見該函式內對應註解
+                    if is_rrf_fusion:
+                        semantic_score = cls._compute_semantic_score(p, query_vector)
+                    elif query_vector is not None:
+                        semantic_score = score
+                    else:
+                        semantic_score = None
                     payload = p.payload or {}
                     neighbor_results.append({
                         "chunk_id": str(p.id),
@@ -705,6 +768,7 @@ class QdrantService:
                             "image_filename": payload.get("image_filename")
                         },
                         "score": score,
+                        "semantic_score": semantic_score,
                         "distance": 1.0 - score,
                         "is_neighbor": True
                     })
