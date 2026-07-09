@@ -424,9 +424,9 @@ filter_filename = pinned_filename，若無則採用 AI 判斷的 metadata.source
 - [x] `frontend/src/stores/chatStore.js` payload 組裝新增 `history_context_turns`（`autoContextEnabled ? historyTurnCount : 0`，並正規化空字串/`NaN` 為 `null`）／`pinned_filename`
 
 ### Batch 4：驗證與回歸測試（待使用者人工測試，見下方逐項；本次僅完成 `python -m py_compile` 與 `npm run build` 靜態驗證）
-- [ ] 人工測試：對同一份知識庫先問「XXX文件講什麼」，追問「那份文件的第二點是什麼」，確認 `embeddings_input`/`sparse_keywords` 正確帶出前一輪提及的檔名，且步驟卡片正確顯示帶入則數（`running`／`success` 兩個狀態都要有）
-- [ ] 人工測試：手動於下拉選單鎖定某檔案後提問，確認 `filter_filename` 確實被鎖定，且步驟卡片顯示鎖定的檔名
-- [ ] 人工測試：取消勾選「自動指代消解」後追問指示詞問題，確認不再自動帶入歷史（`history_context_turns` 送出 `0`），行為等同關閉本功能
+- [x] 人工測試：對同一份知識庫先問「XXX文件講什麼」，追問「那份文件的第二點是什麼」，確認 `embeddings_input`/`sparse_keywords` 正確帶出前一輪提及的檔名，且步驟卡片正確顯示帶入則數（`running`／`success` 兩個狀態都要有）
+- [x] 人工測試：手動於下拉選單鎖定某檔案後提問，確認 `filter_filename` 確實被鎖定，且步驟卡片顯示鎖定的檔名
+- [x] 人工測試：取消勾選「自動指代消解」後追問指示詞問題，確認不再自動帶入歷史（`history_context_turns` 送出 `0`），行為等同關閉本功能
 - [ ] 人工測試：於知識庫 A 鎖定某檔案後切換到知識庫 B，確認 `pinnedFilename` 自動重置為未鎖定，不會殘留無效檔名導致檢索無聲變成 0 筆
 - [ ] 人工測試：把「歷史則數」輸入框清空後送出，確認前端正規化為 `null` 而非空字串，不會觸發後端 422 Validation Error
 - [ ] 回歸確認：`vector`/`hybrid`/`semantic_db_query` 三種查詢法呼叫路徑未受影響（無 `chat_history`/`pinned_filename` 參數傳入，行為不變）
