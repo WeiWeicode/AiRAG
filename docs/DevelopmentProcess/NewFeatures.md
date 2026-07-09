@@ -1,5 +1,26 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-09 檢索命中分析儀表板（Retrieval Stats Dashboard）實作完成
+
+### 背景
+依規劃文件 [NewFeaturesPlan_RetrievalStatsDashboardPlan.md](NewFeaturesPlan_RetrievalStatsDashboardPlan.md) 實作，新增獨立的檢索命中統計，讓使用者能主動發現「哪些問題常檢索不到／分數偏低」，而非被動等待使用者透過 `feedback.py` 回報問題。前置阻塞事項（RRF 分數與 `score_threshold` 尺度不匹配，見 [`NewFeaturesPlan_RRFScoreThresholdMismatchPlan.md`](NewFeaturesPlan_RRFScoreThresholdMismatchPlan.md)）已於同日先行修正並實測驗證。
+
+### 變更內容
+- `backend/models/retrieval_stats.py`（新檔）：新增 `RetrievalStats` beanie Document，獨立於既有 `ChatMessage.source_chunks`；已註冊進 `backend/models/mongodb.py` 的 `document_models`。
+- `backend/config.py`：新增 `DASHBOARD_STATS_DEFAULT_PERIOD_DAYS`（預設 7）、`RETRIEVAL_STATS_ENABLED`（預設 `True`，總開關）。
+- `backend/services/retrieval_stats_service.py`（新檔）：`RetrievalStatsService.record()` 讀取 `raw_results` 每筆候選的 `semantic_score`（而非原始 RRF `score`）計算 `hit_count`/`avg_score`/`min_score`/`max_score`，best-effort 寫入，失敗只記錄 warning。
+- `backend/routers/rag.py`：`rag_chat_stream()` 於 `vector`/`hybrid`/`semantic_hybrid*` 檢索完成、`context_parts`/`sources` 組裝完畢後，新增 try/except 包裹的旁路呼叫 `RetrievalStatsService.record()`；`semantic_db_query` 查詢法不記錄。
+- `backend/routers/dashboard.py`（新檔，掛載於 `/api/dashboard`）：`GET /retrieval-stats/summary`（`$facet` 聚合近 N 天總檢索次數/零命中數/平均分數/依知識庫分組）、`GET /retrieval-stats/zero-hit-questions`（分頁）。兩端點皆用記憶體 `{str(kb.id): kb.name}` 對照表解析 `knowledge_base_name`，不使用 `$lookup`；已刪除的知識庫回傳 `"(已刪除)"`。實作時發現本專案固定的 beanie 2.1.0／motor 3.7.1／pymongo 4.17.0 版本組合下，`Document.aggregate().to_list()` wrapper 會對 cursor 多 await 一次拋出 `TypeError`（與 `models/mongodb.py` 既有的 `append_metadata` 相容性補丁屬同一類問題），改為直接呼叫 `get_pymongo_collection().aggregate(pipeline)` 繞開。
+- `backend/main.py`：掛載新的 `dashboard` router。
+- `frontend/src/views/DashboardView.vue`：`stats` 陣列新增「近7日無命中問題比例」「近7日平均檢索分數」兩張卡片；新增零命中問題清單下鑽 Modal（表格呈現問題內容/所屬知識庫/查詢法/發生時間，支援分頁）；`zero_hit_rate` 卡片依規劃文件補上 `cursor-pointer`／hover 視覺提示，其餘卡片維持原樣。
+- `docs/03_API_CONTRACT.md`：新增第 16 節，記錄兩個新端點。
+- `docs/04_DB_SCHEMA.md`：新增第 3.14 節 `retrieval_stats` collection schema，collection 總數 14→15。
+
+### 驗證
+- 後端：`python -m ast` 語法檢查通過；於 `airag-backend` 容器內（fastembed/beanie 皆正常載入）對真實 MongoDB 執行端到端測試，涵蓋 `RetrievalStatsService.record()` 的一般命中/零命中/零候選三種情境（`hit_count`/`avg_score` 皆正確，空候選時 `avg_score=None`）、`dashboard.py` 兩個端點函式直接呼叫（`summary` 的 `$facet` 聚合、`knowledge_base_name` 解析含「已刪除」情境、`zero-hit-questions` 分頁與零命中判斷），並確認 MongoDB `$avg` 原生正確忽略 `None` 值（(0.633+0.075)/2 = 0.354，與已刪除知識庫記錄的 `avg_score=None` 未被計入一致）。測試記錄使用後皆已清除，未留下測試資料。透過 `main.app.openapi()` 確認兩個新端點已正確掛載於 `/api/dashboard/retrieval-stats/*`。
+- 前端：`npm run build` 通過，無編譯錯誤。
+- 未自行開瀏覽器做人工功能測試（依 CLAUDE.md 慣例，使用者手動驗證）；`airag-backend` 容器執行中的 API 進程仍是修改前載入的舊模組，需重啟容器後才會實際套用本次所有後端變更（含前一項 RRF 修正）。
+
 ## 2026-07-08 多輪對話指代消解（Conversational Reference Resolution）實作完成
 
 ### 背景

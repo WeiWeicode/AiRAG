@@ -68,4 +68,8 @@ class Settings:
     # 僅在使用者於前端未輸入 history_context_turns（留空）時採用
     SEMANTIC_JSON_HISTORY_TURNS: int = int(os.getenv("SEMANTIC_JSON_HISTORY_TURNS", "3"))
 
+    # 檢索命中分析儀表板
+    DASHBOARD_STATS_DEFAULT_PERIOD_DAYS: int = int(os.getenv("DASHBOARD_STATS_DEFAULT_PERIOD_DAYS", "7"))
+    RETRIEVAL_STATS_ENABLED: bool = os.getenv("RETRIEVAL_STATS_ENABLED", "True").lower() == "true"
+
 settings = Settings()

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../services/api'
 
@@ -9,8 +9,18 @@ const stats = ref([
   { id: 'kbs', label: '知識庫總數', value: '0', desc: 'Active Knowledge Bases', icon: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>' },
   { id: 'feedback', label: '人工標註筆數', value: '0', desc: 'Annotated Queries', icon: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line>' },
   { id: 'faithfulness', label: '綜合忠實度 (Faithfulness)', value: '0.00', desc: 'Average RAGAS score', icon: '<circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>' },
-  { id: 'evaluations', label: '已執行自動評估', value: '0', desc: 'Evaluation reports generated', icon: '<line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line>' }
+  { id: 'evaluations', label: '已執行自動評估', value: '0', desc: 'Evaluation reports generated', icon: '<line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line>' },
+  { id: 'zero_hit_rate', label: '近7日無命中問題比例', value: '0%', desc: 'Zero-Hit Query Rate (7d)', icon: '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line>' },
+  { id: 'avg_retrieval_score', label: '近7日平均檢索分數', value: '0.00', desc: 'Avg Retrieval Score (7d)', icon: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>' }
 ])
+
+const showZeroHitModal = ref(false)
+const zeroHitLoading = ref(false)
+const zeroHitItems = ref([])
+const zeroHitTotal = ref(0)
+const zeroHitPage = ref(1)
+const zeroHitPageSize = ref(20)
+const zeroHitTotalPages = computed(() => Math.max(1, Math.ceil(zeroHitTotal.value / zeroHitPageSize.value)))
 
 const fetchDashboardStats = async () => {
   try {
@@ -32,6 +42,44 @@ const fetchDashboardStats = async () => {
   } catch (error) {
     console.error('Failed to fetch feedback stats:', error)
   }
+
+  try {
+    const statsResponse = await api.get('/api/dashboard/retrieval-stats/summary?days=7')
+    if (statsResponse.data) {
+      const zeroHitStat = stats.value.find(s => s.id === 'zero_hit_rate')
+      if (zeroHitStat) zeroHitStat.value = `${(statsResponse.data.zero_hit_rate * 100).toFixed(1)}%`
+      const avgScoreStat = stats.value.find(s => s.id === 'avg_retrieval_score')
+      if (avgScoreStat) avgScoreStat.value = statsResponse.data.avg_score?.toFixed(2) || '0.00'
+    }
+  } catch (error) {
+    console.error('Failed to fetch retrieval stats:', error)
+  }
+}
+
+const fetchZeroHitQuestions = async (page = 1) => {
+  zeroHitLoading.value = true
+  try {
+    const res = await api.get('/api/dashboard/retrieval-stats/zero-hit-questions', {
+      params: { days: 7, page, page_size: zeroHitPageSize.value }
+    })
+    zeroHitItems.value = res.data.items || []
+    zeroHitTotal.value = res.data.total || 0
+    zeroHitPage.value = res.data.page || page
+  } catch (error) {
+    console.error('Failed to fetch zero-hit questions:', error)
+  } finally {
+    zeroHitLoading.value = false
+  }
+}
+
+const openZeroHitModal = () => {
+  showZeroHitModal.value = true
+  fetchZeroHitQuestions(1)
+}
+
+const goToZeroHitPage = (page) => {
+  if (page < 1 || page > zeroHitTotalPages.value) return
+  fetchZeroHitQuestions(page)
 }
 
 onMounted(() => {
@@ -97,10 +145,12 @@ const modules = [
 
     <!-- Quick Stats Grid -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-5">
-      <div 
-        v-for="stat in stats" 
-        :key="stat.label" 
+      <div
+        v-for="stat in stats"
+        :key="stat.label"
         class="bg-[#111827]/60 border border-white/8 rounded-xl p-5 flex items-center justify-between"
+        :class="{ 'cursor-pointer hover:border-[#8b5cf6]/40 hover:bg-[#111827]/80 transition-all': stat.id === 'zero_hit_rate' }"
+        @click="stat.id === 'zero_hit_rate' && openZeroHitModal()"
       >
         <div class="flex flex-col gap-1">
           <span class="text-[11px] font-semibold text-[#6b7280] uppercase tracking-wider">{{ stat.label }}</span>
@@ -138,6 +188,53 @@ const modules = [
               <polyline points="12 5 19 12 12 19"></polyline>
             </svg>
           </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 零命中問題清單下鑽 Modal -->
+  <div v-if="showZeroHitModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+    <div class="bg-[#111827] border border-white/10 rounded-2xl w-full max-w-3xl max-h-[85vh] overflow-hidden shadow-2xl flex flex-col">
+      <div class="p-6 border-b border-white/5 flex justify-between items-center">
+        <h3 class="text-base font-bold text-white">近 7 日無命中問題清單</h3>
+        <button @click="showZeroHitModal = false" class="text-[#9ca3af] hover:text-white transition-all text-xl">&times;</button>
+      </div>
+      <div class="p-6 flex flex-col gap-4 overflow-y-auto">
+        <div v-if="zeroHitLoading" class="text-sm text-[#9ca3af] text-center py-8">載入中...</div>
+        <div v-else-if="zeroHitItems.length === 0" class="text-sm text-[#9ca3af] text-center py-8">近 7 日沒有零命中的問題。</div>
+        <table v-else class="w-full text-sm text-left border-collapse">
+          <thead>
+            <tr class="text-[11px] font-semibold text-[#6b7280] uppercase tracking-wider border-b border-white/8">
+              <th class="py-2 pr-4">問題內容</th>
+              <th class="py-2 pr-4">所屬知識庫</th>
+              <th class="py-2 pr-4">查詢法</th>
+              <th class="py-2 pr-4">發生時間</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in zeroHitItems" :key="item.id" class="border-b border-white/5">
+              <td class="py-2.5 pr-4 text-white max-w-[280px] truncate" :title="item.question">{{ item.question }}</td>
+              <td class="py-2.5 pr-4 text-[#9ca3af]">{{ item.knowledge_base_name || '-' }}</td>
+              <td class="py-2.5 pr-4 text-[#9ca3af]">{{ item.search_type }}</td>
+              <td class="py-2.5 pr-4 text-[#9ca3af] whitespace-nowrap">{{ new Date(item.created_at).toLocaleString() }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-if="zeroHitTotal > 0" class="p-4 border-t border-white/5 flex items-center justify-between text-xs text-[#9ca3af]">
+        <span>共 {{ zeroHitTotal }} 筆，第 {{ zeroHitPage }} / {{ zeroHitTotalPages }} 頁</span>
+        <div class="flex gap-2">
+          <button
+            @click="goToZeroHitPage(zeroHitPage - 1)"
+            :disabled="zeroHitPage <= 1 || zeroHitLoading"
+            class="px-3 py-1.5 rounded-lg bg-white/5 border border-white/8 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/10 transition-all"
+          >上一頁</button>
+          <button
+            @click="goToZeroHitPage(zeroHitPage + 1)"
+            :disabled="zeroHitPage >= zeroHitTotalPages || zeroHitLoading"
+            class="px-3 py-1.5 rounded-lg bg-white/5 border border-white/8 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/10 transition-all"
+          >下一頁</button>
         </div>
       </div>
     </div>

@@ -13,6 +13,7 @@ from services.llm_service import LLMService
 from services.rerank_service import RerankService
 from services.feedback_boost_service import FeedbackBoostService
 from services.context_summarizer_service import ContextSummarizerService
+from services.retrieval_stats_service import RetrievalStatsService
 from utils.token_counter import count_tokens
 from utils.security import get_current_user
 from config import settings
@@ -291,6 +292,7 @@ async def rag_chat_stream(request: ChatRequest):
         if db_query_result.get("should_stop", True):
             return
     elif request.knowledge_base_id:
+        raw_results: list = []
         try:
             kb_id = PydanticObjectId(request.knowledge_base_id)
             kb = await KnowledgeBase.get(kb_id)
@@ -566,6 +568,20 @@ async def rag_chat_stream(request: ChatRequest):
                             )
                         extraction_success = f"已讀取 {len(attachments_data)} 個關聯附件的實際內容：\n\n" + "\n\n".join(extraction_parts)
                         yield f"event: step\ndata: {json.dumps({'step': 'attachment_extraction', 'status': 'success', 'content': extraction_success, 'label': '擷取附件內容'}, ensure_ascii=False)}\n\n"
+
+                    # 檢索命中統計旁路寫入（best-effort，失敗不影響本次對話流程）
+                    try:
+                        await RetrievalStatsService.record(
+                            knowledge_base_id=request.knowledge_base_id,
+                            search_type=search_type,
+                            question=question,
+                            top_k=top_k,
+                            score_threshold=score_threshold,
+                            raw_results=raw_results,
+                            elapsed_ms=None
+                        )
+                    except Exception as stats_err:
+                        logger.warning(f"[RetrievalStats] 統計寫入失敗（不影響本次對話流程）: {stats_err}")
 
                 except Exception as inner_e:
                     logger.error(f"Failed to perform vector search or embedding for RAG: {inner_e}")

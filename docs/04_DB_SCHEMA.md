@@ -44,7 +44,7 @@
 └─────────────────────┘     └─────────────────────┘
 ```
 
-14 個 MongoDB Collection 皆透過 `backend/models/mongodb.py` 的 `init_beanie()` 註冊：`AppConfig`、`KnowledgeBase`、`PromptTemplate`、`PromptTestRecord`、`ChatSession`、`ChatMessage`、`Feedback`、`TestDataset`、`EvalReport`、`Tag`、`ClassOption`、`DatabaseConfig`、`DBQueryProfile`、`Attachment`（2026-07-06 新增，見第 3.13 節）。應用程式啟動時會自動 seed：
+15 個 MongoDB Collection 皆透過 `backend/models/mongodb.py` 的 `init_beanie()` 註冊：`AppConfig`、`KnowledgeBase`、`PromptTemplate`、`PromptTestRecord`、`ChatSession`、`ChatMessage`、`Feedback`、`TestDataset`、`EvalReport`、`Tag`、`ClassOption`、`DatabaseConfig`、`DBQueryProfile`、`Attachment`（2026-07-06 新增，見第 3.13 節）、`RetrievalStats`（2026-07-09 新增，見第 3.14 節）。應用程式啟動時會自動 seed：
 * 若尚無知識庫，建立一個預設知識庫並同步建立對應 Qdrant collection。
 * 若尚無測試集，寫入 2 筆預設 `TestDataset`。
 * 若尚無 Prompt 範本，寫入「預設 RAG 助手」與「嚴格知識問答」兩筆內建範本。
@@ -277,6 +277,29 @@
 索引：`knowledge_base_id`、`-created_at`。
 > 附件**不會**寫入 Qdrant 做向量搜尋，僅存這裡的 metadata + 磁碟實體檔案（`backend/FileAttachments/`，`stored_filename` 為實際檔名）。附件與已向量化文件的關聯存放在 Qdrant Point payload 的 `linked_attachments` 欄位（見 4.2 節），而非這個 collection 本身；刪除附件（`DELETE /api/attachments/{id}`）不會級聯清除其他文件 Point 上對此 id 的參照。
 > `extracted_content`／`extraction_error` 為 2026-07-06 修正新增（見 `docs/DevelopmentProcess/NewFeatures.md` 同日條目）：此修正前上傳的既有附件沒有 `extracted_content`，AI 讀取附件內容時會自動退回 `description`；需重新上傳該檔案才會補上實際解析內容。
+
+### 3.14 retrieval_stats — 檢索命中統計（檢索命中分析儀表板）【新增，2026-07-09】
+```json
+{
+  "_id": "ObjectId",
+  "knowledge_base_id": "string | null (關聯 knowledge_bases._id)",
+  "search_type": "string (vector/hybrid/semantic_hybrid/semantic_hybrid_feedback/semantic_hybrid_attachment；semantic_db_query 不記錄)",
+  "question": "string",
+  "top_k": "int",
+  "score_threshold": "float",
+  "retrieved_scores": ["float (本次所有候選片段的 semantic_score，與 score_threshold 同尺度，非原始 RRF score)"],
+  "hit_count": "int (semantic_score >= score_threshold 的筆數)",
+  "total_candidates": "int (去重合併後的候選總數)",
+  "avg_score": "float | null",
+  "min_score": "float | null",
+  "max_score": "float | null",
+  "elapsed_ms": "int | null (目前一律為 null，本次未實作計時)",
+  "session_id": "string | null",
+  "created_at": "ISODate"
+}
+```
+索引：`knowledge_base_id`、`search_type`、`-created_at`、`(knowledge_base_id, -created_at)` 複合索引。
+> 由 `rag_chat_stream()` 完成檢索後以 best-effort 方式寫入（`backend/services/retrieval_stats_service.py`），寫入失敗只記錄 warning、不影響 SSE 對話主流程。與 `chat_messages.source_chunks` 資料重疊但服務不同目的（此 collection 專供聚合統計查詢），兩者皆為獨立寫入、無關聯。詳見 [`NewFeaturesPlan_RetrievalStatsDashboardPlan.md`](DevelopmentProcess/NewFeaturesPlan_RetrievalStatsDashboardPlan.md) 與 [`03_API_CONTRACT.md`](03_API_CONTRACT.md) 第 16 節。
 
 ---
 

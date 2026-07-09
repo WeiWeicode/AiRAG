@@ -652,3 +652,40 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
 ```
 前端可偵測 `chunk_type == "image"` 並顯示圖片縮圖，且可提供圖片下載功能。
 
+---
+
+## 16. 檢索命中分析儀表板 API (Retrieval Stats Dashboard)【新增，2026-07-09】
+
+`rag_chat_stream()` 每次檢索（`vector`/`hybrid`/`semantic_hybrid*`，`semantic_db_query` 不涵蓋）完成後，以 best-effort 方式將命中統計寫入獨立的 MongoDB `retrieval_stats` collection（詳見 [04_DB_SCHEMA.md](04_DB_SCHEMA.md)）。以下端點供 `DashboardView.vue` 讀取聚合結果。
+
+### 16.1 GET `/api/dashboard/retrieval-stats/summary` — 檢索命中統計摘要
+**Query 參數**：`days`（選填，預設 `DASHBOARD_STATS_DEFAULT_PERIOD_DAYS`，即 7）
+**Response 200**：
+```json
+{
+  "period_days": 7,
+  "total_queries": 342,
+  "zero_hit_count": 28,
+  "zero_hit_rate": 0.082,
+  "avg_score": 0.71,
+  "by_knowledge_base": [
+    { "knowledge_base_id": "xxx", "knowledge_base_name": "HR文件庫", "avg_score": 0.68, "total_queries": 120 }
+  ]
+}
+```
+**說明**：`hit_count`／`avg_score` 皆依據 `semantic_score`（與 `score_threshold` 同尺度的可比較分數，見 [`NewFeaturesPlan_RRFScoreThresholdMismatchPlan.md`](DevelopmentProcess/NewFeaturesPlan_RRFScoreThresholdMismatchPlan.md)）計算，對所有查詢法皆同尺度成立。`knowledge_base_name` 透過記憶體 ID→Name 對照表解析，若對應知識庫已被刪除則回傳 `"(已刪除)"`。
+
+### 16.2 GET `/api/dashboard/retrieval-stats/zero-hit-questions` — 零命中問題清單（分頁）
+**Query 參數**：`days`（選填，預設同上）、`page`（預設 1）、`page_size`（預設 20，上限 100）
+**Response 200**：
+```json
+{
+  "total": 28,
+  "page": 1,
+  "page_size": 20,
+  "items": [
+    { "id": "xxx", "question": "…", "knowledge_base_id": "xxx", "knowledge_base_name": "HR文件庫", "search_type": "semantic_hybrid", "created_at": "2026-07-09T10:00:00Z" }
+  ]
+}
+```
+

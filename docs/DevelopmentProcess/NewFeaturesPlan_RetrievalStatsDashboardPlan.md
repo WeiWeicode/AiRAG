@@ -1,6 +1,6 @@
 # 檢索命中分析儀表板（Retrieval Stats Dashboard）規劃文件
 
-> 狀態：規劃中，Batch 0 前置阻塞事項**已決議且程式碼已實作完成**（見下方第 0 節、[RRF 分數尺度不匹配議題](NewFeaturesPlan_RRFScoreThresholdMismatchPlan.md)、[BugFix.md](BugFix.md) 2026-07-09 對應紀錄），Batch 1 可以動工。
+> 狀態：**已實作完成**（2026-07-09，Batch 0-4 全數完成，見 [NewFeatures.md](NewFeatures.md) 2026-07-09 對應紀錄）。`airag-backend` 容器需重啟才會實際套用後端變更，前端已 `npm run build` 驗證通過。
 > 影響範圍：新檔案 `backend/models/retrieval_stats.py`（新 MongoDB collection）、`backend/routers/rag.py`（新增 best-effort 寫入點）、新檔案 `backend/routers/dashboard.py`（新增讀取/聚合端點）、`frontend/src/views/DashboardView.vue`（新增統計卡片與零命中清單下鑽 UI）。**不修改**既有 `ChatMessage.source_chunks` 結構與寫入邏輯，也不影響既有 SSE 串流的正常/異常路徑。
 
 ## 0. 前置阻塞事項（Blocking Issue）—— 已決議且已實作完成
@@ -268,21 +268,21 @@ fetchDashboardStats() 呼叫 GET /api/dashboard/retrieval-stats/summary?days=7
 - [x] 確認 [`NewFeaturesPlan_RRFScoreThresholdMismatchPlan.md`](NewFeaturesPlan_RRFScoreThresholdMismatchPlan.md) 的處理方案 —— **已決議方案 C-2**：`qdrant_service.py` 統一新增 `semantic_score` 欄位，`hit_count` 判斷公式為 `semantic_score >= score_threshold`（2026-07-09）
 - [x] **實作前置依賴**：`NewFeaturesPlan_RRFScoreThresholdMismatchPlan.md` 第 7 節所列的 `backend/services/qdrant_service.py` 程式碼修改（`search_similar()` 與 `search_similar_two_step()` 兩處 RRF 分支皆補上 `semantic_score`）已完成並實測驗證（2026-07-09，見 [BugFix.md](BugFix.md)）。**尚待**：`airag-backend` 容器重啟後，執行中的 API 進程才會實際套用此變更。
 
-### Batch 1：後端核心邏輯
-- [ ] `backend/models/retrieval_stats.py`（新模型）+ 註冊進 `backend/models/mongodb.py` 的 `document_models`
-- [ ] `backend/config.py` 新增 `DASHBOARD_STATS_DEFAULT_PERIOD_DAYS`／`RETRIEVAL_STATS_ENABLED`
-- [ ] `backend/services/retrieval_stats_service.py`（新服務，`record()` 聚合計算 + best-effort 寫入；`hit_count`／`retrieved_scores` 一律讀取 `item.get("semantic_score", 0.0)`，不需依 `search_type` 分流計算方式，見第 0 節；`elapsed_ms` 直接接受 `None`，不需額外計時參數）
-- [ ] `backend/routers/rag.py`：於 `elif request.knowledge_base_id:` 分支開頭初始化 `raw_results: list = []`，並在 `rag_chat_stream()` 檢索完成後新增 try/except 包裹的 `RetrievalStatsService.record()` 呼叫（僅 `vector`/`hybrid`/`semantic_hybrid*` 家族，`semantic_db_query` 已決議不納入，見第 8 節）
+### Batch 1：後端核心邏輯 —— 已完成（2026-07-09）
+- [x] `backend/models/retrieval_stats.py`（新模型）+ 註冊進 `backend/models/mongodb.py` 的 `document_models`
+- [x] `backend/config.py` 新增 `DASHBOARD_STATS_DEFAULT_PERIOD_DAYS`／`RETRIEVAL_STATS_ENABLED`
+- [x] `backend/services/retrieval_stats_service.py`（新服務，`record()` 聚合計算 + best-effort 寫入，讀取 `semantic_score`）
+- [x] `backend/routers/rag.py`：初始化 `raw_results: list = []`，並在檢索完成後新增 try/except 包裹的 `RetrievalStatsService.record()` 呼叫
 
-### Batch 2：API／Schema 串接
-- [ ] `backend/routers/dashboard.py`（新檔，`GET /retrieval-stats/summary`／`GET /retrieval-stats/zero-hit-questions`，含 MongoDB aggregation pipeline；兩端點皆需依第 4 節「`knowledge_base_name` 解析機制」用 `KnowledgeBase.find_all()` 建立記憶體 ID→Name 對照表填入名稱）
-- [ ] 於 `backend/main.py`（或既有 router 註冊處）掛載新的 `dashboard` router
+### Batch 2：API／Schema 串接 —— 已完成（2026-07-09）
+- [x] `backend/routers/dashboard.py`（新檔，兩端點含 MongoDB aggregation pipeline 與 `knowledge_base_name` 解析）。實作時發現本專案 beanie/motor/pymongo 版本組合下 `Document.aggregate().to_list()` 會拋 `TypeError`，改用 `get_pymongo_collection().aggregate(pipeline)` 繞開，詳見 [NewFeatures.md](NewFeatures.md) 2026-07-09 對應紀錄。
+- [x] 於 `backend/main.py` 掛載新的 `dashboard` router
 
-### Batch 3：前端 UI
-- [ ] `frontend/src/views/DashboardView.vue`：`stats` 陣列新增「無命中問題比例」「平均檢索分數」兩筆，`fetchDashboardStats()` 新增獨立 try/catch 呼叫新端點
-- [ ] 新增零命中問題清單的下鑽 Modal／面板元件（已決議必做，見第 5.2 節），呼叫 `GET /api/dashboard/retrieval-stats/zero-hit-questions` 並分頁呈現；`zero_hit_rate` 卡片需依第 5.2 節新增可點擊視覺提示（`cursor-pointer`／hover 樣式），其餘卡片維持原樣
+### Batch 3：前端 UI —— 已完成（2026-07-09）
+- [x] `frontend/src/views/DashboardView.vue`：`stats` 陣列新增「無命中問題比例」「平均檢索分數」兩筆，`fetchDashboardStats()` 新增獨立 try/catch 呼叫新端點
+- [x] 新增零命中問題清單的下鑽 Modal 元件，呼叫 `GET /api/dashboard/retrieval-stats/zero-hit-questions` 並分頁呈現；`zero_hit_rate` 卡片已加上可點擊視覺提示
 
-### Batch 4：文件更新
-- [ ] `docs/03_API_CONTRACT.md`：補上 `GET /api/dashboard/retrieval-stats/summary`／`GET /api/dashboard/retrieval-stats/zero-hit-questions` 兩個新端點說明
-- [ ] `docs/04_DB_SCHEMA.md`：補上 `retrieval_stats` collection 的 schema 與索引說明，更新 MongoDB collection 總覽圖與 14→15 個 collection 的計數
-- [ ] `docs/DevelopmentProcess/NewFeatures.md`：實作完成後記錄本次新增
+### Batch 4：文件更新 —— 已完成（2026-07-09）
+- [x] `docs/03_API_CONTRACT.md`：新增第 16 節，補上兩個新端點說明
+- [x] `docs/04_DB_SCHEMA.md`：新增第 3.14 節 `retrieval_stats` collection schema，collection 總數 14→15
+- [x] `docs/DevelopmentProcess/NewFeatures.md`：已記錄本次實作完成

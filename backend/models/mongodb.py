@@ -28,6 +28,7 @@ from models.class_option import ClassOption
 from models.database_config import DatabaseConfig
 from models.db_query_profile import DBQueryProfile
 from models.attachment import Attachment
+from models.retrieval_stats import RetrievalStats
 
 
 logger = logging.getLogger("airag.mongodb")
@@ -200,7 +201,8 @@ async def init_mongodb():
                 ClassOption,
                 DatabaseConfig,
                 DBQueryProfile,
-                Attachment
+                Attachment,
+                RetrievalStats
             ]
         )
         logger.info("MongoDB and Beanie ODM initialized successfully.")

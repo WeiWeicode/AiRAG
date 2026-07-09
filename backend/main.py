@@ -19,7 +19,8 @@ from routers import (
     sqlserver,
     database_indexing,
     ai_db_query,
-    attachment
+    attachment,
+    dashboard
 )
 
 # 設定日誌
@@ -69,6 +70,7 @@ app.include_router(sqlserver.router, prefix="/api")
 app.include_router(database_indexing.router, prefix="/api")
 app.include_router(ai_db_query.router, prefix="/api")
 app.include_router(attachment.router, prefix="/api")
+app.include_router(dashboard.router, prefix="/api")
 
 @app.get("/health")
 async def health_check():
