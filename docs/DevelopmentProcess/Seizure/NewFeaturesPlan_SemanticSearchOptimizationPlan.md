@@ -2,7 +2,7 @@
 
 # 語義混合搜尋優化規劃
 
-> 狀態：**規劃中，待使用者確認後執行**
+> 狀態：**已完成**
 > 建立日期：2026-07-02
 > 範圍：`backend/services/qdrant_service.py`、`backend/services/embedding_service.py`（涉及 `retrieval.py`、`rag.py`、`evaluation.py` 三個呼叫端）
 

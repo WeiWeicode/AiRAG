@@ -1,5 +1,10 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-13 專用 Cross-Encoder Rerank 規劃取消
+
+### 背景
+依使用者確認，原定規劃 [NewFeaturesPlan_CrossEncoderRerankPlan.md](NewFeaturesPlan_CrossEncoderRerankPlan.md)（引進本地 fastembed `TextCrossEncoder` 進行 Rerank）經實作測試與評估後效果未達預期，取消此規劃項目，維持現行 `RerankService`（LLM listwise 排序）運作機制。
+
 ## 2026-07-09 檢索命中分析儀表板（Retrieval Stats Dashboard）實作完成
 
 ### 背景
@@ -57,7 +62,7 @@
 3. **查詢法自動路由**：現行需使用者手動於 UI 選擇 6 種查詢法之一，可加一層「先讓 AI 判斷該題適合用哪種查詢法」的路由層，減少手動操作，但會多一次 LLM 呼叫延遲，且有路由誤判風險。詳細規劃見 [NewFeaturesPlan_QueryTypeAutoRoutingPlan.md](NewFeaturesPlan_QueryTypeAutoRoutingPlan.md)。
 
 ### 新建議功能
-4. **專用 Cross-Encoder Rerank 模型**：現行 `RerankService`（[backend/services/rerank_service.py](../../backend/services/rerank_service.py)）靠 Instruct 模型輸出 JSON 做 listwise 排序，穩定性依賴 LLM 的 JSON 格式遵循度。已與使用者確認技術方向為本地 fastembed `TextCrossEncoder`（不部署外部 reranker 服務）。詳細規劃見 [NewFeaturesPlan_CrossEncoderRerankPlan.md](NewFeaturesPlan_CrossEncoderRerankPlan.md)。
+4. **專用 Cross-Encoder Rerank 模型（已取消）**：原規劃引進本地 fastembed `TextCrossEncoder`。經實作評估後發現效果未達預期，已確認取消此項目。詳細規劃見 [NewFeaturesPlan_CrossEncoderRerankPlan.md](NewFeaturesPlan_CrossEncoderRerankPlan.md)。
 5. **檢索命中分析儀表板**：統計哪些問題常檢索不到／分數偏低，結合既有 `backend/routers/feedback.py` 回饋機制，主動發現知識庫內容缺口，而非被動等待使用者回報。已與使用者確認技術方向為新增獨立的 MongoDB `RetrievalStats` collection（不重用 `ChatMessage.source_chunks`）。詳細規劃見 [NewFeaturesPlan_RetrievalStatsDashboardPlan.md](NewFeaturesPlan_RetrievalStatsDashboardPlan.md)。
 
 ### 後續
