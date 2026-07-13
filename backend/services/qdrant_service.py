@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 import uuid
@@ -49,18 +50,18 @@ class QdrantService:
                 )
                 logger.info(f"Qdrant collection '{collection_name}' created successfully with size {vector_size}.")
             
-            # 確保 'content' 欄位有建立全文檢索 Text Index，以支援 Exact keyword MatchText 查詢
+            # 確保 'content' 欄位有建立全文檢索 Text Index，以支援 Exact keyword MatchText 查詢（採用 MULTILINGUAL 支援多語言/中文分詞）
             try:
                 await client.create_payload_index(
                     collection_name=collection_name,
                     field_name="content",
                     field_schema=models.TextIndexParams(
                         type="text",
-                        tokenizer=models.TokenizerType.WORD,
+                        tokenizer=models.TokenizerType.MULTILINGUAL,
                         lowercase=True
                     )
                 )
-                logger.info(f"Ensured payload text index on 'content' for collection '{collection_name}'.")
+                logger.info(f"Ensured MULTILINGUAL payload text index on 'content' for collection '{collection_name}'.")
             except Exception as e_idx:
                 logger.warning(f"Failed or skipped ensuring payload index: {e_idx}")
                 
@@ -68,6 +69,33 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Failed to create Qdrant collection '{collection_name}': {e}")
             return False
+
+    @classmethod
+    async def ensure_all_collections_payload_index(cls) -> None:
+        """
+        遍歷 Qdrant 內所有 Collection，確保均已套用 MULTILINGUAL 分詞器建立 'content' 文字索引。
+        此方法於系統啟動時呼叫，自動將既有舊 Collection 的文字索引升級重建。
+        """
+        client = cls.get_client()
+        try:
+            res = await client.get_collections()
+            for c in res.collections:
+                try:
+                    await client.create_payload_index(
+                        collection_name=c.name,
+                        field_name="content",
+                        field_schema=models.TextIndexParams(
+                            type="text",
+                            tokenizer=models.TokenizerType.MULTILINGUAL,
+                            lowercase=True
+                        )
+                    )
+                    logger.info(f"Ensured MULTILINGUAL payload text index on 'content' for collection '{c.name}'.")
+                except Exception as e_c:
+                    logger.warning(f"Failed to update payload index for collection '{c.name}': {e_c}")
+        except Exception as e:
+            logger.error(f"Failed to retrieve collections for payload index update: {e}")
+
 
     @classmethod
     async def upsert_semantic_json_chunks(
@@ -510,9 +538,8 @@ class QdrantService:
             # 2.5 限制去重後的結果最多為 top_k 筆，避免回傳過多 Context
             deduped_results = deduped_results[:top_k]
             
-            # 3. 處理 Parent-Child 的還原與合併
-            final_results = []
-            for item in deduped_results:
+            # 3. 處理 Parent-Child 的還原與合併 (使用 asyncio.gather 併行處理)
+            async def _process_item_parent(item):
                 meta = item["metadata"]
                 parent_id = meta.get("parent_id")
                 
@@ -569,9 +596,10 @@ class QdrantService:
                         item["metadata"]["chunk_index"] = parent_range
                     item["metadata"]["image_chunks"] = image_chunks
  
-                final_results.append(item)
-                
-            return final_results
+                return item
+
+            final_results = await asyncio.gather(*[_process_item_parent(item) for item in deduped_results])
+            return list(final_results)
         except Exception as e:
             logger.error(f"Failed to search similarity in Qdrant collection '{collection_name}': {e}")
             return []
@@ -790,7 +818,7 @@ class QdrantService:
                 deduped_neighbors.append(item)
 
             if not disable_parent_merge:
-                for item in deduped_neighbors:
+                async def _process_neighbor_parent(item):
                     meta = item["metadata"]
                     parent_id = meta.get("parent_id")
                     if parent_id:
@@ -836,7 +864,9 @@ class QdrantService:
                         if parent_range:
                             item["metadata"]["chunk_index"] = parent_range
                         item["metadata"]["image_chunks"] = image_chunks
-                    final_neighbors.append(item)
+                    return item
+
+                final_neighbors = list(await asyncio.gather(*[_process_neighbor_parent(item) for item in deduped_neighbors]))
             else:
                 final_neighbors = deduped_neighbors
 
@@ -912,53 +942,60 @@ class QdrantService:
             tags = set()
             structured_map = {}
             
-            # 捲動取得點，僅需要 filename、tags、class、links_to 與 linked_attachments 欄位，加快效率
-            scroll_result = await client.scroll(
-                collection_name=collection_name,
-                limit=10000,
-                with_payload=["filename", "tags", "class", "links_to", "linked_attachments"],
-                with_vectors=False
-            )
-            
-            points = scroll_result[0]
-            for p in points:
-                payload = p.payload or {}
-                fn = payload.get("filename")
-                if fn:
-                    filenames.add(fn)
-                    if fn not in structured_map:
-                        structured_map[fn] = {
-                            "filename": fn,
-                            "classes": set(),
-                            "tags": set(),
-                            "links_to": set(),
-                            "linked_attachments": set()
-                        }
-                    
-                    # class
-                    c_val = payload.get("class")
-                    if isinstance(c_val, list):
-                        structured_map[fn]["classes"].update([c for c in c_val if c])
-                    elif isinstance(c_val, str) and c_val:
-                        structured_map[fn]["classes"].add(c_val)
+            offset = None
+            while True:
+                # 分頁捲動取得點，僅需要 filename、tags、class、links_to 與 linked_attachments 欄位，加快效率
+                scroll_result = await client.scroll(
+                    collection_name=collection_name,
+                    limit=1000,
+                    offset=offset,
+                    with_payload=["filename", "tags", "class", "links_to", "linked_attachments"],
+                    with_vectors=False
+                )
+                
+                points, next_offset = scroll_result
+                for p in points:
+                    payload = p.payload or {}
+                    fn = payload.get("filename")
+                    if fn:
+                        filenames.add(fn)
+                        if fn not in structured_map:
+                            structured_map[fn] = {
+                                "filename": fn,
+                                "classes": set(),
+                                "tags": set(),
+                                "links_to": set(),
+                                "linked_attachments": set()
+                            }
                         
-                    # tags
-                    t_list = payload.get("tags")
-                    if isinstance(t_list, list):
-                        for t in t_list:
-                            if t:
-                                tags.add(t)
-                                structured_map[fn]["tags"].add(t)
-                                
-                    # links_to
-                    l_list = payload.get("links_to")
-                    if isinstance(l_list, list):
-                        structured_map[fn]["links_to"].update([l for l in l_list if l])
+                        # class
+                        c_val = payload.get("class")
+                        if isinstance(c_val, list):
+                            structured_map[fn]["classes"].update([c for c in c_val if c])
+                        elif isinstance(c_val, str) and c_val:
+                            structured_map[fn]["classes"].add(c_val)
+                            
+                        # tags
+                        t_list = payload.get("tags")
+                        if isinstance(t_list, list):
+                            for t in t_list:
+                                if t:
+                                    tags.add(t)
+                                    structured_map[fn]["tags"].add(t)
+                                    
+                        # links_to
+                        l_list = payload.get("links_to")
+                        if isinstance(l_list, list):
+                            structured_map[fn]["links_to"].update([l for l in l_list if l])
 
-                    # linked_attachments
-                    la_list = payload.get("linked_attachments")
-                    if isinstance(la_list, list):
-                        structured_map[fn]["linked_attachments"].update([la for la in la_list if la])
+                        # linked_attachments
+                        la_list = payload.get("linked_attachments")
+                        if isinstance(la_list, list):
+                            structured_map[fn]["linked_attachments"].update([la for la in la_list if la])
+
+                if not next_offset:
+                    break
+                offset = next_offset
             
             structured_list = []
             for fn, data in structured_map.items():

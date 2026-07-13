@@ -214,6 +214,10 @@ async def init_mongodb():
         from models.prompt_test_record import seed_default_records
         await seed_default_records()
         
+        # 確保所有 Qdrant Collection 皆更新為 MULTILINGUAL 文字索引
+        from services.qdrant_service import QdrantService
+        await QdrantService.ensure_all_collections_payload_index()
+        
     except Exception as e:
         logger.error(f"Failed to initialize MongoDB/Beanie: {e}")
         raise e

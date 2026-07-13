@@ -17,9 +17,9 @@
 
 排序原則：優先做風險低、不影響現有行為的項目（三、四），再做雖是設定變更但需要重建索引的項目（二），最後做影響面最大、牽動 `search_similar` 與 `search_similar_two_step` 共用邏輯的項目（一）。
 
----
-
 ## 建議優化方向一：引入 Qdrant Group By 解決多樣性丟失問題
+
+> **獨立規劃文件**：詳細影響評估、`query_points_groups` 簽章與驗證計畫已獨立立案於 [NewFeaturesPlan_QdrantGroupByOptimizationPlan.md](NewFeaturesPlan_QdrantGroupByOptimizationPlan.md)。
 
 ### 1. 現狀分析
 在現有的 `search_similar` 方法中，系統預設的拉取點位上限為：
