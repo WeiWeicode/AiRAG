@@ -1,6 +1,6 @@
 # 專用 Cross-Encoder Rerank（Local FastEmbed TextCrossEncoder）規劃文件
 
-> 狀態：規劃中，待使用者確認後執行
+> 狀態：(實做後覺得效果沒有很好，取消此計劃)
 > 影響範圍：`backend/services/rerank_service.py`（內部新增策略分支，對外簽章不變）、新檔案 `backend/services/cross_encoder_rerank_service.py`、`backend/config.py`（新增 `RERANK_STRATEGY`/`RERANKER_MODEL`）、`requirements.txt`。**呼叫端（`rag.py`/`retrieval.py`/`evaluation.py`）零修改**——`RerankService.rerank()` 對外簽章與行為契約完全不變，只是內部依設定值切換兩種實作策略。
 
 ## 1. 目標與範圍
