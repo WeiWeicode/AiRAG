@@ -125,6 +125,7 @@ export const useChatStore = defineStore('chat', {
             max_tokens: paramsStore.maxTokens,
             top_k: paramsStore.topK,
             score_threshold: paramsStore.scoreThreshold,
+            ai_summary_score_threshold: paramsStore.aiSummaryScoreThresholdEnabled ? paramsStore.aiSummaryScoreThreshold : 0.0,
             filter_tags: parsedFilterTags.length > 0 ? parsedFilterTags : undefined,
             search_type: paramsStore.searchMode,
             context_summarize_trigger_tokens: paramsStore.contextSummarizeThreshold || undefined,
@@ -265,6 +266,16 @@ export const useChatStore = defineStore('chat', {
                       if (data.label) {
                         stepObj.name = data.label
                       }
+                    }
+                  }
+                } else if (currentEvent === 'message') {
+                  const msg = this.messages.find(m => m.id === assistantMessageId)
+                  if (msg && typeof data.delta === 'string') {
+                    msg.content = data.delta
+                    const conclStep = msg.steps?.find(s => s.key === 'conclusion')
+                    if (conclStep) {
+                      conclStep.status = 'success'
+                      conclStep.content = data.delta
                     }
                   }
                 } else if (currentEvent === 'sources') {

@@ -125,7 +125,7 @@ const downloadImage = (filename) => {
         :key="'text-' + idx"
         class="group relative bg-white/3 border border-white/8 px-3 py-1.5 rounded-lg flex items-center justify-between gap-4 text-xs hover:bg-white/8 hover:border-white/16 transition-all cursor-help"
       >
-        <span class="truncate">
+        <span class="truncate" :class="{ 'opacity-60': source.metadata?.included_in_ai_context === false }">
           [{{ source.file || source.metadata?.filename || '未知檔案' }}]
           段落: #{{ (source.chunk_index !== undefined && source.chunk_index !== null) ? source.chunk_index : (source.metadata?.chunk_index !== undefined && source.metadata?.chunk_index !== null ? source.metadata.chunk_index : '?') }}
         </span>
@@ -136,8 +136,24 @@ const downloadImage = (filename) => {
           >
             Tokens: {{ source.token_count }}
           </span>
-          <span class="bg-[#8b5cf6]/15 text-[#a78bfa] font-semibold font-display px-1.5 py-0.5 rounded text-[10px]">
-            Similarity: {{ (source.score !== undefined ? source.score : 0).toFixed(2) }}
+          <span 
+            v-if="source.metadata?.included_in_ai_context === false"
+            class="bg-rose-500/15 text-rose-300 font-semibold font-display px-1.5 py-0.5 rounded text-[10px]"
+            title="此片段相似度低於 AI 總結門檻，已排除於總結脈絡外"
+          >
+            未採納
+          </span>
+          <span 
+            v-else-if="source.metadata?.included_in_ai_context === true"
+            class="bg-emerald-500/15 text-emerald-300 font-semibold font-display px-1.5 py-0.5 rounded text-[10px]"
+          >
+            已採納
+          </span>
+          <span 
+            :class="source.metadata?.included_in_ai_context === false ? 'bg-white/5 text-slate-400' : 'bg-[#8b5cf6]/15 text-[#a78bfa]'"
+            class="font-semibold font-display px-1.5 py-0.5 rounded text-[10px]"
+          >
+            Similarity: {{ ((source.semantic_score !== undefined ? source.semantic_score : (source.score !== undefined ? source.score : 0))).toFixed(2) }}
           </span>
         </span>
 
@@ -175,7 +191,7 @@ const downloadImage = (filename) => {
         :key="'image-' + idx"
         class="group relative bg-white/3 border border-white/8 px-3 py-1.5 rounded-lg flex items-center justify-between gap-4 text-xs hover:bg-white/8 hover:border-white/16 transition-all cursor-help"
       >
-        <span class="truncate">
+        <span class="truncate" :class="{ 'opacity-60': source.metadata?.included_in_ai_context === false }">
           🖼️ [{{ source.metadata?.filename || '未知檔案' }}]
           段落: #{{ (source.chunk_index !== undefined && source.chunk_index !== null) ? source.chunk_index : (source.metadata?.chunk_index !== undefined && source.metadata?.chunk_index !== null ? source.metadata.chunk_index : '?') }}
         </span>
@@ -193,8 +209,20 @@ const downloadImage = (filename) => {
           >
             同段落
           </span>
-          <span v-else class="bg-[#8b5cf6]/15 text-[#a78bfa] font-semibold font-display px-1.5 py-0.5 rounded text-[10px]">
-            Similarity: {{ (source.score !== undefined ? source.score : 0).toFixed(2) }}
+          <span 
+            v-else-if="source.metadata?.included_in_ai_context === false"
+            class="bg-rose-500/15 text-rose-300 font-semibold font-display px-1.5 py-0.5 rounded text-[10px]"
+          >
+            未採納
+          </span>
+          <span 
+            v-else-if="source.metadata?.included_in_ai_context === true"
+            class="bg-emerald-500/15 text-emerald-300 font-semibold font-display px-1.5 py-0.5 rounded text-[10px]"
+          >
+            已採納
+          </span>
+          <span v-if="!source.isSibling" :class="source.metadata?.included_in_ai_context === false ? 'bg-white/5 text-slate-400' : 'bg-[#8b5cf6]/15 text-[#a78bfa]'" class="font-semibold font-display px-1.5 py-0.5 rounded text-[10px]">
+            Similarity: {{ ((source.semantic_score !== undefined ? source.semantic_score : (source.score !== undefined ? source.score : 0))).toFixed(2) }}
           </span>
           <!-- 下載圖片 icon -->
           <button

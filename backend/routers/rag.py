@@ -33,6 +33,7 @@ class ChatParams(BaseModel):
     frequency_penalty: Optional[float] = None
     top_k: Optional[int] = None
     score_threshold: Optional[float] = None
+    ai_summary_score_threshold: Optional[float] = None
     filter_tags: Optional[List[str]] = None
     search_type: Optional[str] = "vector"
     context_summarize_trigger_tokens: Optional[int] = None
@@ -230,6 +231,7 @@ async def rag_chat_stream(request: ChatRequest):
     temperature = 0.3
     top_k = 13
     score_threshold = 0.65
+    ai_summary_score_threshold = 0.60
     max_tokens = 1024
     repetition_penalty = settings.DEFAULT_REPETITION_PENALTY
     frequency_penalty = settings.DEFAULT_FREQUENCY_PENALTY
@@ -247,6 +249,8 @@ async def rag_chat_stream(request: ChatRequest):
             top_k = request.params.top_k
         if request.params.score_threshold is not None:
             score_threshold = request.params.score_threshold
+        if request.params.ai_summary_score_threshold is not None:
+            ai_summary_score_threshold = request.params.ai_summary_score_threshold
         if request.params.max_tokens is not None:
             max_tokens = request.params.max_tokens
         if request.params.repetition_penalty is not None:
@@ -270,6 +274,7 @@ async def rag_chat_stream(request: ChatRequest):
     attachments_to_send = []
     attachments_data = []
     context_str = ""
+    max_retrieved_semantic_score = 0.0
     # 除了 sources 陣列本身各筆的 token_count 之外，context_parts 還會額外攤平塞入圖片命中的
     # 周邊文字與同段落圖片描述（見下方 vector/hybrid 檢索分支），這裡另外累加這部分的 token 數，
     # 讓 context_summary["total_tokens"] 能反映實際送進 LLM 的完整 context 大小，而非只計入 sources。
@@ -403,7 +408,7 @@ async def rag_chat_stream(request: ChatRequest):
                     step_data = {
                         "step": "vector_search",
                         "status": "running",
-                        "content": f"正在進行資料庫檢索...\n檢索模式: {search_type}\nTop-K: {top_k}\n最低相似度閾值: {score_threshold}"
+                        "content": f"正在進行資料庫檢索...\n檢索模式: {search_type}\nTop-K: {top_k}\n最低相似度閾值: {score_threshold}\nAI 總結相似度門檻: {ai_summary_score_threshold}"
                     }
                     yield f"event: step\ndata: {json.dumps(step_data, ensure_ascii=False)}\n\n"
 
@@ -469,20 +474,24 @@ async def rag_chat_stream(request: ChatRequest):
                     # 整理 Chunks 為 Context
                     context_parts = []
                     retrieved_summary = []
-                    # 同段落可能有多張圖片，parent_id 去重時只有一筆會留在 raw_results，其餘會附掛在
-                    # 該筆結果的 metadata.image_chunks 中（原本只用來給前端顯示縮圖清單）。這裡用同一個
-                    # 集合追蹤已經送進 context 的 image_filename，避免同張圖片因為被多筆結果引用而重複塞入。
+                    valid_context_count = 0
                     seen_image_filenames = set()
+
                     for idx, item in enumerate(raw_results):
                         meta = item.get("metadata", {})
-                        # 同段落圖片（image_chunks）是靠 parent_id 撈出的兄弟節點，並非各自被向量檢索
-                        # 獨立命中，本身沒有相似度分數；這裡補上各自真實的 token_count（原本前端會誤植
-                        # 為宿主的分數與寫死 0 token，讓使用者誤以為每張圖都被獨立高度檢索命中）。
+                        eff_semantic_score = item.get("semantic_score")
+                        if eff_semantic_score is None:
+                            eff_semantic_score = item.get("score", 0.0)
+                        
+                        max_retrieved_semantic_score = max(max_retrieved_semantic_score, eff_semantic_score)
+                        passed_ai_threshold = (eff_semantic_score >= ai_summary_score_threshold)
+
                         enriched_image_chunks = [
                             {**ic, "token_count": count_tokens(ic.get("content", ""))}
                             for ic in meta.get("image_chunks", [])
                         ]
-                        sources.append({
+
+                        source_entry = {
                             "chunk_id": item.get("chunk_id"),
                             "content": item.get("content", ""),
                             "metadata": {
@@ -497,59 +506,79 @@ async def rag_chat_stream(request: ChatRequest):
                                 "chunk_type": meta.get("chunk_type"),
                                 "image_filename": meta.get("image_filename"),
                                 "image_chunks": enriched_image_chunks,
-                                "parent_content": meta.get("parent_content")
+                                "parent_content": meta.get("parent_content"),
+                                "included_in_ai_context": passed_ai_threshold,
+                                "semantic_score": round(eff_semantic_score, 4)
                             },
                             "score": item.get("score", 0.0),
+                            "semantic_score": round(eff_semantic_score, 4),
                             "token_count": count_tokens(item.get("content", ""))
-                        })
-                        chunk_idx = meta.get("chunk_index")
-                        chunk_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
-                        context_parts.append(f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{item.get('content', '')}")
-                        if meta.get("chunk_type") == "image" and meta.get("image_filename"):
-                            seen_image_filenames.add(meta.get("image_filename"))
-
-                        # 若該命中的圖片 Chunk 帶有周邊文字 (parent_content)，併入脈絡以補全文字資訊。
-                        # 附加說明（周邊文字/圖片描述）改放進內容區塊的類型前綴，「段落編號」欄位維持
-                        # 純數字/純區間格式，避免不符合 system prompt 要求的 #段落編號 引用格式，
-                        # 導致 LLM 為了遵守嚴格引用規則而直接排除這些來源、不放進回答中。
-                        if meta.get("chunk_type") == "image" and meta.get("parent_content"):
-                            parent_content = meta.get("parent_content")
-                            parent_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
-                            context_parts.append(
-                                f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{parent_idx_str}】\n"
-                                f"內容：[周邊文字] {parent_content}"
-                            )
-                            extra_context_tokens += count_tokens(parent_content)
-
-                        # 攤平同段落的其他圖片描述併入 context，否則這些圖片只會出現在前端縮圖清單，
-                        # 從未真正送進 LLM 的 context，導致 AI 只看得到 parent_id 去重後倖存的那一張圖
-                        for img_chunk in meta.get("image_chunks", []):
-                            img_filename = img_chunk.get("metadata", {}).get("image_filename")
-                            if not img_filename or img_filename in seen_image_filenames:
-                                continue
-                            seen_image_filenames.add(img_filename)
-                            img_meta = img_chunk.get("metadata", {})
-                            img_chunk_idx = img_meta.get("chunk_index")
-                            img_chunk_idx_str = f"#{img_chunk_idx}" if img_chunk_idx is not None else "?"
-                            img_content = img_chunk.get("content", "")
-                            context_parts.append(
-                                f"【來源文件：{img_meta.get('filename') or meta.get('filename', '未知')} | 段落編號：{img_chunk_idx_str}】\n"
-                                f"內容：[圖片描述] {img_content}"
-                            )
-                            extra_context_tokens += count_tokens(img_content)
+                        }
+                        sources.append(source_entry)
 
                         score_label = "RRF Score" if search_type in ["hybrid", "semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment"] else "Score"
-                        retrieved_summary.append(f"[{idx+1}] 來源文件：{meta.get('filename', '未知')} | P.{meta.get('page', '?')} | {score_label}: {item.get('score', 0.0):.4f}\\n內容預覽：{item.get('content', '')[:100]}...")
+                        incl_tag = " (已採納至 AI 總結)" if passed_ai_threshold else " (低於門檻未採納)"
+                        retrieved_summary.append(
+                            f"[{idx+1}] 來源文件：{meta.get('filename', '未知')} | P.{meta.get('page', '?')} | "
+                            f"{score_label}: {item.get('score', 0.0):.4f} | Similarity: {eff_semantic_score:.4f}{incl_tag}\n"
+                            f"內容預覽：{item.get('content', '')[:100]}..."
+                        )
+
+                        # 只將符合 AI 總結門檻的片段納入 context_parts
+                        if passed_ai_threshold:
+                            valid_context_count += 1
+                            chunk_idx = meta.get("chunk_index")
+                            chunk_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
+                            context_parts.append(f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{chunk_idx_str}】\n內容：{item.get('content', '')}")
+                            if meta.get("chunk_type") == "image" and meta.get("image_filename"):
+                                seen_image_filenames.add(meta.get("image_filename"))
+
+                            if meta.get("chunk_type") == "image" and meta.get("parent_content"):
+                                parent_content = meta.get("parent_content")
+                                parent_idx_str = f"#{chunk_idx}" if chunk_idx is not None else "?"
+                                context_parts.append(
+                                    f"【來源文件：{meta.get('filename', '未知')} | 段落編號：{parent_idx_str}】\n"
+                                    f"內容：[周邊文字] {parent_content}"
+                                )
+                                extra_context_tokens += count_tokens(parent_content)
+
+                            for img_chunk in meta.get("image_chunks", []):
+                                img_filename = img_chunk.get("metadata", {}).get("image_filename")
+                                if not img_filename or img_filename in seen_image_filenames:
+                                    continue
+                                seen_image_filenames.add(img_filename)
+                                img_meta = img_chunk.get("metadata", {})
+                                img_chunk_idx = img_meta.get("chunk_index")
+                                img_chunk_idx_str = f"#{img_chunk_idx}" if img_chunk_idx is not None else "?"
+                                img_content = img_chunk.get("content", "")
+                                context_parts.append(
+                                    f"【來源文件：{img_meta.get('filename') or meta.get('filename', '未知')} | 段落編號：{img_chunk_idx_str}】\n"
+                                    f"內容：[圖片描述] {img_content}"
+                                )
+                                extra_context_tokens += count_tokens(img_content)
 
                     if context_parts:
                         context_str = "\n---\n".join(context_parts)
-                        search_details = f"檢索模式: {search_type}\\n Collection: {kb.qdrant_collection_name}\\n成功召回 {len(raw_results)} 筆相關段落：\\n\\n" + "\\n\\n".join(retrieved_summary)
+                        search_details = (
+                            f"檢索模式: {search_type}\n Collection: {kb.qdrant_collection_name}\n"
+                            f"成功召回 {len(raw_results)} 筆相關段落（最高相似度: {max_retrieved_semantic_score:.4f}）。\n"
+                            f"其中 {valid_context_count} 筆符合 AI 總結門檻（>= {ai_summary_score_threshold:.2f}），已放入總結脈絡：\n\n" +
+                            "\n\n".join(retrieved_summary)
+                        )
                         if feedback_boost_applied:
-                            search_details += "\\n\\n【已套用歷史回饋加權】依人工標註正確/不正確次數對命中片段分數進行了重排。"
+                            search_details += "\n\n【已套用歷史回饋加權】依人工標註正確/不正確次數對命中片段分數進行了重排。"
+                        yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': search_details}, ensure_ascii=False)}\n\n"
                     else:
-                        search_details = "向量檢索完成。沒有找到符合相似度閥值限制的相關資料。"
-                    
-                    yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': search_details}, ensure_ascii=False)}\n\n"
+                        if raw_results:
+                            search_details = (
+                                f"向量檢索完成。共召回 {len(raw_results)} 筆相關段落，"
+                                f"但最高相似度為 {max_retrieved_semantic_score:.4f}，均低於設定之 AI 總結門檻（{ai_summary_score_threshold:.2f}）。\n"
+                                f"系統已自動跳過 AI 總結生成。"
+                            )
+                            yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'warning', 'content': search_details}, ensure_ascii=False)}\n\n"
+                        else:
+                            search_details = "向量檢索完成。沒有找到符合相似度閥值限制的相關資料。"
+                            yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': search_details}, ensure_ascii=False)}\n\n"
 
                     # 語義混合附件查詢法：若勾選「AI 讀取附件內容」且確實找到關聯附件，
                     # 送出獨立的擷取步驟讓使用者親眼確認 AI 實際讀到了哪些附件、讀到什麼實際內容
@@ -596,8 +625,30 @@ async def rag_chat_stream(request: ChatRequest):
         yield f"event: step\ndata: {json.dumps({'step': 'semantic_analysis', 'status': 'success', 'content': '無目標知識庫，略過語義分析。'}, ensure_ascii=False)}\n\n"
         yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': '無目標知識庫，略過向量資料查詢。'}, ensure_ascii=False)}\n\n"
 
+    # 如果有指定知識庫檢索且 context_str 與附件皆為空（全數未達 AI 總結門檻），執行 Early Exit 跳過 LLM 總結
+    has_attachments = bool(search_type == "semantic_hybrid_attachment" and read_attachment_content and attachments_data)
+    if not context_str and not has_attachments and search_type != "semantic_db_query" and request.knowledge_base_id:
+        if raw_results:
+            skipped_msg = (
+                f"⚠️ **未執行 AI 總結**\n\n"
+                f"知識庫中檢索到的相關內容最高相似度為 `{max_retrieved_semantic_score:.2f}`，"
+                f"低於您設定的 AI 總結最低門檻 (`{ai_summary_score_threshold:.2f}`)。\n\n"
+                f"為了避免 AI 在缺乏高相關資料時產生幻覺，系統已自動暫停總結輸出。\n\n"
+                f"您可以嘗試：\n"
+                f"1. 在右側面板降低「AI 總結相似度門檻」。\n"
+                f"2. 調整提問關鍵字或更換檢索模式。"
+            )
+        else:
+            skipped_msg = (
+                "⚠️ **未執行 AI 總結**\n\n"
+                "知識庫中未檢索到符合條件的相關資料。"
+            )
+        yield f"event: message\ndata: {json.dumps({'delta': skipped_msg}, ensure_ascii=False)}\n\n"
+        yield f"event: sources\ndata: {json.dumps({'sources': sources}, ensure_ascii=False)}\n\n"
+        return
+
     # 1.5. 如果需要，對檢索出的上下文進行 Map-Reduce 分批摘要
-    if context_str:
+    if context_str or has_attachments:
         att_tokens = 0
         if search_type == "semantic_hybrid_attachment" and read_attachment_content:
             for att in attachments_data:

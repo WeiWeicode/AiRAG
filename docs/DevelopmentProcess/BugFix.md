@@ -1,5 +1,19 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-07-14 AI 總結相似度門檻 Hard Cutoff 相關 4 項問題修正 (8.1 ~ 8.4)
+
+### 背景
+依據 [`NewFeaturesPlan_SimilaritySummaryThresholdPlan.md`](NewFeaturesPlan_SimilaritySummaryThresholdPlan.md) 第 8 節 Code Review Findings 進行修正。針對 Early Exit 前端警示未渲染、附件查詢法被 Early Exit 誤殺、死碼欄位清理、無知識庫 step 提示遺漏進行修復。
+
+### 變更內容
+1. `frontend/src/stores/chatStore.js` (8.1)：補齊 `event: message` SSE 處置邏輯，修復跳過總結時訊息泡泡留白問題。
+2. `backend/routers/rag.py` (8.2 & 8.4)：
+   - 新增 `has_attachments` 判斷，防止 Early Exit 誤殺包含有效附件內容的檢索請求。
+   - 補回非 DB 模式且未指定知識庫時發送 `略過語義分析` / `略過向量查詢` 步驟事件。
+3. `backend/schemas/retrieval.py` (8.3)：移除 `SearchParams` 中無實際作用之 `ai_summary_score_threshold` 死碼宣告。
+
+---
+
 ## 2026-07-09 RRF 混合檢索分數與 Score Threshold 尺度不匹配修正
 
 ### 背景

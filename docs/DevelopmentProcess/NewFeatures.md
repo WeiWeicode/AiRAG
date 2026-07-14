@@ -1,5 +1,29 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-13 AI 總結相似度門檻與拒絕生成機制實作完成
+
+### 背景
+依規劃文件 [NewFeaturesPlan_SimilaritySummaryThresholdPlan.md](NewFeaturesPlan_SimilaritySummaryThresholdPlan.md)（A 方案）實作。於前端「檢索設定」新增可自訂之「AI 總結相似度門檻 (AI SUMMARY THRESHOLD)」。當檢索片段相似度低於此分數時自動排除於 LLM 脈絡外；當全數片段皆低於門檻時，觸發 Early Exit 硬防護跳過 LLM 總結，節省 100% vLLM 推論算力與 Token，並防範幻覺。
+
+### 變更內容
+- **後端 (`backend/routers/rag.py` / `backend/schemas/retrieval.py`)**：
+  - `ChatParams` 與 `SearchParams` 新增 `ai_summary_score_threshold` 欄位（預設 `0.60`）。
+  - 在 `raw_results` 遍歷時，比對 `semantic_score >= ai_summary_score_threshold`，僅達標片段進入 `context_parts`。
+  - 當無任何片段達標時，觸發 Early Exit，由 SSE 直接回傳友善警示文字與 `sources`，無須呼叫 LLM 推論。
+  - 每筆 `sources` 回傳 `semantic_score` 與 `metadata.included_in_ai_context` 狀態。
+- **前端 (`frontend/src/stores/paramsStore.js` / `RagParamsPanel.vue` / `chatStore.js` / `SourceChunks.vue`)**：
+  - `paramsStore.js` 新增 `aiSummaryScoreThreshold` (預設 0.60) 與 `aiSummaryScoreThresholdEnabled` (預設 true)。
+  - `RagParamsPanel.vue` 在「相似度閾值 (Score Threshold)」下方加入專屬 Slider 與開關 Checkbox。
+  - `chatStore.js` 發送請求時自動帶入 `ai_summary_score_threshold` 參數。
+  - `SourceChunks.vue` 為達標與未達標片段標示「已採納」與「未採納」視覺徽章。
+- **文件與紀錄**：
+  - 更新 `docs/03_API_CONTRACT.md`。
+  - 記錄於 `BackendCorrection.md` 與 `FrontendCorrection.md`。
+
+### 驗證
+- 後端 Python 檔 `py_compile` 檢查通過。
+- 前端 `npm run build` 通過（產生最新生產部署 dist 包）。
+
 ## 2026-07-13 專用 Cross-Encoder Rerank 規劃取消
 
 ### 背景

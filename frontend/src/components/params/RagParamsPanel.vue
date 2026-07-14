@@ -70,6 +70,38 @@ watch(() => paramsStore.knowledgeBaseId, async (newKbId) => {
       />
     </div>
 
+    <!-- AI Summary Score Threshold Slider -->
+    <div class="flex flex-col gap-2 pt-1 border-t border-white/5">
+      <div class="flex justify-between items-center">
+        <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider flex items-center gap-1">
+          <span>AI 總結門檻 (AI Summary Threshold)</span>
+        </label>
+        <div class="flex items-center gap-2">
+          <input 
+            type="checkbox" 
+            v-model="paramsStore.aiSummaryScoreThresholdEnabled" 
+            class="rounded bg-white/10 border-white/20 text-[#8b5cf6] focus:ring-[#8b5cf6] h-3.5 w-3.5 cursor-pointer"
+            title="開啟/關閉 AI 總結門檻過濾"
+          />
+          <span class="text-xs font-bold text-[#a78bfa] font-display">
+            {{ paramsStore.aiSummaryScoreThresholdEnabled ? paramsStore.aiSummaryScoreThreshold.toFixed(2) : '關閉' }}
+          </span>
+        </div>
+      </div>
+      <input 
+        v-model.number="paramsStore.aiSummaryScoreThreshold" 
+        type="range" 
+        min="0.00" 
+        max="1.00" 
+        step="0.05" 
+        :disabled="!paramsStore.aiSummaryScoreThresholdEnabled"
+        class="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#8b5cf6] disabled:opacity-40"
+      />
+      <p class="text-[11px] text-slate-400 leading-normal">
+        相似度低於此分數之片段將不放入 AI Context；全數低於門檻則自動跳過 AI 總結。
+      </p>
+    </div>
+
     <!-- Tags Filter -->
     <div class="flex flex-col gap-2">
       <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">標籤過濾篩選 (Filter Tags)</label>

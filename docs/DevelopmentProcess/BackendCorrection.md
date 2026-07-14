@@ -1,5 +1,40 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-14 AI 總結門檻審查問題修正 (8.2 附件 Early Exit 誤殺 / 8.3 死碼清理 / 8.4 補回無 KB 步驟)
+
+### 背景
+依據 [`NewFeaturesPlan_SimilaritySummaryThresholdPlan.md`](NewFeaturesPlan_SimilaritySummaryThresholdPlan.md) 8.2 ~ 8.4 審查項修復。修正附件查詢法在主文 Chunk 低於分數門檻時被 Early Exit 誤殺的問題、清理未使用的死碼 Schema 欄位，並補齊無知識庫情境下遺漏的 step 提示。
+
+### 變更內容
+- `backend/routers/rag.py`：
+  - **8.2 附件 Early Exit 誤殺修復**：計算 `has_attachments` 狀態，當勾選「AI 讀取附件內容」且含有關聯附件時，Early Exit 不會觸發；Map-Reduce 區塊判斷調整為 `if context_str or has_attachments:`，確保附件文字能正確被 Map-Reduce 合併或摘要後送入 LLM 生成總結。
+  - **8.4 無知識庫步驟修復**：於 `request.knowledge_base_id` 不存在的分支補上 `else`，發送 `semantic_analysis` 與 `vector_search` 略過提示事件。
+- `backend/schemas/retrieval.py`：
+  - **8.3 死碼清理**：從 `SearchParams` 移除未於 `/api/retrieval/search` 說明的 `ai_summary_score_threshold` 欄位。
+
+---
+
+## 2026-07-13 AI 總結相似度門檻與拒絕生成機制實作
+
+### 背景
+依據 [`NewFeaturesPlan_SimilaritySummaryThresholdPlan.md`](NewFeaturesPlan_SimilaritySummaryThresholdPlan.md) 規劃實作。提供前端 `ai_summary_score_threshold`（預設 `0.60`）參數，當檢索到的片段相似度低於此分數時排除於 LLM Context 外；當全數片段皆低於門檻時，觸發 Early Exit 硬防護跳過 LLM 總結。
+
+### 變更內容
+- `backend/schemas/retrieval.py`：
+  - `SearchParams` 新增 `ai_summary_score_threshold: Optional[float] = Field(default=0.60)`。
+- `backend/routers/rag.py`：
+  - `ChatParams` 新增 `ai_summary_score_threshold: Optional[float] = None`。
+  - `rag_chat_stream()` 提取 `ai_summary_score_threshold`（預設 0.60）。
+  - 於 `raw_results` Chunks 處理循環中，逐一比較 `semantic_score >= ai_summary_score_threshold`：
+    - 符合門檻才放入 `context_parts` 送給 LLM 做總結與回答。
+    - 在每個 `sources` 筆數中補上 `semantic_score` 與 `metadata.included_in_ai_context` 狀態。
+  - **Early Exit 機制**：若 `context_parts` 為空（全數片段皆低於門檻）：
+    - `vector_search` 步驟事件發送 warning 與提示。
+    - 以 SSE 直接串流友善提醒訊息及 `sources`，並 `return` 結束流，不調用 vLLM 推論，達成 100% 杜絕幻覺與零算力消耗。
+
+### 驗證
+- 執行 `python -m py_compile backend/routers/rag.py backend/schemas/retrieval.py` 通過。
+
 ## 2026-07-13 Qdrant 檢索查詢優化（中文 Tokenizer 設定與既有索引自動升級）
 
 ### 背景

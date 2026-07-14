@@ -46,6 +46,7 @@
     "max_tokens": 1024,
     "top_k": 13,
     "score_threshold": 0.65,
+    "ai_summary_score_threshold": 0.60,
     "filter_tags": ["string"],
     "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_hybrid_attachment | semantic_db_query",
     "context_summarize_trigger_tokens": 50000,
@@ -55,7 +56,7 @@
   }
 }
 ```
-> 注意：`params` 內**沒有** `top_p` 欄位（此為前一版文件的錯誤）。上方數值為程式碼中未帶入時使用的預設值。`read_attachment_content`（2026-07-06 新增）僅在 `search_type == "semantic_hybrid_attachment"` 時有意義，見第 14 節。`history_context_turns`／`pinned_filename`（2026-07-08 新增，多輪對話指代消解）僅在 `search_type` 為 `semantic_hybrid`／`semantic_hybrid_feedback`／`semantic_hybrid_attachment` 時有意義，對 `vector`/`hybrid`/`semantic_db_query` 無效：`history_context_turns` 是語義 JSON 轉換階段（`EmbeddingService.query_to_semantic_json`）納入的最近對話則數，`null` 時採用後端預設值 `settings.SEMANTIC_JSON_HISTORY_TURNS`（預設 3），`0` 等同關閉此功能；`pinned_filename` 是使用者手動鎖定的檔案名稱，優先權高於 AI 自動判斷出的 `filter_filename`。
+> 注意：`params` 內**沒有** `top_p` 欄位（此為前一版文件的錯誤）。上方數值為程式碼中未帶入時使用的預設值。`ai_summary_score_threshold`（2026-07-13 新增，預設 0.60）：指定 AI 總結之最低相似度過濾門檻，低於此分數之片段自動排除於 AI 脈絡外；若全數低於門檻，則觸發 Early Exit 拒絕總結機制。`read_attachment_content`（2026-07-06 新增）僅在 `search_type == "semantic_hybrid_attachment"` 時有意義，見第 14 節。`history_context_turns`／`pinned_filename`（2026-07-08 新增，多輪對話指代消解）僅在 `search_type` 為 `semantic_hybrid`／`semantic_hybrid_feedback`／`semantic_hybrid_attachment` 時有意義。
 
 **Response**：`text/event-stream` (SSE)，事件如下（實際欄位為 `step` / `status` / `content`，並非 `event` / `detail`）：
 

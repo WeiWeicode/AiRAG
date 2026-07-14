@@ -6,6 +6,8 @@ export const useParamsStore = defineStore('params', {
     knowledgeBaseId: 'hr_docs',
     topK: 5,
     scoreThreshold: 0.70,
+    aiSummaryScoreThreshold: 0.60,
+    aiSummaryScoreThresholdEnabled: true,
     searchMode: 'vector',
     hnswEfSearch: 64,
     filterTagsString: '',
