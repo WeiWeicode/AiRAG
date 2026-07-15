@@ -93,7 +93,6 @@ src/
 │   ├── EmbeddingTestView.vue      # §4.5 資料向量化 (含 DB 匯入、批次上傳)
 │   └── FeedbackView.vue           # §4.6 回饋標註歷史
 ├── components/
-│   ├── API/                       # ⚠️ 與 services/ 重複的舊版 API 模組，非實際使用中的 API 層
 │   ├── chat/
 │   │   ├── ChatWindow.vue         # 對話視窗 (支援語義混合查詢按鈕)
 │   │   ├── MessageBubble.vue      # 訊息氣泡 (含玻璃擬物化折疊手風琴步驟元件)

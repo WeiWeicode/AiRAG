@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import apiConnector from '../API/api_connector'
+import { checkHealth } from '../../services/api'
 
 const route = useRoute()
 const isConnected = ref(true)
@@ -20,7 +20,7 @@ const pageTitle = computed(() => {
 })
 
 const checkConnection = async () => {
-  const health = await apiConnector.checkHealth()
+  const health = await checkHealth()
   isConnected.value = health.status === 'healthy'
 }
 

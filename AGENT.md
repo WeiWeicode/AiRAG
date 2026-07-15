@@ -141,8 +141,10 @@
 | 應用資料庫 | MongoDB (motor + beanie) |
 | 既有知識庫 | SQL Server (唯讀, pyodbc) |
 | 向量資料庫 | Qdrant |
+<!-- 模型依架設平台會有差異 -->
 | LLM | vLLM — Qwen3.6-35B-A3B-FP8 |
 | Embedding | llama.cpp — Qwen3-Embedding-8B-Q8_0.gguf |
+| Instruction | llama.cpp — qwen2.5-coder-7b-instruct-q8_0.gguf |
 | 部署 | Docker + Docker Compose |
 
 
