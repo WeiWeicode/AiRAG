@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from beanie import PydanticObjectId
 
 from models.feedback import Feedback, FeedbackSourceChunk
+from models.knowledge_base import KnowledgeBase
 from models.test_dataset import TestDataset, DatasetItem
 from utils.security import get_current_user
 
@@ -41,6 +42,8 @@ class FeedbackItem(BaseModel):
     error_type: Optional[str] = None
     note: Optional[str] = None
     created_at: datetime
+    knowledge_base_id: Optional[str] = None
+    knowledge_base_name: Optional[str] = None
 
 class FeedbackListResponse(BaseModel):
     total: int
@@ -79,6 +82,15 @@ async def create_feedback(request: FeedbackCreate, current_user: str = Depends(g
         )
         await feedback.insert()
         
+        kb_name = None
+        if feedback.knowledge_base_id:
+            try:
+                kb = await KnowledgeBase.get(PydanticObjectId(feedback.knowledge_base_id))
+                if kb:
+                    kb_name = kb.name
+            except Exception:
+                pass
+
         return FeedbackItem(
             feedback_id=str(feedback.id),
             chat_message_id=feedback.chat_message_id,
@@ -88,7 +100,9 @@ async def create_feedback(request: FeedbackCreate, current_user: str = Depends(g
             correct_answer=feedback.correct_answer,
             error_type=feedback.error_type,
             note=feedback.note,
-            created_at=feedback.created_at
+            created_at=feedback.created_at,
+            knowledge_base_id=feedback.knowledge_base_id,
+            knowledge_base_name=kb_name
         )
     except Exception as e:
         logger.error(f"Failed to create feedback: {e}")
@@ -120,6 +134,20 @@ async def list_feedbacks(
         skip = (page - 1) * page_size
         feedbacks = await Feedback.find(query).sort("-created_at").skip(skip).limit(page_size).to_list()
         
+        # Batch query knowledge base names safely
+        raw_kb_ids = {fb.knowledge_base_id for fb in feedbacks if fb.knowledge_base_id}
+        valid_obj_ids = []
+        for raw_id in raw_kb_ids:
+            try:
+                valid_obj_ids.append(PydanticObjectId(raw_id))
+            except Exception:
+                pass
+
+        kb_name_map = {}
+        if valid_obj_ids:
+            kbs = await KnowledgeBase.find({"_id": {"$in": valid_obj_ids}}).to_list()
+            kb_name_map = {str(kb.id): kb.name for kb in kbs}
+
         items = [
             FeedbackItem(
                 feedback_id=str(fb.id),
@@ -130,7 +158,9 @@ async def list_feedbacks(
                 correct_answer=fb.correct_answer,
                 error_type=fb.error_type,
                 note=fb.note,
-                created_at=fb.created_at
+                created_at=fb.created_at,
+                knowledge_base_id=fb.knowledge_base_id,
+                knowledge_base_name=kb_name_map.get(fb.knowledge_base_id) if fb.knowledge_base_id else None
             )
             for fb in feedbacks
         ]

@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import evalService from '../../services/evalService'
+import KnowledgeBaseSelector from '../common/KnowledgeBaseSelector.vue'
 
 const props = defineProps({
   isLoading: {
@@ -166,6 +167,9 @@ onMounted(() => {
 
       <!-- Max Tokens & Search Type Parameters -->
       <div class="mt-4 flex flex-col gap-4 bg-white/3 border border-white/5 rounded-xl p-4">
+        <!-- Knowledge Base Selector -->
+        <KnowledgeBaseSelector />
+
         <!-- Search Type Selector -->
         <div class="flex flex-col gap-2">
           <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">檢索模式 (Search Type)</label>

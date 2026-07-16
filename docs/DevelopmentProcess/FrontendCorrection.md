@@ -1,5 +1,21 @@
 <!-- 前端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-16 手動建立與選擇 Qdrant 知識庫 (Knowledge Base / Collections) 實作
+
+### 背景
+依據 [`NewFeaturesPlan_ManualKnowledgeBaseCollectionsPlan.md`](NewFeaturesPlan_ManualKnowledgeBaseCollectionsPlan.md) 規劃實作前端介面與共用選單修正。
+
+### 變更內容
+- `frontend/src/stores/paramsStore.js`：將 `knowledgeBaseId` 預設值由 `'hr_docs'` 修正為 `null`，避免非法 ObjectId 字串發送造成後端 400。
+- `frontend/src/components/common/KnowledgeBaseSelector.vue`：將無可用知識庫時的空選項 `value` 修正為 `''`。
+- `frontend/src/components/eval/TestSetManager.vue` & `frontend/src/views/EvaluationView.vue`：引進 `KnowledgeBaseSelector` 元件，並修正評估 payload 綁定 `paramsStore.knowledgeBaseId`。
+- `frontend/src/views/FeedbackView.vue`：歷史回饋表格新增「知識庫」欄位，顯示 `item.knowledge_base_name || '未指定'`。
+- `frontend/src/services/knowledgeBaseService.js`（新檔）：API 客戶端封裝 `list()`、`create()`、`remove()` 知識庫操作。
+- `frontend/src/views/KnowledgeBaseSettingsView.vue`（新檔）：實作知識庫建立表單、清單與已向量化段落數統計、刪除確認彈窗（包含輸入檔名二次確認），並於刪除當前選用知識庫時連動重置全域 `paramsStore.knowledgeBaseId`。
+- `frontend/src/router/index.js` & `frontend/src/components/common/AppSidebar.vue`：註冊 `/knowledge-base-settings` 路由，並於側邊欄新增「知識庫管理 (Knowledge Base)」與 Database 意象 SVG 圖示。
+
+---
+
 ## 2026-07-16 文件機密權限控管 (Confidential Document Access Control) 實作
 
 ### 背景

@@ -795,4 +795,102 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
 ```
 錯誤：`404` 使用者不存在。
 
+---
+
+## 18. 知識庫管理與人工回饋 API (§4.3 & 3.2，2026-07-16 新增)
+
+### 18.1 GET `/api/knowledge-bases` — 取得知識庫列表
+**Response 200**：
+```json
+{
+  "items": [
+    {
+      "id": "660000000000000000000001",
+      "name": "預設知識庫",
+      "description": "系統預設知識庫",
+      "chunk_count": 120,
+      "created_at": "2026-07-16T10:00:00Z"
+    }
+  ]
+}
+```
+
+### 18.2 POST `/api/knowledge-bases` — 手動建立知識庫
+**Request Body**：
+```json
+{
+  "name": "研發部技術文件庫",
+  "description": "存放內部研發文件與架構設計圖"
+}
+```
+**Response 201**：
+```json
+{
+  "id": "660000000000000000000002",
+  "name": "研發部技術文件庫",
+  "description": "存放內部研發文件與架構設計圖",
+  "chunk_count": 0,
+  "created_at": "2026-07-16T15:00:00Z"
+}
+```
+
+### 18.3 DELETE `/api/knowledge-bases/{id}` — 刪除知識庫
+**Response 200**：
+```json
+{ "message": "刪除成功" }
+```
+錯誤：`404` 知識庫不存在。
+
+### 18.4 GET `/api/feedback` — 取得人工回饋列表
+**Response 200**：
+```json
+{
+  "total": 1,
+  "items": [
+    {
+      "feedback_id": "660000000000000000000003",
+      "chat_message_id": "msg_001",
+      "question": "如何申請休假？",
+      "ai_answer": "請至 HR 系統申請。",
+      "is_correct": true,
+      "correct_answer": null,
+      "error_type": null,
+      "note": null,
+      "created_at": "2026-07-16T15:10:00Z",
+      "knowledge_base_id": "660000000000000000000001",
+      "knowledge_base_name": "預設知識庫"
+    }
+  ]
+}
+```
+
+### 18.5 POST `/api/feedback` — 提交人工回饋標註
+**Request Body**：
+```json
+{
+  "chat_message_id": "msg_001",
+  "is_correct": true,
+  "question": "如何申請休假？",
+  "ai_answer": "請至 HR 系統申請。",
+  "knowledge_base_id": "660000000000000000000001"
+}
+```
+**Response 201**：
+```json
+{
+  "feedback_id": "660000000000000000000003",
+  "chat_message_id": "msg_001",
+  "question": "如何申請休假？",
+  "ai_answer": "請至 HR 系統申請。",
+  "is_correct": true,
+  "correct_answer": null,
+  "error_type": null,
+  "note": null,
+  "created_at": "2026-07-16T15:10:00Z",
+  "knowledge_base_id": "660000000000000000000001",
+  "knowledge_base_name": "預設知識庫"
+}
+```
+
+
 

@@ -219,6 +219,7 @@ onMounted(() => {
                 />
               </th>
               <th class="pb-3 w-[150px] font-medium">記錄編號</th>
+              <th class="pb-3 w-[140px] font-medium">知識庫</th>
               <th class="pb-3 font-medium">問答與回饋標記比對</th>
               <th class="pb-3 text-center w-[120px] font-medium">錯誤類型</th>
               <th class="pb-3 text-right w-[150px] font-medium">提交時間</th>
@@ -227,10 +228,10 @@ onMounted(() => {
           </thead>
           <tbody class="divide-y divide-white/4">
             <tr v-if="feedbackStore.isLoading" class="text-[#9ca3af] text-center">
-              <td colspan="6" class="py-8">載入中...</td>
+              <td colspan="7" class="py-8">載入中...</td>
             </tr>
             <tr v-else-if="feedbackStore.feedbackList.length === 0" class="text-[#6b7280] text-center">
-              <td colspan="6" class="py-8">尚無符合條件的回饋紀錄</td>
+              <td colspan="7" class="py-8">尚無符合條件的回饋紀錄</td>
             </tr>
             <tr 
               v-else
@@ -248,6 +249,9 @@ onMounted(() => {
               </td>
               <td class="py-4 font-mono text-[10px] text-[#6b7280] truncate max-w-[130px]" :title="item.feedback_id">
                 {{ item.feedback_id }}
+              </td>
+              <td class="py-4 text-[#9ca3af] font-medium text-xs truncate max-w-[130px]" :title="item.knowledge_base_name || item.knowledge_base_id || '未指定'">
+                {{ item.knowledge_base_name || '未指定' }}
               </td>
               <td class="py-4 pr-6 flex flex-col gap-1.5 max-w-[500px]">
                 <div class="font-bold text-white">Q: {{ item.question || '使用者問題' }}</div>

@@ -35,7 +35,7 @@ onMounted(() => {
       :disabled="knowledgeBases.length === 0"
       class="bg-white/5 border border-white/8 rounded-lg text-white px-3.5 py-2.5 text-sm focus:outline-none focus:border-[#8b5cf6] focus:ring-2 focus:ring-[#8b5cf6]/15 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
     >
-      <option v-if="knowledgeBases.length === 0" value="hr_docs" class="bg-[#111827] text-[#9ca3af]">
+      <option v-if="knowledgeBases.length === 0" value="" class="bg-[#111827] text-[#9ca3af]">
         -- 無可用知識庫 --
       </option>
       <option 

@@ -1,5 +1,20 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-16 手動建立與選擇 Qdrant 知識庫 (Knowledge Base / Collections) 實作
+
+### 背景
+依據 [`NewFeaturesPlan_ManualKnowledgeBaseCollectionsPlan.md`](NewFeaturesPlan_ManualKnowledgeBaseCollectionsPlan.md) 規劃修訂後端路由與 Schema。
+
+### 變更內容
+- `backend/routers/evaluation.py`：移除 `["tech_specs", "hr_docs"]` 舊相容分支，簡化知識庫解析邏輯為直接依 `PydanticObjectId` 尋找 `KnowledgeBase` 模型（無效或查無時 fallback 第一個知識庫）。
+- `backend/routers/feedback.py`：
+  - 導入 `KnowledgeBase` 模型。
+  - `FeedbackItem` schema 補上 `knowledge_base_id: Optional[str]` 與 `knowledge_base_name: Optional[str]`。
+  - `create_feedback()` 新增單筆 KnowledgeBase 名稱查詢並回傳。
+  - `list_feedbacks()` 實作批次 KnowledgeBase 查詢（`$in` 條件），並加入 `try: PydanticObjectId(raw_id) except: pass` 過濾，排除髒資料與避免 N+1 查詢崩潰。
+
+---
+
 ## 2026-07-16 文件機密權限控管 (Confidential Document Access Control) 實作
 
 ### 背景

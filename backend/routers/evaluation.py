@@ -182,17 +182,11 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
     # 2. 解析 Knowledge Base ID
     kb = None
     if payload.knowledge_base_id:
-        if payload.knowledge_base_id in ["tech_specs", "hr_docs"]:
-            # 尋找預設或第一個知識庫
-            kb = await KnowledgeBase.find_one(KnowledgeBase.name == "預設知識庫")
-            if not kb:
-                kb = await KnowledgeBase.find_all().first_or_none()
-        else:
-            try:
-                kb_id = PydanticObjectId(payload.knowledge_base_id)
-                kb = await KnowledgeBase.get(kb_id)
-            except Exception:
-                pass
+        try:
+            kb_id = PydanticObjectId(payload.knowledge_base_id)
+            kb = await KnowledgeBase.get(kb_id)
+        except Exception:
+            pass
 
     if not kb:
         kb = await KnowledgeBase.find_all().first_or_none()

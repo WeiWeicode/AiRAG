@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 export const useParamsStore = defineStore('params', {
   state: () => ({
     // Retrieval parameters
-    knowledgeBaseId: 'hr_docs',
+    knowledgeBaseId: null,
     topK: 5,
     scoreThreshold: 0.70,
     aiSummaryScoreThreshold: 0.60,

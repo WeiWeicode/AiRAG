@@ -5,8 +5,10 @@ import TestSetManager from '../components/eval/TestSetManager.vue'
 import ReportChart from '../components/eval/ReportChart.vue'
 import evalService from '../services/evalService'
 import { useAuthStore } from '../stores/authStore'
+import { useParamsStore } from '../stores/paramsStore'
 
 const authStore = useAuthStore()
+const paramsStore = useParamsStore()
 
 const isEvaluating = ref(false)
 const progressCount = ref(0)
@@ -115,7 +117,7 @@ const startEvaluation = async (data) => {
   try {
     const payload = {
       dataset_id: datasetId,
-      knowledge_base_id: datasetId === 'dataset_tech' ? 'tech_specs' : 'hr_docs',
+      knowledge_base_id: paramsStore.knowledgeBaseId,
       params: {
         model: 'Qwen3.6-35B-A3B-FP8',
         temperature: 0.3,

@@ -10,6 +10,7 @@ import PromptTestView from '../views/PromptTestView.vue'
 import EmbeddingTestView from '../views/EmbeddingTestView.vue'
 import FeedbackView from '../views/FeedbackView.vue'
 import RoleSettingsView from '../views/RoleSettingsView.vue'
+import KnowledgeBaseSettingsView from '../views/KnowledgeBaseSettingsView.vue'
 
 const routes = [
   {
@@ -68,6 +69,12 @@ const routes = [
     path: '/role-settings',
     name: 'RoleSettings',
     component: RoleSettingsView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/knowledge-base-settings',
+    name: 'KnowledgeBaseSettings',
+    component: KnowledgeBaseSettingsView,
     meta: { requiresAuth: true }
   }
 ]

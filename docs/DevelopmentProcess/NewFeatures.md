@@ -114,5 +114,28 @@
 4. **專用 Cross-Encoder Rerank 模型（已取消）**：原規劃引進本地 fastembed `TextCrossEncoder`。經實作評估後發現效果未達預期，已確認取消此項目。詳細規劃見 [NewFeaturesPlan_CrossEncoderRerankPlan.md](NewFeaturesPlan_CrossEncoderRerankPlan.md)。
 5. **檢索命中分析儀表板**：統計哪些問題常檢索不到／分數偏低，結合既有 `backend/routers/feedback.py` 回饋機制，主動發現知識庫內容缺口，而非被動等待使用者回報。已與使用者確認技術方向為新增獨立的 MongoDB `RetrievalStats` collection（不重用 `ChatMessage.source_chunks`）。詳細規劃見 [NewFeaturesPlan_RetrievalStatsDashboardPlan.md](NewFeaturesPlan_RetrievalStatsDashboardPlan.md)。
 
-### 後續
-以上 5 項規劃文件皆已建立完成（2026-07-08），狀態皆為「規劃中，待使用者確認後執行」，每份文件內的「決策紀錄／待確認事項」章節列出仍需使用者逐一確認的技術細節（例如歷史視窗大小單位、篩選條件布林邏輯、cross-encoder 模型名稱等），待逐項確認後才會依文件內的分階段 Checklist 開始實作。本次僅新增規劃文件，未修改任何程式碼。
+
+---
+
+## 2026-07-16 手動建立與選擇 Qdrant 知識庫 (Knowledge Base / Collections) 功能實作
+
+### 功能說明
+完成「手動建立與選擇 Qdrant 知識庫 (Knowledge Base / Collections)」功能的完整前後端實作，詳見 [`NewFeaturesPlan_ManualKnowledgeBaseCollectionsPlan.md`](NewFeaturesPlan_ManualKnowledgeBaseCollectionsPlan.md)。
+
+### 主要變更
+1. **後端**：
+   - `backend/routers/evaluation.py`：移除 `["tech_specs", "hr_docs"]` 舊相容分支，簡化知識庫解析邏輯為直接依 `PydanticObjectId` 尋找 `KnowledgeBase` 模型（無效或查無時 fallback 第一個知識庫）。
+   - `backend/routers/feedback.py`：`FeedbackItem` 補上 `knowledge_base_id` 與 `knowledge_base_name` 欄位；`create_feedback` 單筆查詢知識庫名稱；`list_feedbacks` 批次查詢並過濾無效 `ObjectId` 字串，避免 N+1 與髒資料崩潰。
+2. **前端**：
+   - `frontend/src/stores/paramsStore.js`：將 `knowledgeBaseId` 預設值由舊字串 `'hr_docs'` 修正為 `null`。
+   - `frontend/src/components/common/KnowledgeBaseSelector.vue`：將無可用知識庫時的預設選項 `value` 由 `'hr_docs'` 修正為 `''`。
+   - `frontend/src/components/eval/TestSetManager.vue` 與 `frontend/src/views/EvaluationView.vue`：引入 `KnowledgeBaseSelector`，並將評估請求 payload 的 `knowledge_base_id` 綁定至 `paramsStore.knowledgeBaseId`。
+   - `frontend/src/views/FeedbackView.vue`：歷史回饋表格新增「知識庫」欄位，顯示 `item.knowledge_base_name || '未指定'`。
+   - 新增 `frontend/src/services/knowledgeBaseService.js`：封裝 `list()`、`create()`、`remove()` 三支知識庫管理 API。
+   - 新增 `frontend/src/views/KnowledgeBaseSettingsView.vue`：提供建立知識庫表單、知識庫清單與已向量化段落數統計、刪除確認彈窗（包含輸入檔名二次確認警示），並於刪除當前選用知識庫時自動重置全域 `paramsStore.knowledgeBaseId`。
+   - `frontend/src/router/index.js` & `frontend/src/components/common/AppSidebar.vue`：註冊 `/knowledge-base-settings` 路由，並於側邊選單加入「知識庫管理 (Knowledge Base)」與 Database 意象 SVG 圖示。
+3. **文件**：
+   - `docs/03_API_CONTRACT.md`：新增第 18 節知識庫管理與人工回饋 API 合約說明。
+
+### 驗證
+已對照計劃 Checklist 完成所有改動。測試依 `AGENT.md` 規範交由使用者手動測試驗證。
