@@ -131,7 +131,8 @@ export const useChatStore = defineStore('chat', {
             context_summarize_trigger_tokens: paramsStore.contextSummarizeThreshold || undefined,
             read_attachment_content: paramsStore.readAttachmentContent,
             history_context_turns: historyContextTurns,
-            pinned_filename: paramsStore.pinnedFilename
+            pinned_filename: paramsStore.pinnedFilename,
+            simulated_user_id: paramsStore.simulatedUserEnabled ? paramsStore.simulatedUserId : null
           }
         }
 

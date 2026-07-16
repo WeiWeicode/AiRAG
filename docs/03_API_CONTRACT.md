@@ -52,11 +52,12 @@
     "context_summarize_trigger_tokens": 50000,
     "read_attachment_content": false,
     "history_context_turns": 3,
-    "pinned_filename": null
+    "pinned_filename": null,
+    "simulated_user_id": "string (選填，模擬使用者 ID，2026-07-16 新增)"
   }
 }
 ```
-> 注意：`params` 內**沒有** `top_p` 欄位（此為前一版文件的錯誤）。上方數值為程式碼中未帶入時使用的預設值。`ai_summary_score_threshold`（2026-07-13 新增，預設 0.60）：指定 AI 總結之最低相似度過濾門檻，低於此分數之片段自動排除於 AI 脈絡外；若全數低於門檻，則觸發 Early Exit 拒絕總結機制。`read_attachment_content`（2026-07-06 新增）僅在 `search_type == "semantic_hybrid_attachment"` 時有意義，見第 14 節。`history_context_turns`／`pinned_filename`（2026-07-08 新增，多輪對話指代消解）僅在 `search_type` 為 `semantic_hybrid`／`semantic_hybrid_feedback`／`semantic_hybrid_attachment` 時有意義。
+> 注意：`params` 內**沒有** `top_p` 欄位（此為前一版文件的錯誤）。上方數值為程式碼中未帶入時使用的預設值。`ai_summary_score_threshold`（2026-07-13 新增，預設 0.60）：指定 AI 總結之最低相似度過濾門檻，低於此分數之片段自動排除於 AI 脈絡外；若全數低於門檻，則觸發 Early Exit 拒絕總結機制。`simulated_user_id`（2026-07-16 新增）：模擬使用者 ID，帶入時會依該使用者層級與部門對檢索片段執行機密權限過濾。
 
 **Response**：`text/event-stream` (SSE)，事件如下（實際欄位為 `step` / `status` / `content`，並非 `event` / `detail`）：
 
@@ -141,11 +142,12 @@
   "params": {
     "top_k": 8,
     "score_threshold": 0.4,
-    "search_type": "vector | hybrid | semantic_hybrid",
+    "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_hybrid_attachment | semantic_db_query",
     "hnsw_ef_search": 128,
     "filter_tags": ["string"],
     "filter_filename": "string",
-    "disable_parent_merge": false
+    "disable_parent_merge": false,
+    "simulated_user_id": "string | null (2026-07-16 新增)"
   }
 }
 ```
@@ -163,7 +165,10 @@
         "function_name": "string", "type": "string", "links_to": ["string"],
         "linked_attachments": ["string"],
         "chunk_type": "image | text | null", "image_filename": "string | null",
-        "image_chunks": ["array（結構同 §3.1 sources，僅語義混合類模式才會經過 get_siblings_and_merge 填入）"]
+        "image_chunks": ["array（結構同 §3.1 sources，僅語義混合類模式才會經過 get_siblings_and_merge 填入）"],
+        "is_confidential": "bool | null (2026-07-16 新增)",
+        "confidential_level": "int | null (2026-07-16 新增)",
+        "confidential_departments": ["string"]
       },
       "score": 0.95,
       "distance": 0.05
@@ -174,7 +179,14 @@
   "embeddings_input": null,
   "sparse_keywords": null,
   "query_vector_preview": null,
-  "vector_size": null
+  "vector_size": null,
+  "excluded_items": [
+    {
+      "filename": "string",
+      "chunk_indices": [0],
+      "reason": "string (排除原因說明)"
+    }
+  ]
 }
 ```
 錯誤：`400` 無效的 `knowledge_base_id` 格式、`404` 知識庫不存在、`500` 檢索失敗。
@@ -239,6 +251,23 @@
 **Response 200**：
 ```json
 { "message": "成功更新檔案 'string' 的關聯附件", "updated_count": 12 }
+```
+
+### 4.8 POST `/api/retrieval/knowledge-bases/{knowledge_base_id}/files/update-permissions` — 更新檔案機密權限設定【新增，2026-07-16】
+**描述**：批次將指定檔案（`filename`）底下所有向量點的 `is_confidential`、`confidential_level`、`confidential_departments` payload 欄位覆蓋為指定的機密與部門設定。
+
+**Request Body**：
+```json
+{
+  "filename": "string",
+  "is_confidential": true,
+  "confidential_level": 5,
+  "confidential_departments": ["研發部", "人資部"]
+}
+```
+**Response 200**：
+```json
+{ "message": "成功更新檔案 'string' 的機密權限設定", "updated_count": 12 }
 ```
 
 ---
@@ -689,4 +718,81 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
   ]
 }
 ```
+
+---
+
+## 17. 角色與權限管理 API (Users & Departments)【新增，2026-07-16】
+
+### 17.1 GET `/api/users/departments` — 取得部門清單
+**Response 200**：
+```json
+[
+  { "id": "660000000000000000000001", "name": "研發部" },
+  { "id": "660000000000000000000002", "name": "人資部" }
+]
+```
+
+### 17.2 POST `/api/users/departments` — 新增部門
+**Request Body**：
+```json
+{ "name": "研發部" }
+```
+**Response 200**：
+```json
+{ "id": "660000000000000000000001", "name": "研發部" }
+```
+錯誤：`400` 部門已存在。
+
+### 17.3 DELETE `/api/users/departments/{dept_id}` — 刪除部門
+**Response 200**：
+```json
+{ "message": "已成功刪除部門 '研發部'" }
+```
+錯誤：`404` 部門不存在。
+
+### 17.4 GET `/api/users` — 取得模擬使用者名冊
+**Response 200**：
+```json
+[
+  {
+    "id": "660000000000000000000001",
+    "name": "王小明",
+    "department": "研發部",
+    "job_title": "經理",
+    "level": 6,
+    "created_at": "2026-07-16T10:00:00Z"
+  }
+]
+```
+
+### 17.5 POST `/api/users` — 新增模擬使用者
+**Request Body**：
+```json
+{
+  "name": "王小明",
+  "department": "研發部",
+  "job_title": "經理",
+  "level": 6
+}
+```
+**Response 200**：
+```json
+{
+  "id": "660000000000000000000001",
+  "name": "王小明",
+  "department": "研發部",
+  "job_title": "經理",
+  "level": 6,
+  "created_at": "2026-07-16T10:00:00Z"
+}
+```
+錯誤：`400` 部門不存在、無效的職級標籤、或自訂等級超越 1~10 範圍。
+
+### 17.6 DELETE `/api/users/{user_id}` — 刪除模擬使用者
+**Response 200**：
+```json
+{ "message": "已成功刪除使用者 '王小明'" }
+```
+錯誤：`404` 使用者不存在。
+
 

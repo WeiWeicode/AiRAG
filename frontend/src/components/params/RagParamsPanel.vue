@@ -4,10 +4,25 @@ import { useParamsStore } from '../../stores/paramsStore'
 import KnowledgeBaseSelector from '../common/KnowledgeBaseSelector.vue'
 import api from '../../services/api'
 
+import userService from '../../services/userService'
+
 const paramsStore = useParamsStore()
 
 // 手動鎖定檔案：下拉選單選項來源，隨知識庫切換重新取得
 const availableFilenames = ref([])
+const simulatedUsers = ref([])
+
+const loadUsers = async () => {
+  try {
+    const res = await userService.listUsers()
+    simulatedUsers.value = res.data || []
+    if (simulatedUsers.value.length > 0 && !paramsStore.simulatedUserId) {
+      paramsStore.simulatedUserId = simulatedUsers.value[0].id
+    }
+  } catch (err) {
+    console.error('Failed to fetch user roster:', err)
+  }
+}
 
 watch(() => paramsStore.knowledgeBaseId, async (newKbId) => {
   if (!newKbId) {
@@ -28,6 +43,8 @@ watch(() => paramsStore.knowledgeBaseId, async (newKbId) => {
     paramsStore.pinnedFilename = null
   }
 }, { immediate: true })
+
+loadUsers()
 </script>
 
 <template>
@@ -127,6 +144,37 @@ watch(() => paramsStore.knowledgeBaseId, async (newKbId) => {
         <option value="semantic_hybrid_attachment" class="bg-[#111827] text-white">語義混合附件查詢法 (Semantic Hybrid + Attachment)</option>
         <option value="semantic_db_query" class="bg-[#111827] text-white">語義資料庫查詢法 (Semantic DB Query)</option>
       </select>
+    </div>
+
+    <!-- Simulated User Access Control Section -->
+    <div class="flex flex-col gap-2 pt-2 border-t border-white/5">
+      <label class="flex items-center gap-2 text-xs font-semibold text-[#9ca3af] uppercase tracking-wider cursor-pointer">
+        <input
+          type="checkbox"
+          v-model="paramsStore.simulatedUserEnabled"
+          class="rounded bg-white/10 border-white/20 text-[#8b5cf6] focus:ring-[#8b5cf6] h-3.5 w-3.5 cursor-pointer"
+        />
+        <span>模擬使用者權限測試 (Simulate User)</span>
+      </label>
+      <div v-if="paramsStore.simulatedUserEnabled" class="flex flex-col gap-1.5 mt-1 animate-fade-in">
+        <select
+          v-model="paramsStore.simulatedUserId"
+          class="bg-white/5 border border-white/8 rounded-lg text-white px-3 py-2 text-xs focus:outline-none focus:border-[#8b5cf6] transition-all"
+        >
+          <option v-if="simulatedUsers.length === 0" :value="null" class="bg-[#111827]">尚無使用者，請先新增</option>
+          <option
+            v-for="u in simulatedUsers"
+            :key="u.id"
+            :value="u.id"
+            class="bg-[#111827] text-white"
+          >
+            👤 {{ u.name }} ({{ u.job_title }}/等級{{ u.level }}/{{ u.department }})
+          </option>
+        </select>
+        <p class="text-[10px] text-[#9ca3af]">
+          勾選後檢索將依該使用者的職級等級與部門自動排除無存取權限的機密文件。
+        </p>
+      </div>
     </div>
 
     <!-- Semantic Hybrid Attachment 專用參數：AI 讀取附件內容 -->

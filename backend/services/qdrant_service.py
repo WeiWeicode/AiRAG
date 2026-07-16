@@ -514,7 +514,10 @@ class QdrantService:
                         "links_to": payload.get("links_to", []),
                         "linked_attachments": payload.get("linked_attachments", []),
                         "chunk_type": payload.get("chunk_type"),
-                        "image_filename": payload.get("image_filename")
+                        "image_filename": payload.get("image_filename"),
+                        "is_confidential": payload.get("is_confidential", False),
+                        "confidential_level": payload.get("confidential_level"),
+                        "confidential_departments": payload.get("confidential_departments", [])
                     },
                     "score": score,
                     "semantic_score": semantic_score,
@@ -793,7 +796,10 @@ class QdrantService:
                             "links_to": payload.get("links_to", []),
                             "linked_attachments": payload.get("linked_attachments", []),
                             "chunk_type": payload.get("chunk_type"),
-                            "image_filename": payload.get("image_filename")
+                            "image_filename": payload.get("image_filename"),
+                            "is_confidential": payload.get("is_confidential", False),
+                            "confidential_level": payload.get("confidential_level"),
+                            "confidential_departments": payload.get("confidential_departments", [])
                         },
                         "score": score,
                         "semantic_score": semantic_score,
@@ -944,12 +950,15 @@ class QdrantService:
             
             offset = None
             while True:
-                # 分頁捲動取得點，僅需要 filename、tags、class、links_to 與 linked_attachments 欄位，加快效率
+                # 分頁捲動取得點，包含檔名、標籤、類別、關聯與機密權限欄位
                 scroll_result = await client.scroll(
                     collection_name=collection_name,
                     limit=1000,
                     offset=offset,
-                    with_payload=["filename", "tags", "class", "links_to", "linked_attachments"],
+                    with_payload=[
+                        "filename", "tags", "class", "links_to", "linked_attachments",
+                        "is_confidential", "confidential_level", "confidential_departments"
+                    ],
                     with_vectors=False
                 )
                 
@@ -965,9 +974,20 @@ class QdrantService:
                                 "classes": set(),
                                 "tags": set(),
                                 "links_to": set(),
-                                "linked_attachments": set()
+                                "linked_attachments": set(),
+                                "is_confidential": False,
+                                "confidential_level": None,
+                                "confidential_departments": []
                             }
                         
+                        # 機密權限設定
+                        if payload.get("is_confidential"):
+                            structured_map[fn]["is_confidential"] = True
+                        if payload.get("confidential_level") is not None:
+                            structured_map[fn]["confidential_level"] = payload.get("confidential_level")
+                        if payload.get("confidential_departments"):
+                            structured_map[fn]["confidential_departments"] = payload.get("confidential_departments")
+
                         # class
                         c_val = payload.get("class")
                         if isinstance(c_val, list):
@@ -1004,7 +1024,10 @@ class QdrantService:
                     "class": sorted(list(data["classes"])),
                     "tags": sorted(list(data["tags"])),
                     "links_to": sorted(list(data["links_to"])),
-                    "linked_attachments": sorted(list(data["linked_attachments"]))
+                    "linked_attachments": sorted(list(data["linked_attachments"])),
+                    "is_confidential": data["is_confidential"],
+                    "confidential_level": data["confidential_level"],
+                    "confidential_departments": data["confidential_departments"]
                 })
                 
             result = {
@@ -1242,6 +1265,54 @@ class QdrantService:
             raise e
 
     @classmethod
+    async def update_permissions_by_filename(
+        cls,
+        collection_name: str,
+        filename: str,
+        is_confidential: bool,
+        confidential_level: Optional[int],
+        confidential_departments: List[str]
+    ) -> int:
+        """
+        更新指定 Collection 中所有匹配該檔案名稱的 Points 的機密權限欄位 (is_confidential, confidential_level, confidential_departments)。
+        """
+        client = cls.get_client()
+        try:
+            scroll_result = await client.scroll(
+                collection_name=collection_name,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="filename",
+                            match=models.MatchValue(value=filename)
+                        )
+                    ]
+                ),
+                limit=10000,
+                with_payload=False,
+                with_vectors=False
+            )
+            points = scroll_result[0]
+            count = len(points)
+            
+            if count > 0:
+                point_ids = [p.id for p in points]
+                await client.set_payload(
+                    collection_name=collection_name,
+                    payload={
+                        "is_confidential": is_confidential,
+                        "confidential_level": confidential_level if is_confidential else None,
+                        "confidential_departments": confidential_departments if is_confidential else []
+                    },
+                    points=point_ids
+                )
+                logger.info(f"Successfully updated permissions for {count} points of filename '{filename}' in collection '{collection_name}'.")
+            return count
+        except Exception as e:
+            logger.error(f"Failed to update permissions by filename '{filename}' in collection '{collection_name}': {e}")
+            raise e
+
+    @classmethod
     async def upsert_db_query_profile(
         cls,
         collection_name: str,
@@ -1426,7 +1497,10 @@ class QdrantService:
                         "function_name": payload.get("function_name"),
                         "type": payload.get("type"),
                         "chunk_type": payload.get("chunk_type"),
-                        "image_filename": payload.get("image_filename")
+                        "image_filename": payload.get("image_filename"),
+                        "is_confidential": payload.get("is_confidential", False),
+                        "confidential_level": payload.get("confidential_level"),
+                        "confidential_departments": payload.get("confidential_departments", [])
                     }
                 })
             

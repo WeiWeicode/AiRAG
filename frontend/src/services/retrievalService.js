@@ -38,6 +38,15 @@ export default {
       attachment_ids: attachmentIds
     })
     return response.data
+  },
+  async updatePermissions(knowledgeBaseId, filename, isConfidential, confidentialLevel, confidentialDepartments) {
+    const response = await api.post(`/api/retrieval/knowledge-bases/${knowledgeBaseId}/files/update-permissions`, {
+      filename: filename,
+      is_confidential: isConfidential,
+      confidential_level: confidentialLevel,
+      confidential_departments: confidentialDepartments
+    })
+    return response.data
   }
 }
 

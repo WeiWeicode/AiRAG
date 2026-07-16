@@ -9,6 +9,7 @@ class SearchParams(BaseModel):
     filter_tags: Optional[List[str]] = Field(default=None)
     filter_filename: Optional[str] = Field(default=None)
     disable_parent_merge: bool = Field(default=False)
+    simulated_user_id: Optional[str] = Field(default=None)
 
 class RetrievalRequest(BaseModel):
     query: str
@@ -30,6 +31,9 @@ class RetrievalMetadata(BaseModel):
     chunk_type: Optional[str] = None
     image_filename: Optional[str] = None
     image_chunks: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    is_confidential: Optional[bool] = None
+    confidential_level: Optional[int] = None
+    confidential_departments: Optional[List[str]] = Field(default_factory=list)
 
     class Config:
         populate_by_name = True
@@ -42,6 +46,11 @@ class RetrievalResultItem(BaseModel):
     score: float
     distance: float
 
+class ExcludedResultItem(BaseModel):
+    filename: str
+    chunk_indices: List[Any] = Field(default_factory=list)
+    reason: str
+
 class RetrievalResponse(BaseModel):
     query: str
     results: List[RetrievalResultItem]
@@ -52,6 +61,7 @@ class RetrievalResponse(BaseModel):
     query_vector_preview: Optional[str] = None
     vector_size: Optional[int] = None
     is_fallback: Optional[bool] = None
+    excluded_items: List[ExcludedResultItem] = Field(default_factory=list)
 
 class QueryTransformRequest(BaseModel):
     query: str
@@ -77,5 +87,12 @@ class UpdateLinksRequest(BaseModel):
 class UpdateAttachmentsRequest(BaseModel):
     filename: str
     attachment_ids: List[str]
+
+class UpdatePermissionsRequest(BaseModel):
+    filename: str
+    is_confidential: bool
+    confidential_level: Optional[int] = None
+    confidential_departments: List[str] = Field(default_factory=list)
+
 
 

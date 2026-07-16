@@ -31,6 +31,10 @@ export const useParamsStore = defineStore('params', {
     // 手動鎖定檔案，null = 不鎖定，由 AI 自動判斷
     pinnedFilename: null,
 
+    // 權限控管：模擬使用者開關與選擇
+    simulatedUserEnabled: false,
+    simulatedUserId: null,
+
     // Generation parameters
     model: 'Qwen3.6-35B-A3B-FP8',
     temperature: 0.3,

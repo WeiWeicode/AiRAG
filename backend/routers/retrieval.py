@@ -7,13 +7,14 @@ from datetime import datetime
 from schemas.retrieval import (
     RetrievalRequest, RetrievalResponse, RetrievalResultItem, RetrievalMetadata,
     QueryTransformRequest, QueryTransformResponse, BatchDeleteRequest, DeleteByFilenameRequest,
-    UpdateLinksRequest, UpdateAttachmentsRequest
+    UpdateLinksRequest, UpdateAttachmentsRequest, UpdatePermissionsRequest, ExcludedResultItem
 )
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
 from services.rerank_service import RerankService
 from services.feedback_boost_service import FeedbackBoostService
+from services.permission_service import PermissionService
 from models.knowledge_base import KnowledgeBase
 from utils.security import get_current_user
 
@@ -79,6 +80,27 @@ async def search(request: RetrievalRequest):
                 disable_parent_merge=request.params.disable_parent_merge
             )
         
+        # 2.5 執行機密權限過濾
+        simulated_user = await PermissionService.get_user(request.params.simulated_user_id)
+        raw_results, excluded = PermissionService.filter_results(raw_results, simulated_user)
+
+        excluded_map = {}
+        for ex in excluded:
+            m = ex.get("metadata", {}) or {}
+            fn = m.get("filename") or "未知檔案"
+            r = ex.get("_exclusion_reason", "權限不足")
+            ci = m.get("chunk_index")
+            k = (fn, r)
+            if k not in excluded_map:
+                excluded_map[k] = []
+            if ci is not None:
+                excluded_map[k].append(ci)
+
+        excluded_items = [
+            ExcludedResultItem(filename=fn, chunk_indices=indices, reason=r)
+            for (fn, r), indices in excluded_map.items()
+        ]
+
         # 3. 包裝為回應格式
         results = []
         for item in raw_results:
@@ -101,7 +123,10 @@ async def search(request: RetrievalRequest):
                         linked_attachments=meta.get("linked_attachments", []),
                         chunk_type=meta.get("chunk_type"),
                         image_filename=meta.get("image_filename"),
-                        image_chunks=meta.get("image_chunks", [])
+                        image_chunks=meta.get("image_chunks", []),
+                        is_confidential=meta.get("is_confidential"),
+                        confidential_level=meta.get("confidential_level"),
+                        confidential_departments=meta.get("confidential_departments", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)
@@ -112,7 +137,8 @@ async def search(request: RetrievalRequest):
         return RetrievalResponse(
             query=request.query,
             results=results,
-            elapsed_ms=elapsed
+            elapsed_ms=elapsed,
+            excluded_items=excluded_items
         )
     except Exception as e:
         logger.error(f"Vector search failed: {e}")
@@ -207,6 +233,27 @@ async def semantic_hybrid_search(request: RetrievalRequest):
                 raw_results, knowledge_base_id=request.knowledge_base_id
             )
 
+        # 2.7 執行機密權限過濾
+        simulated_user = await PermissionService.get_user(request.params.simulated_user_id)
+        raw_results, excluded = PermissionService.filter_results(raw_results, simulated_user)
+
+        excluded_map = {}
+        for ex in excluded:
+            m = ex.get("metadata", {}) or {}
+            fn = m.get("filename") or "未知檔案"
+            r = ex.get("_exclusion_reason", "權限不足")
+            ci = m.get("chunk_index")
+            k = (fn, r)
+            if k not in excluded_map:
+                excluded_map[k] = []
+            if ci is not None:
+                excluded_map[k].append(ci)
+
+        excluded_items = [
+            ExcludedResultItem(filename=fn, chunk_indices=indices, reason=r)
+            for (fn, r), indices in excluded_map.items()
+        ]
+
         # 3. 包裝為回應格式
         results = []
         for item in raw_results:
@@ -229,7 +276,10 @@ async def semantic_hybrid_search(request: RetrievalRequest):
                         linked_attachments=meta.get("linked_attachments", []),
                         chunk_type=meta.get("chunk_type"),
                         image_filename=meta.get("image_filename"),
-                        image_chunks=meta.get("image_chunks", [])
+                        image_chunks=meta.get("image_chunks", []),
+                        is_confidential=meta.get("is_confidential"),
+                        confidential_level=meta.get("confidential_level"),
+                        confidential_departments=meta.get("confidential_departments", [])
                     ),
                     score=item.get("score", 0.0),
                     distance=item.get("distance", 1.0)
@@ -246,7 +296,8 @@ async def semantic_hybrid_search(request: RetrievalRequest):
             sparse_keywords=sparse_keywords,
             query_vector_preview=query_vector_preview,
             vector_size=vector_size,
-            is_fallback=is_fallback
+            is_fallback=is_fallback,
+            excluded_items=excluded_items
         )
     except Exception as e:
         logger.error(f"Semantic hybrid search failed: {e}")
@@ -523,6 +574,58 @@ async def update_file_attachments(knowledge_base_id: str, request: UpdateAttachm
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"無法在向量資料庫中更新關聯附件: {str(e)}"
         )
+
+
+@router.post("/knowledge-bases/{knowledge_base_id}/files/update-permissions")
+async def update_file_permissions(knowledge_base_id: str, request: UpdatePermissionsRequest):
+    """
+    更新指定知識庫中特定檔案名稱的所有向量段落 (Points) 的機密權限設定
+    """
+    try:
+        kb_id = PydanticObjectId(knowledge_base_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="無效的知識庫 ID 格式"
+        )
+        
+    kb = await KnowledgeBase.get(kb_id)
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定的知識庫不存在"
+        )
+        
+    if not request.filename.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="請提供主要檔案名稱"
+        )
+        
+    try:
+        updated_count = await QdrantService.update_permissions_by_filename(
+            collection_name=kb.qdrant_collection_name,
+            filename=request.filename,
+            is_confidential=request.is_confidential,
+            confidential_level=request.confidential_level,
+            confidential_departments=request.confidential_departments
+        )
+        QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
+
+        kb.updated_at = datetime.utcnow()
+        await kb.save()
+        
+        return {
+            "message": f"成功更新檔案 '{request.filename}' 的機密權限設定",
+            "updated_count": updated_count
+        }
+    except Exception as e:
+        logger.error(f"Update file permissions failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"無法在向量資料庫中更新機密權限: {str(e)}"
+        )
+
 
 
 

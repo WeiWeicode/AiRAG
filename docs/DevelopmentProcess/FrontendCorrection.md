@@ -1,5 +1,22 @@
 <!-- 前端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-16 文件機密權限控管 (Confidential Document Access Control) 實作
+
+### 背景
+依據 [`NewFeaturesPlan_ConfidentialAccessControlPlan.md`](NewFeaturesPlan_ConfidentialAccessControlPlan.md) 規劃實作前端介面。新增「角色與權限設定」管理視頁與全檔「機密權限控管設定」卡片，並於 RAG / 檢索測試面板加入「模擬使用者權限測試」開關。
+
+### 變更內容
+- `frontend/src/services/userService.js`（新檔）：API 客戶端封裝部門與使用者 CRUD。
+- `frontend/src/services/retrievalService.js`：新增 `updatePermissions()` 端點呼叫。
+- `frontend/src/stores/paramsStore.js`：新增 `simulatedUserEnabled` 與 `simulatedUserId` 全域狀態。
+- `frontend/src/router/index.js`：註冊 `/role-settings` 路由。
+- `frontend/src/components/common/AppSidebar.vue`：加入「角色與權限設定」側邊欄項目。
+- `frontend/src/views/RoleSettingsView.vue`（新檔）：實現部門主檔新增/刪除與模擬使用者名冊 CRUD UI（修正：對齊帶有 id 之部門物件，並於部門 Chip 加入 ✕ 刪除按鈕連結 `userService.deleteDepartment`；移除內部重複嵌入的 `<AppSidebar />` 與全頁 layout 容器，對齊全站單一 SideBar/Header 結構）。
+- `frontend/src/components/embedding/VectorManagementTab.vue`：實現全檔「機密權限控管設定」卡片與 🔒 點位徽章（修正：`handleSavePermissions` 接收後端 `updated_count` 並比對全檔 `managementPoints` 總筆數，若有筆數落差主動提示警示說明，防止舊世代點位漏掃未覆蓋隱患）。
+- `frontend/src/components/params/RagParamsPanel.vue` / `frontend/src/views/RetrievalTestView.vue` / `frontend/src/stores/chatStore.js`：實現模擬使用者切換選單，於請求發送 `simulated_user_id`，並渲染 `excluded_items` 隱私中繼資料摘要卡片。
+
+---
+
 ## 2026-07-14 AI 總結門檻審查問題修正 (8.1 Early Exit 警示渲染)
 
 ### 背景

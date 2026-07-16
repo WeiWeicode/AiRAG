@@ -5,6 +5,7 @@ import api from '../../services/api'
 import retrievalService from '../../services/retrievalService'
 import attachmentService from '../../services/attachmentService'
 import imageService from '../../services/imageService'
+import userService from '../../services/userService'
 
 const paramsStore = useParamsStore()
 
@@ -22,6 +23,12 @@ const isSavingLinks = ref(false)
 const selectedAttachments = ref([])
 const isSavingAttachments = ref(false)
 const allAttachments = ref([])
+
+const isConfidential = ref(false)
+const confidentialLevel = ref(5)
+const confidentialDepartments = ref([])
+const isSavingPermissions = ref(false)
+const allDepartments = ref([])
 
 const imageUrls = ref({})
 const imageLoadFailed = ref({})
@@ -56,6 +63,15 @@ const fetchAllAttachments = async () => {
   }
 }
 
+const fetchDepartments = async () => {
+  try {
+    const res = await userService.getDepartments()
+    allDepartments.value = (res.data || []).map(d => typeof d === 'string' ? d : d.name)
+  } catch (err) {
+    console.error('無法取得部門清單:', err)
+  }
+}
+
 const candidateLinks = computed(() => {
   return managementFilenames.value.filter(fn => fn !== managementFilterFilename.value)
 })
@@ -77,10 +93,16 @@ const fetchManagementMetadata = async () => {
       managementPoints.value = []
       selectedLinks.value = []
       selectedAttachments.value = []
+      isConfidential.value = false
+      confidentialLevel.value = 5
+      confidentialDepartments.value = []
     } else if (managementFilterFilename.value) {
       const metadataItem = managementStructuredMetadata.value.find(item => item.filename === managementFilterFilename.value)
       selectedLinks.value = metadataItem?.links_to ? [...metadataItem.links_to] : []
       selectedAttachments.value = metadataItem?.linked_attachments ? [...metadataItem.linked_attachments] : []
+      isConfidential.value = metadataItem?.is_confidential || false
+      confidentialLevel.value = metadataItem?.confidential_level || 5
+      confidentialDepartments.value = metadataItem?.confidential_departments ? [...metadataItem.confidential_departments] : []
     }
   } catch (error) {
     console.error('無法取得知識庫元資料:', error)
@@ -94,10 +116,13 @@ const loadManagementPoints = async () => {
     return
   }
   
-  // Sync selectedLinks and selectedAttachments for this file
+  // Sync selectedLinks, selectedAttachments, and permission fields for this file
   const metadataItem = managementStructuredMetadata.value.find(item => item.filename === managementFilterFilename.value)
   selectedLinks.value = metadataItem?.links_to ? [...metadataItem.links_to] : []
   selectedAttachments.value = metadataItem?.linked_attachments ? [...metadataItem.linked_attachments] : []
+  isConfidential.value = metadataItem?.is_confidential || false
+  confidentialLevel.value = metadataItem?.confidential_level || 5
+  confidentialDepartments.value = metadataItem?.confidential_departments ? [...metadataItem.confidential_departments] : []
   
   isLoadingManagement.value = true
   selectedManagementChunkIds.value = []
@@ -178,10 +203,41 @@ const handleSaveAttachments = async () => {
   }
 }
 
+const handleSavePermissions = async () => {
+  if (!paramsStore.knowledgeBaseId || !managementFilterFilename.value) return
+  isSavingPermissions.value = true
+  try {
+    const res = await retrievalService.updatePermissions(
+      paramsStore.knowledgeBaseId,
+      managementFilterFilename.value,
+      isConfidential.value,
+      isConfidential.value ? confidentialLevel.value : null,
+      isConfidential.value ? confidentialDepartments.value : []
+    )
+    await fetchManagementMetadata()
+    await loadManagementPoints()
+
+    const updatedCount = res?.updated_count ?? 0
+    const totalPoints = managementPoints.value.length
+
+    if (totalPoints > 0 && updatedCount !== totalPoints) {
+      alert(`⚠️ 機密權限設定已完成更新！\n注意：此檔案在向量庫中共有 ${totalPoints} 個段落，本次成功更新權限的段落為 ${updatedCount} 筆。\n部分段落筆數不一致，請注意是否有重複上傳的舊版本點位。`)
+    } else {
+      alert(`✅ 機密權限設定已成功更新！(共涵蓋全檔 ${updatedCount} 筆向量段落)`)
+    }
+  } catch (error) {
+    console.error('更新機密權限失敗:', error)
+    alert('更新機密權限失敗：' + (error.response?.data?.detail || error.message))
+  } finally {
+    isSavingPermissions.value = false
+  }
+}
+
 watch(() => paramsStore.knowledgeBaseId, (newId) => {
   if (newId) {
     fetchManagementMetadata()
     fetchAllAttachments()
+    fetchDepartments()
     managementPoints.value = []
     selectedManagementChunkIds.value = []
   }
@@ -400,6 +456,72 @@ onMounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- Confidential Permissions Section -->
+      <div v-if="managementFilterFilename" class="border-t border-white/5 pt-4 flex flex-col gap-3 animate-fade-in">
+        <div class="flex flex-col gap-1.5">
+          <span class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">機密權限控管設定 (Confidential Access Control)</span>
+          <span class="text-[11px] text-[#6b7280]">可標記此檔案為機密文件並限定可讀取的職級等級與部門。設定後將對全檔案 Points 生效。</span>
+        </div>
+        <div class="bg-white/3 border border-white/8 rounded-lg p-4 flex flex-col gap-4">
+          <div class="flex items-center gap-6">
+            <label class="flex items-center gap-2 text-xs text-white cursor-pointer select-none font-semibold">
+              <input
+                type="checkbox"
+                v-model="isConfidential"
+                class="rounded bg-white/5 border-white/10 text-purple-500 focus:ring-purple-500/50 cursor-pointer"
+              />
+              <span>標記為「機密文件」 (is_confidential)</span>
+            </label>
+
+            <div v-if="isConfidential" class="flex items-center gap-3">
+              <span class="text-xs text-[#9ca3af]">機密等級 (1~10，越小越機密):</span>
+              <select
+                v-model.number="confidentialLevel"
+                class="bg-[#1f2937] border border-white/10 rounded-lg px-3 py-1 text-xs text-white focus:outline-none focus:border-purple-500/50"
+              >
+                <option v-for="l in 10" :key="l" :value="l">等級 {{ l }}</option>
+              </select>
+            </div>
+          </div>
+
+          <div v-if="isConfidential" class="flex flex-col gap-2">
+            <span class="text-xs text-[#9ca3af]">可讀取部門限制 (未勾選 = 不限部門):</span>
+            <div class="flex flex-wrap gap-3 bg-black/20 p-3 rounded-lg border border-white/5 max-h-[120px] overflow-y-auto">
+              <div v-if="allDepartments.length === 0" class="text-xs text-[#6b7280]">
+                尚無部門資料，請至「角色與權限設定」新增部門。
+              </div>
+              <label
+                v-for="dept in allDepartments"
+                :key="dept"
+                class="flex items-center gap-1.5 text-xs text-white/80 cursor-pointer select-none hover:text-purple-400 transition-colors"
+              >
+                <input
+                  type="checkbox"
+                  v-model="confidentialDepartments"
+                  :value="dept"
+                  class="rounded bg-white/5 border-white/10 text-purple-500 focus:ring-purple-500/50 cursor-pointer"
+                />
+                <span>{{ dept }}</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="flex justify-end">
+            <button
+              @click="handleSavePermissions"
+              :disabled="isLoadingManagement || isSavingPermissions"
+              class="bg-purple-600 hover:bg-purple-500 disabled:bg-purple-900/50 text-white font-semibold px-5 py-2 rounded-lg text-xs transition-all flex items-center gap-1.5"
+            >
+              <svg v-if="isSavingPermissions" class="animate-spin h-3.5 w-3.5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span>{{ isSavingPermissions ? '儲存中...' : '儲存機密權限設定' }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Chunks List Card -->
@@ -506,6 +628,16 @@ onMounted(() => {
                   :title="'關聯附件 ID: ' + aid"
                 >
                   📎 {{ getAttachmentName(aid) }}
+                </span>
+              </span>
+
+              <!-- Confidential Badge -->
+              <span v-if="point.metadata?.is_confidential" class="flex gap-1 flex-shrink-0">
+                <span
+                  class="bg-purple-500/10 border border-purple-500/30 text-purple-300 px-1.5 py-0.5 rounded text-[9px] font-bold"
+                  :title="'機密等級: ' + (point.metadata.confidential_level || '未指定') + ' | 部門: ' + (point.metadata.confidential_departments?.join('、') || '不限')"
+                >
+                  🔒 機密等級 {{ point.metadata.confidential_level || '10' }}
                 </span>
               </span>
             </span>

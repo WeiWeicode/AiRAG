@@ -12,6 +12,7 @@ from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
 from services.rerank_service import RerankService
 from services.feedback_boost_service import FeedbackBoostService
+from services.permission_service import PermissionService
 from services.context_summarizer_service import ContextSummarizerService
 from services.retrieval_stats_service import RetrievalStatsService
 from utils.token_counter import count_tokens
@@ -40,6 +41,7 @@ class ChatParams(BaseModel):
     read_attachment_content: Optional[bool] = False
     history_context_turns: Optional[int] = None
     pinned_filename: Optional[str] = None
+    simulated_user_id: Optional[str] = None
 
 class ChatRequest(BaseModel):
     question: str
@@ -275,6 +277,8 @@ async def rag_chat_stream(request: ChatRequest):
     attachments_data = []
     context_str = ""
     max_retrieved_semantic_score = 0.0
+    simulated_user = None
+    excluded_items = []
     # 除了 sources 陣列本身各筆的 token_count 之外，context_parts 還會額外攤平塞入圖片命中的
     # 周邊文字與同段落圖片描述（見下方 vector/hybrid 檢索分支），這裡另外累加這部分的 token 數，
     # 讓 context_summary["total_tokens"] 能反映實際送進 LLM 的完整 context 大小，而非只計入 sources。
@@ -303,6 +307,8 @@ async def rag_chat_stream(request: ChatRequest):
             kb = await KnowledgeBase.get(kb_id)
             if kb:
                 try:
+                    simulated_user_id = request.params.simulated_user_id if request.params else None
+                    simulated_user = await PermissionService.get_user(simulated_user_id)
                     # 發送「語義分析」進行中事件
                     step_data = {
                         "step": "semantic_analysis",
@@ -436,6 +442,9 @@ async def rag_chat_stream(request: ChatRequest):
                             )
                             feedback_boost_applied = True
 
+                        # 執行機密權限過濾 (重點：必須在附件收集前執行，避免無權限之關聯附件資料外洩)
+                        raw_results, excluded_items = PermissionService.filter_results(raw_results, simulated_user)
+
                         # 語義混合附件查詢法：收集並查詢關聯附件
                         if search_type == "semantic_hybrid_attachment" and raw_results:
                             attachment_ids = []
@@ -470,6 +479,8 @@ async def rag_chat_stream(request: ChatRequest):
                             score_threshold=score_threshold,
                             filter_tags=filter_tags
                         )
+                        # 執行機密權限過濾 (標準/混合檢索分支)
+                        raw_results, excluded_items = PermissionService.filter_results(raw_results, simulated_user)
                     
                     # 整理 Chunks 為 Context
                     context_parts = []
@@ -567,6 +578,8 @@ async def rag_chat_stream(request: ChatRequest):
                         )
                         if feedback_boost_applied:
                             search_details += "\n\n【已套用歷史回饋加權】依人工標註正確/不正確次數對命中片段分數進行了重排。"
+                        if excluded_items:
+                            search_details += f"\n\n【權限過濾摘要】已排除以下受限制段落：\n{PermissionService.build_exclusion_summary(excluded_items)}"
                         yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': search_details}, ensure_ascii=False)}\n\n"
                     else:
                         if raw_results:
@@ -575,9 +588,13 @@ async def rag_chat_stream(request: ChatRequest):
                                 f"但最高相似度為 {max_retrieved_semantic_score:.4f}，均低於設定之 AI 總結門檻（{ai_summary_score_threshold:.2f}）。\n"
                                 f"系統已自動跳過 AI 總結生成。"
                             )
+                            if excluded_items:
+                                search_details += f"\n\n【權限過濾摘要】已排除以下受限制段落：\n{PermissionService.build_exclusion_summary(excluded_items)}"
                             yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'warning', 'content': search_details}, ensure_ascii=False)}\n\n"
                         else:
                             search_details = "向量檢索完成。沒有找到符合相似度閥值限制的相關資料。"
+                            if excluded_items:
+                                search_details += f"\n\n【權限過濾摘要】已排除以下受限制段落：\n{PermissionService.build_exclusion_summary(excluded_items)}"
                             yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': search_details}, ensure_ascii=False)}\n\n"
 
                     # 語義混合附件查詢法：若勾選「AI 讀取附件內容」且確實找到關聯附件，
@@ -625,8 +642,21 @@ async def rag_chat_stream(request: ChatRequest):
         yield f"event: step\ndata: {json.dumps({'step': 'semantic_analysis', 'status': 'success', 'content': '無目標知識庫，略過語義分析。'}, ensure_ascii=False)}\n\n"
         yield f"event: step\ndata: {json.dumps({'step': 'vector_search', 'status': 'success', 'content': '無目標知識庫，略過向量資料查詢。'}, ensure_ascii=False)}\n\n"
 
-    # 如果有指定知識庫檢索且 context_str 與附件皆為空（全數未達 AI 總結門檻），執行 Early Exit 跳過 LLM 總結
+    # 如果有指定知識庫檢索且 context_str 與附件皆為空，判斷是「權限不足全數排除」還是「未達 AI 總結門檻」
     has_attachments = bool(search_type == "semantic_hybrid_attachment" and read_attachment_content and attachments_data)
+    permission_blocked_all = bool(excluded_items) and not raw_results and not has_attachments
+
+    if permission_blocked_all and search_type != "semantic_db_query" and request.knowledge_base_id:
+        sim_name = simulated_user.name if simulated_user else "模擬使用者"
+        denial_msg = (
+            "⚠️ **權限不足，無法提供回答**\n\n"
+            f"已檢索到相關內容，但依目前模擬使用者「{sim_name}」的權限限制，已排除以下段落：\n\n"
+            f"{PermissionService.build_exclusion_summary(excluded_items)}"
+        )
+        yield f"event: message\ndata: {json.dumps({'delta': denial_msg}, ensure_ascii=False)}\n\n"
+        yield f"event: sources\ndata: {json.dumps({'sources': sources}, ensure_ascii=False)}\n\n"
+        return
+
     if not context_str and not has_attachments and search_type != "semantic_db_query" and request.knowledge_base_id:
         if raw_results:
             skipped_msg = (

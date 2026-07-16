@@ -1,5 +1,22 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-16 文件機密權限控管 (Confidential Document Access Control) 實作
+
+### 背景
+依據 [`NewFeaturesPlan_ConfidentialAccessControlPlan.md`](NewFeaturesPlan_ConfidentialAccessControlPlan.md) 規劃實作。建立部門與使用者名冊，實作數值與部門雙重過濾之 `PermissionService`，解決檢索點位與附件下載連結可能洩漏機密文件的資安風險。
+
+### 變更內容
+- `backend/models/department.py` / `user_profile.py`：建立 `Department` 與 `UserProfile` Beanie Documents，並定義 `JOB_TITLE_LEVELS` 對照表。
+- `backend/models/mongodb.py`：在 `init_beanie` 註冊二模型。
+- `backend/routers/users.py`：實作 `/api/users/departments` 與 `/api/users` 之 CRUD 端點與 HTTP 400 驗證防護（修正：APIRouter `prefix` 改為 `/users` 避免 404；`get_departments` 的 `response_model` 改為 `List[DepartmentResponse]` 回傳 id 與 name）。
+- `backend/services/permission_service.py`：實作核心權限過濾 `filter_results` 與隱私防禦型排除摘要產生器 `build_exclusion_summary`（修正：`confidential_level` 改採 `int(c_level)` 寬容轉型；當帶入已刪除/無效之 `simulated_user_id` 時，`get_user` 改採 Fail-Closed 最嚴防護模式回傳預設 Level 10 客戶身分，避免無效 ID 靜默降級洩漏機密）。
+- `backend/services/qdrant_service.py`：`get_unique_metadata` 補齊權限 metadata，實作 `update_permissions_by_filename` 批次寫入（**Critical 修正**：`search_similar()`／`search_similar_two_step()` 鄰居結果／`get_by_parent_id()` 這三處組裝檢索結果 `metadata` dict 的程式碼，原本是逐欄位手動列舉的白名單，未列入 `is_confidential`/`confidential_level`/`confidential_departments`，導致 `PermissionService.filter_results()` 永遠讀不到這三個欄位、對任何人一律判定為非機密放行——等同 `vector`/`hybrid`/`semantic_hybrid` 家族查詢法的機密權限過濾自實作以來從未真正生效。三處皆已補上 `payload.get(...)` 讀取，詳見 [`NewFeaturesPlan_ConfidentialAccessControlPlan.md` 第 15 節](NewFeaturesPlan_ConfidentialAccessControlPlan.md)）。
+- `backend/schemas/retrieval.py`：新增 `simulated_user_id`、`is_confidential`、`confidential_level`、`confidential_departments`、`excluded_items` 與 `UpdatePermissionsRequest`。
+- `backend/routers/retrieval.py`：`/search` 與 `/semantic-hybrid-search` 整合過濾，新增 POST `/files/update-permissions` 端點。
+- `backend/routers/rag.py`：在雙階段附件收集前及單階段搜尋處插入權限過濾，並處理 `permission_blocked_all` Early Exit 事件。
+
+---
+
 ## 2026-07-14 AI 總結門檻審查問題修正 (8.2 附件 Early Exit 誤殺 / 8.3 死碼清理 / 8.4 補回無 KB 步驟)
 
 ### 背景

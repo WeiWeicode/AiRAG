@@ -2,11 +2,11 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.6（依實際程式碼校正）
+* **文件版本**：V 1.7（新增文件機密權限控管 `departments`/`users` Collections 與 Qdrant 機密 Payload 欄位）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-08（修正 `source == "db_query_profile"` 隔離規則的查詢法計數，補上 `semantic_hybrid_attachment`）
+* **更新日期**：2026-07-16（新增 `departments` 與 `users` Collection，Qdrant Point payload 新增權限控管欄位）
 * **資料庫類型**：
-  * **應用資料庫**：MongoDB（對話紀錄、設定、測試集、評估報告、回饋標註、資料庫連線設定、標籤與類別選項、Prompt 測試歷史紀錄）
+  * **應用資料庫**：MongoDB（對話紀錄、設定、測試集、評估報告、回饋標註、資料庫連線設定、標籤與類別選項、Prompt 測試歷史紀錄、部門主檔、模擬使用者名冊）
   * **既有知識庫 / 自訂 DB**：SQL Server & Oracle Database（唯讀連線，存取既有的文章與表單欄位等資料）
   * **向量資料庫**：Qdrant（密集與稀疏雙向量混合儲存）
 
@@ -26,14 +26,17 @@
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
 │  │test_datasets │  │ eval_reports │  │prompt_templates│           │
 │  └──────────────┘  └──────────────┘  └──────────────┘             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
-│  │knowledge_bases│ │  app_configs │  │database_configs│           │
-│  └──────────────┘  └──────────────┘  └──────────────┘             │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐       │
+│  │knowledge_bases│ │  app_configs │  │  database_configs  │       │
+│  └──────────────┘  └──────────────┘  └────────────────────┘       │
 │  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐       │
 │  │     tags     │  │class_options │  │prompt_test_records │       │
 │  └──────────────┘  └──────────────┘  └────────────────────┘       │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐       │
+│  │db_query_profiles│ │ attachments│  │  retrieval_stats   │       │
+│  └──────────────┘  └──────────────┘  └────────────────────┘       │
 │  ┌──────────────┐  ┌──────────────┐                               │
-│  │db_query_profiles│ │ attachments │                              │
+│  │  departments │  │    users     │                               │
 │  └──────────────┘  └──────────────┘                               │
 └───────────────────────────────────────────────────────────────────┘
 
@@ -44,7 +47,7 @@
 └─────────────────────┘     └─────────────────────┘
 ```
 
-15 個 MongoDB Collection 皆透過 `backend/models/mongodb.py` 的 `init_beanie()` 註冊：`AppConfig`、`KnowledgeBase`、`PromptTemplate`、`PromptTestRecord`、`ChatSession`、`ChatMessage`、`Feedback`、`TestDataset`、`EvalReport`、`Tag`、`ClassOption`、`DatabaseConfig`、`DBQueryProfile`、`Attachment`（2026-07-06 新增，見第 3.13 節）、`RetrievalStats`（2026-07-09 新增，見第 3.14 節）。應用程式啟動時會自動 seed：
+17 個 MongoDB Collection 皆透過 `backend/models/mongodb.py` 的 `init_beanie()` 註冊：`AppConfig`、`KnowledgeBase`、`PromptTemplate`、`PromptTestRecord`、`ChatSession`、`ChatMessage`、`Feedback`、`TestDataset`、`EvalReport`、`Tag`、`ClassOption`、`DatabaseConfig`、`DBQueryProfile`、`Attachment`、`RetrievalStats`、`Department`（2026-07-16 新增，見第 3.15 節）、`UserProfile`（2026-07-16 新增，見第 3.16 節）。應用程式啟動時會自動 seed：
 * 若尚無知識庫，建立一個預設知識庫並同步建立對應 Qdrant collection。
 * 若尚無測試集，寫入 2 筆預設 `TestDataset`。
 * 若尚無 Prompt 範本，寫入「預設 RAG 助手」與「嚴格知識問答」兩筆內建範本。
@@ -301,6 +304,30 @@
 索引：`knowledge_base_id`、`search_type`、`-created_at`、`(knowledge_base_id, -created_at)` 複合索引。
 > 由 `rag_chat_stream()` 完成檢索後以 best-effort 方式寫入（`backend/services/retrieval_stats_service.py`），寫入失敗只記錄 warning、不影響 SSE 對話主流程。與 `chat_messages.source_chunks` 資料重疊但服務不同目的（此 collection 專供聚合統計查詢），兩者皆為獨立寫入、無關聯。詳見 [`NewFeaturesPlan_RetrievalStatsDashboardPlan.md`](DevelopmentProcess/NewFeaturesPlan_RetrievalStatsDashboardPlan.md) 與 [`03_API_CONTRACT.md`](03_API_CONTRACT.md) 第 16 節。
 
+### 3.15 departments — 部門主檔【新增，2026-07-16】
+```json
+{
+  "_id": "ObjectId",
+  "name": "string (部門名稱，Indexed unique)",
+  "created_at": "ISODate"
+}
+```
+索引：`name` (unique)。
+
+### 3.16 users — 模擬使用者名冊【新增，2026-07-16】
+```json
+{
+  "_id": "ObjectId",
+  "name": "string (姓名)",
+  "department": "string (儲存 Department.name)",
+  "job_title": "string (一般人員/組長/課長/經理/總經理/自訂)",
+  "level": "int (1~10，數字越小機密等級越高)",
+  "created_at": "ISODate",
+  "updated_at": "ISODate"
+}
+```
+索引：`department`、`-created_at`。
+
 ---
 
 ## 4. Qdrant 向量資料庫設計
@@ -343,7 +370,7 @@
 }
 ```
 
-**條件性透傳欄位**（僅當來源 Chunker 的 `metadata` dict 中含有對應 key 時才會寫入，並非所有 Point 都保證存在，取決於檔案類型與切分策略）：
+**條件性透傳欄位**（僅當來源 Chunker 的 `metadata` dict 中含有對應 key 或透過管理介面批次設定時寫入）：
 ```json
 {
   "parent_id": "uuid（對應 Parent Chunk 的唯一 ID，Word/MD/4GL/4FD 雙層切分才有）",
@@ -351,10 +378,15 @@
   "file_type": "docx | md | 4gl | 4fd",
   "header_path": "Header1 > Header2（Word / MD 的層級標題階層首碼）",
   "function_name": "func_name（4GL 原始碼的函數名稱）",
-  "chunk_type": "image | text（標記 Point 類型，文件內嵌圖片之描述為 image，一般文本段落為 text/空值，2026-07-07 新增）",
-  "image_filename": "stored_image_filename.png（類型為 image 時，對應在 backend/FileAttachments/image/ 目錄下儲存的圖片檔名，透過 GET /api/embedding/images/{stored_filename} 讀取，2026-07-07 新增）"
+  "chunk_type": "image | text（標記 Point 類型，文件內嵌圖片之描述為 image，一般文本段落為 text/空值）",
+  "image_filename": "stored_image_filename.png（類型為 image 時，對應儲存的圖片檔名）",
+  "is_confidential": "bool (預設 false，標記是否為機密文件，2026-07-16 新增)",
+  "confidential_level": "int | null (範圍 1~10，數字越小越機密，2026-07-16 新增)",
+  "confidential_departments": "List[str] (可讀取該機密檔案的部門名稱列表，空列表代表不限部門，2026-07-16 新增)"
 }
 ```
+
+**`is_confidential`/`confidential_level`/`confidential_departments` 用途**【新增，2026-07-16】：由 `POST /api/retrieval/knowledge-bases/{id}/files/update-permissions` 批次寫入。檢索與 RAG 流水線在開啟「模擬使用者」身分時，會自動讀取此三欄位進行權限比對（使用者等級數字小於等於文件等級數字，且部門符合時才放行），未授權片段將被排除且不餵給 LLM 總結。
 > `parent_content`、`type` 兩個欄位在檢索程式碼中會被防禦性讀取（`payload.get(...)`），但目前的寫入程式碼路徑中**找不到明確的寫入來源**，可能僅存在於語義 JSON 匯入路徑或歷史遺留資料，撰寫新功能時不應假設其必然存在。
 
 **`links_to` 用途**：由 `POST /api/retrieval/knowledge-bases/{id}/files/update-links` 批次寫入（見 `03_API_CONTRACT.md` §4.6），或於向量化時直接帶入。是 §5 雙階段關聯檢索（Two-Step Hybrid Retrieval）的核心欄位——第一階段召回的 Point 若帶有 `links_to`，第二階段會據此在 `filename`/`custom_id` 命中的關聯點位中做進一步的語意/混合搜尋。

@@ -9,6 +9,7 @@ import EvaluationView from '../views/EvaluationView.vue'
 import PromptTestView from '../views/PromptTestView.vue'
 import EmbeddingTestView from '../views/EmbeddingTestView.vue'
 import FeedbackView from '../views/FeedbackView.vue'
+import RoleSettingsView from '../views/RoleSettingsView.vue'
 
 const routes = [
   {
@@ -61,6 +62,12 @@ const routes = [
     path: '/feedback',
     name: 'Feedback',
     component: FeedbackView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/role-settings',
+    name: 'RoleSettings',
+    component: RoleSettingsView,
     meta: { requiresAuth: true }
   }
 ]

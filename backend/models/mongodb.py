@@ -29,9 +29,12 @@ from models.database_config import DatabaseConfig
 from models.db_query_profile import DBQueryProfile
 from models.attachment import Attachment
 from models.retrieval_stats import RetrievalStats
+from models.department import Department
+from models.user_profile import UserProfile
 
 
 logger = logging.getLogger("airag.mongodb")
+
 
 async def seed_default_knowledge_base():
     """
@@ -202,7 +205,9 @@ async def init_mongodb():
                 DatabaseConfig,
                 DBQueryProfile,
                 Attachment,
-                RetrievalStats
+                RetrievalStats,
+                Department,
+                UserProfile
             ]
         )
         logger.info("MongoDB and Beanie ODM initialized successfully.")

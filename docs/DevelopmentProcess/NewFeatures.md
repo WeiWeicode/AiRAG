@@ -1,5 +1,30 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-16 文件機密權限控管 (Confidential Document Access Control) 實作完成
+
+### 背景
+依規劃文件 [NewFeaturesPlan_ConfidentialAccessControlPlan.md](NewFeaturesPlan_ConfidentialAccessControlPlan.md) 實作。本功能提供企業級文件存取權限控管，以數值等級 (Level 1~10，越小越機密) 與部門限制為雙重基準。透過「模擬使用者名冊」供內部測試評估過濾隔離效果，保證未授權片段與隱私中繼資料決不餵給 LLM 總結。
+
+### 變更內容
+- **後端 (`backend/models/` / `services/` / `routers/` / `schemas/`)**：
+  - `Department` 與 `UserProfile` Beanie Documents（註冊至 `init_beanie`）。
+  - `PermissionService`：實作核心權限過濾邏輯（比對 `user.level <= file.confidential_level` 與 `user.department in file.confidential_departments`），以及隱私防禦型排除摘要產生器。
+  - `QdrantService`：`get_unique_metadata` 擴充權限中繼資料解析，新增 `update_permissions_by_filename` 批次點位更新。
+  - `retrieval.py` / `rag.py`：檢索與 RAG 管道整合權限過濾（包含雙階段檢索前置防漏過濾），新增 POST `/files/update-permissions` 與 `/api/users/*` 管理 API。
+- **前端 (`frontend/src/`)**：
+  - `userService.js`：部門與使用者名冊 API 客戶端。
+  - `paramsStore.js` / `RagParamsPanel.vue` / `RetrievalTestView.vue`：加入「模擬使用者權限測試」開關與身分選單。
+  - `RoleSettingsView.vue`（新頁面）：部門與模擬使用者名冊管理介面。
+  - `AppSidebar.vue`：加入「角色與權限設定」導覽項目。
+  - `VectorManagementTab.vue`：全檔「機密權限控管設定」卡片與 🔒 點位徽章。
+- **文件與紀錄**：
+  - 更新 `docs/03_API_CONTRACT.md`（§3.1, §4.1, §4.8, §17）與 `docs/04_DB_SCHEMA.md`（§3.15, §3.16, §4.2）。
+  - 記錄於 `BackendCorrection.md` 與 `FrontendCorrection.md`。
+
+### 驗證
+- 後端 Python AST/py_compile 檢查通過。
+- 前端 Build 檢查通過。
+
 ## 2026-07-13 AI 總結相似度門檻與拒絕生成機制實作完成
 
 ### 背景
