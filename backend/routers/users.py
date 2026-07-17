@@ -15,11 +15,13 @@ router = APIRouter(prefix="/users", tags=["Users & Departments"])
 
 class DepartmentCreateRequest(BaseModel):
     name: str = Field(..., description="部門名稱")
+    code: str = Field(..., description="部門代號")
 
 
 class DepartmentResponse(BaseModel):
     id: str
     name: str
+    code: Optional[str] = None
 
 
 class UserCreateRequest(BaseModel):
@@ -33,6 +35,7 @@ class UserResponse(BaseModel):
     id: str
     name: str
     department: str
+    department_code: Optional[str] = None
     job_title: str
     level: int
     created_at: str
@@ -44,7 +47,7 @@ async def get_departments(current_user: str = Depends(get_current_user)):
     取得所有部門清單
     """
     depts = await Department.find_all().sort("+name").to_list()
-    return [DepartmentResponse(id=str(d.id), name=d.name) for d in depts]
+    return [DepartmentResponse(id=str(d.id), name=d.name, code=d.code) for d in depts]
 
 
 @router.post("/departments", response_model=DepartmentResponse, status_code=status.HTTP_201_CREATED)
@@ -53,19 +56,26 @@ async def create_department(
     current_user: str = Depends(get_current_user)
 ):
     """
-    新增部門名稱
+    新增部門名稱與代號
     """
     name = request.name.strip()
+    code = request.code.strip()
     if not name:
         raise HTTPException(status_code=400, detail="部門名稱不能為空")
+    if not code:
+        raise HTTPException(status_code=400, detail="部門代號不能為空")
 
     existing = await Department.find_one(Department.name == name)
     if existing:
         raise HTTPException(status_code=400, detail=f"部門 '{name}' 已存在")
 
-    dept = Department(name=name)
+    existing_code = await Department.find_one(Department.code == code)
+    if existing_code:
+        raise HTTPException(status_code=400, detail=f"部門代號 '{code}' 已存在")
+
+    dept = Department(name=name, code=code)
     await dept.insert()
-    return DepartmentResponse(id=str(dept.id), name=dept.name)
+    return DepartmentResponse(id=str(dept.id), name=dept.name, code=dept.code)
 
 
 @router.delete("/departments/{dept_id}")
@@ -100,6 +110,7 @@ async def get_users(current_user: str = Depends(get_current_user)):
             id=str(u.id),
             name=u.name,
             department=u.department,
+            department_code=u.department_code,
             job_title=u.job_title,
             level=u.level,
             created_at=u.created_at.strftime("%Y-%m-%d %H:%M:%S")
@@ -136,9 +147,16 @@ async def create_user(
     else:
         final_level = JOB_TITLE_LEVELS[job_title]
 
+    # 從所屬部門連動帶出部門代號，供 PermissionService 的代號比對邏輯使用；
+    # 若找不到對應部門（例如手動呼叫 API 帶入未登記的部門名稱），保留 None，
+    # 此時 PermissionService 的雙軌比對仍可退回以部門名稱判斷
+    dept = await Department.find_one(Department.name == dept_name)
+    dept_code = dept.code if dept else None
+
     user = UserProfile(
         name=name,
         department=dept_name,
+        department_code=dept_code,
         job_title=job_title,
         level=final_level
     )
@@ -148,6 +166,7 @@ async def create_user(
         id=str(user.id),
         name=user.name,
         department=user.department,
+        department_code=user.department_code,
         job_title=user.job_title,
         level=user.level,
         created_at=user.created_at.strftime("%Y-%m-%d %H:%M:%S")

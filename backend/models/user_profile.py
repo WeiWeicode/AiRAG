@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Optional
 from beanie import Document
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 JOB_TITLE_LEVELS = {
     "一般人員": 10,
@@ -13,6 +14,7 @@ JOB_TITLE_LEVELS = {
 class UserProfile(Document):
     name: str
     department: str
+    department_code: Optional[str] = None
     job_title: str
     level: int
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -21,3 +23,16 @@ class UserProfile(Document):
     class Settings:
         name = "users"
         indexes = ["department", "-created_at"]
+
+
+class ExternalUserInfo(BaseModel):
+    """
+    外部應用呼叫 /api/external/chat 時傳入的真實使用者身分資訊，
+    取代內部測試專用的 simulated_user_id（見 NewFeaturesPlan_ExternalApiTestPlan.md 第 8 節）。
+    """
+    employee_id: str
+    name: str
+    department_code: str
+    department_name: str
+    job_title_name: str
+    job_title_level: int

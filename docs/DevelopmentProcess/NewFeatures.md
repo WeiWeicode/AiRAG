@@ -1,5 +1,27 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-17 外部 API 真實使用者身分、問答稽核紀錄、API Key 驗證機制實作完成
+
+### 背景
+延續同日稍早的「外部 API 測試頁面」規劃，依 [NewFeaturesPlan_ExternalApiTestPlan.md](NewFeaturesPlan_ExternalApiTestPlan.md) 第 8～12 節實作。核心變更：外部應用改以真實員工身分（`external_user`）取代內部測試專用的 `simulated_user_id`；每次呼叫留存問答稽核紀錄；`/api/external/chat` 新增 API Key 驗證，修正先前「暫不驗證」的決策。
+
+### 變更內容
+- **後端**：
+  - `Department` 新增 `code` 欄位；`UserProfile` 新增 `department_code`（建立時從所屬部門連動帶出）；`PermissionService.filter_results()` 部門比對改為代號／名稱雙軌相容（過渡期不需遷移既有 Qdrant 資料）。
+  - `ChatParams` 新增 `external_user`（`ExternalUserInfo`：工號/姓名/部門代號/部門名稱/級職名稱/級職等級），`rag_chat_stream()` 優先採用它解析權限身分；`PermissionService.get_user_from_external_info()` 將其轉換為與模擬使用者相同形狀的物件，不落地寫入 `users` collection。
+  - 新增 `ExternalApiKey`（`external_api_keys`，prefix+bcrypt hash 儲存）與 `external_api_keys.py` 管理路由（JWT 保護）；`utils/security.py` 新增 `generate_external_api_key()`／`verify_external_api_key()`（`X-API-Key` 標頭驗證，與 JWT 各自獨立）。
+  - `POST /api/external/chat` 掛上金鑰驗證、要求 `params.external_user` 必填；新增 `ExternalChatLog`（`external_chat_logs`）稽核模型，`external.py` 以 `try...finally` 包一層 `_external_chat_with_logging()`，確保正常結束與中途斷線都會落地寫入（旁路 best-effort，不影響對話流程）。
+- **前端**：
+  - `RoleSettingsView.vue` 部門表單新增代號欄位，新增「外部 API 金鑰管理」區塊（建立/刪除，明碼只顯示一次）。
+  - `VectorManagementTab.vue` 機密權限控管改用部門代號送出與比對。
+  - 外部 API 測試頁新增 `ExternalUserInfoPanel.vue`（API Key + 6 個使用者身分欄位），`externalChatStore.js` 送出 `external_user` 並帶 `X-API-Key` 標頭（不再送 `simulated_user_id`），`ApiJsonPreviewPanel.vue` 欄位說明與 Header 說明同步更新。
+- **文件**：更新 `docs/03_API_CONTRACT.md`（§3.4、§17、新增 §19）與 `docs/04_DB_SCHEMA.md`（§3.15-3.18、§4.2），記錄於 `BackendCorrection.md`／`FrontendCorrection.md`。
+
+### 驗證
+- 後端：`py_compile` 全數通過；以 venv Python 實際 import 所有新增/修改模組，驗證 `ChatParams.external_user`、路由註冊、`get_user_from_external_info()` 轉換邏輯、`generate_external_api_key()` 產生的金鑰可正確雜湊與驗證。
+- 前端：`npm run build` 通過，無編譯錯誤。
+- 尚待使用者手動驗證：金鑰管理介面實際操作、外部頁面送出含 `external_user` 的請求、以及中途斷線情境下 `ExternalChatLog` 是否確實落地（依專案慣例不由 AI 開瀏覽器驗證）。
+
 ## 2026-07-17 外部 API 測試頁面 (External API Test) 實作完成
 
 ### 背景

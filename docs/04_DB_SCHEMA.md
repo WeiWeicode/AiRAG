@@ -2,9 +2,9 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.7（新增文件機密權限控管 `departments`/`users` Collections 與 Qdrant 機密 Payload 欄位）
+* **文件版本**：V 1.8（新增 `external_api_keys`/`external_chat_logs` Collections、`departments.code`/`users.department_code` 欄位）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-16（新增 `departments` 與 `users` Collection，Qdrant Point payload 新增權限控管欄位）
+* **更新日期**：2026-07-17（新增 `external_api_keys`、`external_chat_logs` Collection；`departments` 新增 `code`、`users` 新增 `department_code`；`confidential_departments` 改為部門代號／名稱雙軌比對）
 * **資料庫類型**：
   * **應用資料庫**：MongoDB（對話紀錄、設定、測試集、評估報告、回饋標註、資料庫連線設定、標籤與類別選項、Prompt 測試歷史紀錄、部門主檔、模擬使用者名冊）
   * **既有知識庫 / 自訂 DB**：SQL Server & Oracle Database（唯讀連線，存取既有的文章與表單欄位等資料）
@@ -47,7 +47,7 @@
 └─────────────────────┘     └─────────────────────┘
 ```
 
-17 個 MongoDB Collection 皆透過 `backend/models/mongodb.py` 的 `init_beanie()` 註冊：`AppConfig`、`KnowledgeBase`、`PromptTemplate`、`PromptTestRecord`、`ChatSession`、`ChatMessage`、`Feedback`、`TestDataset`、`EvalReport`、`Tag`、`ClassOption`、`DatabaseConfig`、`DBQueryProfile`、`Attachment`、`RetrievalStats`、`Department`（2026-07-16 新增，見第 3.15 節）、`UserProfile`（2026-07-16 新增，見第 3.16 節）。應用程式啟動時會自動 seed：
+19 個 MongoDB Collection 皆透過 `backend/models/mongodb.py` 的 `init_beanie()` 註冊：`AppConfig`、`KnowledgeBase`、`PromptTemplate`、`PromptTestRecord`、`ChatSession`、`ChatMessage`、`Feedback`、`TestDataset`、`EvalReport`、`Tag`、`ClassOption`、`DatabaseConfig`、`DBQueryProfile`、`Attachment`、`RetrievalStats`、`Department`（2026-07-16 新增，見第 3.15 節）、`UserProfile`（2026-07-16 新增，見第 3.16 節）、`ExternalApiKey`（2026-07-17 新增，見第 3.17 節）、`ExternalChatLog`（2026-07-17 新增，見第 3.18 節）。應用程式啟動時會自動 seed：
 * 若尚無知識庫，建立一個預設知識庫並同步建立對應 Qdrant collection。
 * 若尚無測試集，寫入 2 筆預設 `TestDataset`。
 * 若尚無 Prompt 範本，寫入「預設 RAG 助手」與「嚴格知識問答」兩筆內建範本。
@@ -304,22 +304,24 @@
 索引：`knowledge_base_id`、`search_type`、`-created_at`、`(knowledge_base_id, -created_at)` 複合索引。
 > 由 `rag_chat_stream()` 完成檢索後以 best-effort 方式寫入（`backend/services/retrieval_stats_service.py`），寫入失敗只記錄 warning、不影響 SSE 對話主流程。與 `chat_messages.source_chunks` 資料重疊但服務不同目的（此 collection 專供聚合統計查詢），兩者皆為獨立寫入、無關聯。詳見 [`NewFeaturesPlan_RetrievalStatsDashboardPlan.md`](DevelopmentProcess/NewFeaturesPlan_RetrievalStatsDashboardPlan.md) 與 [`03_API_CONTRACT.md`](03_API_CONTRACT.md) 第 16 節。
 
-### 3.15 departments — 部門主檔【新增，2026-07-16】
+### 3.15 departments — 部門主檔【2026-07-16 新增，2026-07-17 新增 `code` 欄位（sparse unique）】
 ```json
 {
   "_id": "ObjectId",
   "name": "string (部門名稱，Indexed unique)",
+  "code": "string | null (部門代號，Indexed unique + sparse，2026-07-17 新增，供外部應用真實使用者資訊比對用)",
   "created_at": "ISODate"
 }
 ```
-索引：`name` (unique)。
+索引：`name` (unique)、`code` (unique, **sparse**)。`POST /api/users/departments` 已要求 `code` 必填，因此新建立的部門一定有值；`code` 之所以在 Schema 上仍是 `Optional`／索引採 `sparse`，是因為此欄位新增前既有的舊部門文件沒有這個欄位——一般（非 sparse）unique index 會把多筆「缺少此欄位」的文件視為重複的 `null` 值而讓索引建置失敗，sparse index 只對「確實有 `code`」的文件強制唯一，舊資料不受影響（見 [BugFix.md 2026-07-17](DevelopmentProcess/BugFix.md)）。目前系統沒有「編輯既有部門」的介面，舊部門的 `code` 會維持 `null` 直到手動刪除重建；`PermissionService`／前端機密權限設定 UI 對此已做雙軌相容（`code` 缺失時退回以名稱比對／送出）。
 
-### 3.16 users — 模擬使用者名冊【新增，2026-07-16】
+### 3.16 users — 模擬使用者名冊【2026-07-16 新增，2026-07-17 新增 `department_code` 欄位】
 ```json
 {
   "_id": "ObjectId",
   "name": "string (姓名)",
   "department": "string (儲存 Department.name)",
+  "department_code": "string | null (儲存 Department.code，2026-07-17 新增，建立使用者時自動從所屬部門連動帶出)",
   "job_title": "string (一般人員/組長/課長/經理/總經理/自訂)",
   "level": "int (1~10，數字越小機密等級越高)",
   "created_at": "ISODate",
@@ -327,6 +329,43 @@
 }
 ```
 索引：`department`、`-created_at`。
+
+### 3.17 external_api_keys — 外部 API 金鑰【新增，2026-07-17】
+```json
+{
+  "_id": "ObjectId",
+  "name": "string (用途/系統名稱標示，例如「HR 入口網站」)",
+  "key_prefix": "string (金鑰前 12 碼明碼，Indexed unique，供查詢索引用)",
+  "key_hash": "string (bcrypt hash 完整金鑰，明碼僅在建立當下回傳一次，之後無法還原)",
+  "is_active": "bool (預設 true)",
+  "created_at": "ISODate",
+  "last_used_at": "ISODate | null"
+}
+```
+索引：`key_prefix` (unique)、`-created_at`。供 `POST /api/external/chat` 的 `X-API-Key` 標頭驗證使用（`verify_external_api_key`，見 `backend/utils/security.py`），與使用者登入用的 JWT 各自獨立。
+
+### 3.18 external_chat_logs — 外部 API 問答稽核紀錄【新增，2026-07-17】
+```json
+{
+  "_id": "ObjectId",
+  "api_key_id": "ObjectId | null (對應 external_api_keys._id，記錄是哪把金鑰呼叫的)",
+  "employee_id": "string (工號)",
+  "employee_name": "string (姓名)",
+  "department_code": "string (部門代號)",
+  "department_name": "string (部門名稱)",
+  "job_title_name": "string (級職名稱)",
+  "job_title_level": "int (級職等級，由呼叫端直接信任帶入)",
+  "knowledge_base_id": "string | null",
+  "search_type": "string | null",
+  "question": "string",
+  "answer": "string (最終組裝完成的完整回答文字)",
+  "sources_summary": "List[{ filename, chunk_id, chunk_index, score, semantic_score }] (精簡版來源中繼資料，不含片段全文)",
+  "custom_system_prompt": "string | null (若有帶自訂總結提示詞，存實際使用的完整文字)",
+  "elapsed_ms": "int | null",
+  "created_at": "ISODate"
+}
+```
+索引：`-created_at`、`employee_id`、`api_key_id`。由 `backend/routers/external.py` 的 `_external_chat_with_logging()` 在每次 `/api/external/chat` 串流結束時寫入（`try...finally` 結構保證正常結束與中途斷線都會落地，見 `NewFeaturesPlan_ExternalApiTestPlan.md` 第 9.4 節）；旁路寫入採 best-effort，失敗不影響對話流程本身。
 
 ---
 
@@ -382,11 +421,11 @@
   "image_filename": "stored_image_filename.png（類型為 image 時，對應儲存的圖片檔名）",
   "is_confidential": "bool (預設 false，標記是否為機密文件，2026-07-16 新增)",
   "confidential_level": "int | null (範圍 1~10，數字越小越機密，2026-07-16 新增)",
-  "confidential_departments": "List[str] (可讀取該機密檔案的部門名稱列表，空列表代表不限部門，2026-07-16 新增)"
+  "confidential_departments": "List[str] (可讀取該機密檔案的部門代號或名稱列表，空列表代表不限部門，2026-07-16 新增；2026-07-17 起雙軌相容代號與名稱)"
 }
 ```
 
-**`is_confidential`/`confidential_level`/`confidential_departments` 用途**【新增，2026-07-16】：由 `POST /api/retrieval/knowledge-bases/{id}/files/update-permissions` 批次寫入。檢索與 RAG 流水線在開啟「模擬使用者」身分時，會自動讀取此三欄位進行權限比對（使用者等級數字小於等於文件等級數字，且部門符合時才放行），未授權片段將被排除且不餵給 LLM 總結。
+**`is_confidential`/`confidential_level`/`confidential_departments` 用途**【2026-07-16 新增，2026-07-17 調整為部門代號／名稱雙軌比對】：由 `POST /api/retrieval/knowledge-bases/{id}/files/update-permissions` 批次寫入。檢索與 RAG 流水線在開啟「模擬使用者」身分或外部應用帶入真實使用者身分（`external_user`）時，會自動讀取此三欄位進行權限比對（使用者等級數字小於等於文件等級數字，且部門符合時才放行），未授權片段將被排除且不餵給 LLM 總結。`confidential_departments` 目前可能同時混雜舊資料（部門名稱）與新資料（部門代號）——`PermissionService.filter_results()` 採雙軌比對，任一種格式命中即視為符合，過渡期不需要遷移既有資料（見 `NewFeaturesPlan_ExternalApiTestPlan.md` 第 8.4 節）。前端「機密權限控管設定」（`VectorManagementTab.vue`）自 2026-07-17 起新設定一律寫入部門代號。
 > `parent_content`、`type` 兩個欄位在檢索程式碼中會被防禦性讀取（`payload.get(...)`），但目前的寫入程式碼路徑中**找不到明確的寫入來源**，可能僅存在於語義 JSON 匯入路徑或歷史遺留資料，撰寫新功能時不應假設其必然存在。
 
 **`links_to` 用途**：由 `POST /api/retrieval/knowledge-bases/{id}/files/update-links` 批次寫入（見 `03_API_CONTRACT.md` §4.6），或於向量化時直接帶入。是 §5 雙階段關聯檢索（Two-Step Hybrid Retrieval）的核心欄位——第一階段召回的 Point 若帶有 `links_to`，第二階段會據此在 `filename`/`custom_id` 命中的關聯點位中做進一步的語意/混合搜尋。

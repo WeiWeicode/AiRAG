@@ -1,5 +1,29 @@
 <!-- 前端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-17 外部 API 真實使用者身分、API Key 管理介面前端實作
+
+### 背景
+依據 [`NewFeaturesPlan_ExternalApiTestPlan.md`](NewFeaturesPlan_ExternalApiTestPlan.md) 第 8～12 節實作。外部 API 測試頁改用真實使用者身分欄位取代模擬使用者 ID，並新增 API Key 管理介面。
+
+### 變更內容
+- `frontend/src/services/userService.js`：`createDepartment(name, code)` 新增代號參數。
+- `frontend/src/services/externalApiKeyService.js`（新檔）：`list()`/`create(name)`/`remove(id)` 對應 `/api/external-api-keys` CRUD。
+- `frontend/src/views/RoleSettingsView.vue`：
+  - 部門新增表單加上「部門代號」輸入欄位，部門 Chip 顯示代號。
+  - 新增「外部 API 金鑰管理」區塊（Panel 3）：建立金鑰表單、清單表格（名稱/前綴/狀態/建立時間/最後使用時間）、刪除按鈕；新建立的金鑰明碼以醒目提示框顯示一次並提醒立即保存。
+- `frontend/src/components/embedding/VectorManagementTab.vue`：`fetchDepartments()` 改保留 `{name, code}` 物件；「可讀取部門限制」複選框 `value` 改綁部門代號（畫面仍顯示名稱）。
+- `frontend/src/stores/paramsStore.js`：新增 `externalEmployeeId`/`externalEmployeeName`/`externalDepartmentCode`/`externalDepartmentName`/`externalJobTitleName`/`externalJobTitleLevel`/`externalApiKey` 七個欄位（外部 API 測試頁專用）。
+- `frontend/src/stores/externalChatStore.js`：`buildExternalChatPayload()` 移除 `simulated_user_id`，改組出 `params.external_user` 物件；`_streamChat()` 的 fetch headers 新增 `X-API-Key`（取代原本「不帶 Authorization」的註解與寫法）；歡迎訊息文字同步更新。
+- `frontend/src/components/params/ExternalUserInfoPanel.vue`（新檔）：API Key 輸入框與 6 個使用者身分欄位表單，僅放在外部 API 測試頁。
+- `frontend/src/views/ExternalApiTestView.vue`：側欄加入 `ExternalUserInfoPanel`。
+- `frontend/src/components/params/ApiJsonPreviewPanel.vue`：Header 說明改為 `X-API-Key` 驗證方式；欄位說明列表移除 `simulated_user_id`，新增 `external_user` 及其 6 個子欄位說明。
+
+### 驗證
+- `npm run build` 通過，無編譯錯誤。
+- 尚待使用者手動驗證：建立/刪除 API 金鑰、部門代號新增與機密權限勾選畫面、外部頁面實際送出帶 `external_user`/`X-API-Key` 的請求（依專案慣例不由 AI 開瀏覽器驗證）。
+
+---
+
 ## 2026-07-17 外部 API 測試頁面 (External API Test) 前端實作
 
 ### 背景

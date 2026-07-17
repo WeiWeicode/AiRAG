@@ -3,6 +3,7 @@ import ChatWindow from '../components/chat/ChatWindow.vue'
 import RagParamsPanel from '../components/params/RagParamsPanel.vue'
 import LlmParamsPanel from '../components/params/LlmParamsPanel.vue'
 import CustomSystemPromptPanel from '../components/params/CustomSystemPromptPanel.vue'
+import ExternalUserInfoPanel from '../components/params/ExternalUserInfoPanel.vue'
 import ApiJsonPreviewPanel from '../components/params/ApiJsonPreviewPanel.vue'
 import { useExternalChatStore } from '../stores/externalChatStore'
 
@@ -21,6 +22,7 @@ const externalChatStore = useExternalChatStore()
       <RagParamsPanel />
       <LlmParamsPanel />
       <CustomSystemPromptPanel />
+      <ExternalUserInfoPanel />
       <ApiJsonPreviewPanel />
     </div>
   </div>

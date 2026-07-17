@@ -66,7 +66,9 @@ const fetchAllAttachments = async () => {
 const fetchDepartments = async () => {
   try {
     const res = await userService.getDepartments()
-    allDepartments.value = (res.data || []).map(d => typeof d === 'string' ? d : d.name)
+    // 機密權限控管改用部門代號比對（畫面仍顯示名稱方便閱讀，送出/比對值改為代號）；
+    // 舊有部門若尚未設定代號（code 為 null），退回用名稱送出/比對，PermissionService 的雙軌比對仍能正確辨識
+    allDepartments.value = (res.data || []).map(d => ({ id: d.id, name: d.name, code: d.code || d.name }))
   } catch (err) {
     console.error('無法取得部門清單:', err)
   }
@@ -493,16 +495,16 @@ onMounted(() => {
               </div>
               <label
                 v-for="dept in allDepartments"
-                :key="dept"
+                :key="dept.id"
                 class="flex items-center gap-1.5 text-xs text-white/80 cursor-pointer select-none hover:text-purple-400 transition-colors"
               >
                 <input
                   type="checkbox"
                   v-model="confidentialDepartments"
-                  :value="dept"
+                  :value="dept.code"
                   class="rounded bg-white/5 border-white/10 text-purple-500 focus:ring-purple-500/50 cursor-pointer"
                 />
-                <span>{{ dept }}</span>
+                <span>{{ dept.name }}</span>
               </label>
             </div>
           </div>

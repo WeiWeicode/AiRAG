@@ -22,7 +22,8 @@ from routers import (
     attachment,
     dashboard,
     users,
-    external
+    external,
+    external_api_keys
 )
 
 # 設定日誌
@@ -75,6 +76,7 @@ app.include_router(attachment.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(external.router, prefix="/api")
+app.include_router(external_api_keys.router, prefix="/api")
 
 @app.get("/health")
 async def health_check():

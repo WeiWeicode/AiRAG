@@ -1,5 +1,28 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-07-17 `Department.code` 新增唯一索引導致既有部署啟動失敗修正
+
+### 背景
+同日稍早實作「外部 API 真實使用者身分」功能時，為 `Department` 新增了 `code: Indexed(str, unique=True)` 欄位。使用者實際部署後，MongoDB 啟動時建立索引即失敗並讓整個後端無法啟動：
+```
+E11000 duplicate key error collection: airag.departments index: code_1 dup key: { code: null }
+```
+原因：`departments` collection 在此欄位新增前已存在部門文件，這些舊文件完全沒有 `code` 欄位；一般（非 sparse）unique index 會把「缺少該欄位」的多筆文件一律視為值相同的 `null`，因此建置索引時判定為重複鍵值而失敗，屬於「對既有 Collection 新增必填唯一欄位」的典型陷阱，實作當下未預先評估既有資料相容性。
+
+### 變更內容
+- `backend/models/department.py`：`code` 欄位改為 `Optional[Indexed(str, unique=True, sparse=True)] = None`。`sparse=True` 讓唯一性索引只對「確實有 `code` 欄位」的文件生效，缺少此欄位的舊部門文件會被索引直接略過、不參與唯一性判斷，因此不會再互相衝突；新建立的部門（`POST /api/users/departments` 的 `code` 欄位本來就已要求必填）則仍受正常的唯一性保護。
+- `backend/routers/users.py`：`DepartmentResponse.code` 同步改為 `Optional[str] = None`，避免舊部門（`code` 為 `None`）回傳時被 Pydantic Response Model 驗證擋下。
+- `frontend/src/views/RoleSettingsView.vue`：部門 Chip 顯示代號時，若為 `null` 顯示「未設定代號」而非空白。
+- `frontend/src/components/embedding/VectorManagementTab.vue`：`fetchDepartments()` 對缺少 `code` 的舊部門，UI 送出／比對值改為退回使用部門名稱（`dept.code || dept.name`），並改用 `dept.id` 作為 `v-for` 的 `:key`（避免多筆缺少代號的部門在複選框中因 `:key`/`:value` 相同而互相衝突）；此退回行為與後端 `PermissionService` 的代號／名稱雙軌比對邏輯一致。
+
+### 驗證
+- `python -m py_compile` 通過。
+- 以 venv Python 驗證 `Department.code` 欄位為 `Optional`、`default=None`；`DepartmentResponse(code=None)` 可正常建構不拋出驗證錯誤。
+- 無法在本機沙箱環境連線實際 MongoDB 重現索引建置流程，已對照 MongoDB 官方文件確認 `sparse` unique index 對「欄位缺失」文件的排除行為（僅排除欄位完全缺失者，不影響本次修正的既有資料情境）；請使用者於實際環境重新部署後端服務驗證啟動是否成功。
+- `npm run build` 通過。
+
+---
+
 ## 2026-07-14 AI 總結相似度門檻 Hard Cutoff 相關 4 項問題修正 (8.1 ~ 8.4)
 
 ### 背景

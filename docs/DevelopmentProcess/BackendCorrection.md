@@ -1,5 +1,34 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-17 外部 API 真實使用者身分、問答稽核紀錄、API Key 驗證機制後端實作
+
+### 背景
+依據 [`NewFeaturesPlan_ExternalApiTestPlan.md`](NewFeaturesPlan_ExternalApiTestPlan.md) 第 8～12 節實作，取代先前「外部端點暫不驗證」的決策。
+
+### 變更內容
+- `backend/models/department.py`：`Department` 新增 `code: Indexed(str, unique=True)`。
+- `backend/models/user_profile.py`：`UserProfile` 新增 `department_code: Optional[str]`；新增 `ExternalUserInfo`（`employee_id`/`name`/`department_code`/`department_name`/`job_title_name`/`job_title_level`），定義在此檔以避免 `rag.py`↔`permission_service.py` 之間的循環引用。
+- `backend/routers/users.py`：`DepartmentCreateRequest`/`DepartmentResponse` 新增 `code`（必填，重複檢查）；`create_department()` 增加代號空值/重複驗證；`UserResponse` 新增 `department_code`；`create_user()` 新增時以 `Department.find_one(name==dept_name)` 查代號連動帶入，找不到則為 `None`（此時 `PermissionService` 仍可退回名稱比對）。
+- `backend/services/permission_service.py`：
+  - `filter_results()` 部門比對邏輯改為雙軌相容：`user.department in dept_str_list or (user.department_code and user.department_code in dept_str_list)`，過渡期不需要遷移既有 Qdrant `confidential_departments` 資料。
+  - 新增 `get_user_from_external_info(info: ExternalUserInfo) -> UserProfile` classmethod，將外部使用者資訊轉為與模擬使用者相同形狀的物件（不落地寫入 `users` collection）。
+- `backend/routers/rag.py`：`ChatParams` 新增 `external_user: Optional[ExternalUserInfo]`；`rag_chat_stream()` 解析身分處新增分支——有 `external_user` 時優先呼叫 `get_user_from_external_info()`，否則才走原本 `simulated_user_id` 查詢路徑，其餘下游過濾/排除摘要邏輯不變。
+- `backend/utils/security.py`：新增 `generate_external_api_key()`（`secrets.token_urlsafe(32)` 產生明碼，回傳明碼/前綴/bcrypt hash）與 `verify_external_api_key()`（`X-API-Key` 標頭依賴注入，先以前綴查候選再 bcrypt 核對，通過後更新 `last_used_at`），與既有 `get_current_user` JWT 各自獨立。
+- `backend/models/external_api_key.py`（新檔）：`ExternalApiKey` Document（`name`/`key_prefix` unique indexed/`key_hash`/`is_active`/`created_at`/`last_used_at`）。
+- `backend/routers/external_api_keys.py`（新檔）：`GET/POST /api/external-api-keys`、`DELETE /api/external-api-keys/{id}`，沿用 `get_current_user` JWT 保護；`POST` 回應內的 `api_key` 明碼僅回傳一次。
+- `backend/models/external_chat_log.py`（新檔）：`SourceSummaryItem`（精簡來源中繼資料，不存全文）與 `ExternalChatLog`（稽核紀錄，含呼叫端身分六欄位、問答內容、`custom_system_prompt` 實際使用文字、`api_key_id`）。
+- `backend/routers/external.py`：
+  - `POST /chat` 新增 `Depends(verify_external_api_key)`，並要求 `request.params.external_user` 必填（缺少回傳 400）。
+  - 新增 `_external_chat_with_logging()`：以 `try...finally` 包住 `async for evt in rag_chat_stream(request)` 的轉發迴圈，旁路解析累積回答內容與來源，於 `finally`（涵蓋正常結束、中途斷線、例外）寫入一筆 `ExternalChatLog`；寫入本身另包 `try/except`，失敗僅記警告 log，不影響已送達使用者的串流結果（比照既有 `RetrievalStatsService.record` 的 best-effort 慣例）。
+- `backend/models/mongodb.py`：`init_beanie` 註冊 `ExternalApiKey`、`ExternalChatLog`。
+- `backend/main.py`：註冊 `external_api_keys.router`。
+
+### 驗證
+- `python -m py_compile` 全數通過（`rag.py`/`users.py`/`permission_service.py`/`user_profile.py`/`department.py`/`external_api_key.py`/`external_chat_log.py`/`external.py`/`external_api_keys.py`/`utils/security.py`/`main.py`/`models/mongodb.py`）。
+- 以 venv Python 實際 import 全部新增/修改模組並執行端到端 smoke test：確認 `ChatParams.external_user` 欄位存在、`external.py`/`external_api_keys.py` 路由正確註冊、`get_user_from_external_info()` 能正確轉換欄位、`generate_external_api_key()` 產生的金鑰可被 `verify_password()` 正確驗證且錯誤金鑰會被拒絕。
+
+---
+
 ## 2026-07-17 外部 API 測試頁面 (External API Test) 後端實作
 
 ### 背景

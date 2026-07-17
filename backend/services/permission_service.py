@@ -1,12 +1,28 @@
 import logging
 from typing import List, Optional, Tuple, Dict, Any
 from beanie import PydanticObjectId
-from models.user_profile import UserProfile
+from models.user_profile import UserProfile, ExternalUserInfo
 
 logger = logging.getLogger("airag.services.permission")
 
 
 class PermissionService:
+    @classmethod
+    def get_user_from_external_info(cls, info: ExternalUserInfo) -> UserProfile:
+        """
+        將外部應用傳入的真實使用者資訊（ExternalUserInfo）轉換為 UserProfile 形狀的物件，
+        供 filter_results()／build_exclusion_summary() 直接沿用同一套邏輯，不落地寫入 users collection
+        （外部呼叫的身分快照改寫進 ExternalChatLog，見 NewFeaturesPlan_ExternalApiTestPlan.md 第 8.5、9 節）。
+        job_title_level 由外部呼叫端直接信任帶入，不再對照 JOB_TITLE_LEVELS 重新換算。
+        """
+        return UserProfile(
+            name=info.name,
+            department=info.department_name,
+            department_code=info.department_code,
+            job_title=info.job_title_name,
+            level=info.job_title_level
+        )
+
     @classmethod
     async def get_user(cls, user_id: Optional[str]) -> Optional[UserProfile]:
         """
@@ -94,10 +110,16 @@ class PermissionService:
                         meta.get("filename", "未知檔名")
                     )
 
-            # 部門過濾驗證：文件有指定部門且使用者部門不在列表中 -> 部門不符
+            # 部門過濾驗證：文件有指定部門且使用者部門（代號或名稱皆可）不在列表中 -> 部門不符
+            # 雙軌比對：confidential_departments 可能混雜舊資料（部門名稱）與新資料（部門代號），
+            # 任一種格式命中即視為符合，過渡期不需要遷移既有資料（見 NewFeaturesPlan_ExternalApiTestPlan.md 第 8.4 節）
             if c_depts:
                 dept_str_list = [str(d) for d in c_depts if d]
-                if dept_str_list and user.department not in dept_str_list:
+                matched = (
+                    user.department in dept_str_list or
+                    (user.department_code and user.department_code in dept_str_list)
+                )
+                if dept_str_list and not matched:
                     dept_join = "、".join(dept_str_list)
                     reasons.append(
                         f"部門限制: 僅限「{dept_join}」，{user.name} 所屬部門「{user.department}」不符"

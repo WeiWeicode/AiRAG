@@ -1,6 +1,6 @@
 # 外部 API 測試頁面規劃文件
 
-> 狀態：第 1～7 節（外部 API 測試頁面主體功能）**已實作完成**（2026-07-17，見 [NewFeatures.md](NewFeatures.md) / [BackendCorrection.md](BackendCorrection.md) / [FrontendCorrection.md](FrontendCorrection.md) 對應紀錄）。第 8～12 節（真實使用者資訊欄位、問答紀錄留存、API Key 驗證機制）為 2026-07-17 新增之後續規劃，所有待確認事項已由 AI 決策完畢（見第 11 節決策紀錄），**規劃內容已底定，尚未實作，等待使用者複核確認後即可排入實作**。
+> 狀態：全部章節（第 1～12 節）**已實作完成**（2026-07-17，見 [NewFeatures.md](NewFeatures.md) / [BackendCorrection.md](BackendCorrection.md) / [FrontendCorrection.md](FrontendCorrection.md) 對應紀錄）。第 8.4 節「既有資料遷移風險」已採選項 2（過渡期雙軌比對）上線，不需額外遷移腳本；第 9.4 節的 `try...finally` 落地保護結構、第 10 節 API Key 驗證機制、`external_user` 取代 `simulated_user_id` 皆已落實於程式碼。
 > 目的：讓「未來要接入 AiRAG 的公司內網外部應用」有一個獨立、不與內部測試共用的 API 端點；並在前端提供一個「組合參數 → 產生 JSON → 直接測試」的工具頁，讓開發者能照著畫面組出的 JSON 直接串接。
 
 ---

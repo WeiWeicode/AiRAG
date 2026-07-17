@@ -49,7 +49,12 @@ const fieldDocs = [
   { field: 'params.custom_system_prompt', desc: '自訂總結提示詞：有填寫時完全取代預設的指示規則文字，檢索到的參考資料仍會由後端自動接續在後面；未帶或空白則使用系統預設模板' },
   { field: 'params.temperature / max_tokens', desc: '生成模型參數' },
   { field: 'params.pinned_filename', desc: '手動鎖定檔案，僅語義混合家族查詢法有效，null 代表不鎖定' },
-  { field: 'params.simulated_user_id', desc: '模擬使用者 ID，帶入時依該使用者權限過濾機密文件；null 代表不模擬' }
+  { field: 'params.external_user', desc: '必填，取代內部測試用的 simulated_user_id：帶入實際員工身分，供機密文件存取權限過濾使用' },
+  { field: 'params.external_user.employee_id / name', desc: '工號、姓名，僅供稽核紀錄與排除說明文字顯示，不影響過濾判斷' },
+  { field: 'params.external_user.department_code', desc: '部門代號，用於機密文件的部門限制比對（與既有部門名稱雙軌相容）' },
+  { field: 'params.external_user.department_name', desc: '部門名稱，僅供排除說明文字顯示' },
+  { field: 'params.external_user.job_title_name', desc: '級職名稱，僅供排除說明文字顯示' },
+  { field: 'params.external_user.job_title_level', desc: '級職等級（1~10，數字越小權限越高），由呼叫端直接信任帶入，不會重新換算，用於機密等級比對' }
 ]
 </script>
 
@@ -68,7 +73,10 @@ const fieldDocs = [
       <div class="bg-white/5 border border-white/8 rounded-lg px-3 py-2 text-xs text-[#a78bfa] font-mono break-all">
         POST {{ endpointUrl }}
       </div>
-      <p class="text-[10px] text-[#9ca3af]">Headers: <span class="font-mono">Content-Type: application/json</span>（此端點目前不需要 Authorization 標頭，僅限公司內網存取）</p>
+      <p class="text-[10px] text-[#9ca3af]">
+        Headers: <span class="font-mono">Content-Type: application/json</span>、<span class="font-mono">X-API-Key: &lt;your-api-key&gt;</span>
+        （於「角色與權限設定」頁建立金鑰；此端點不使用登入 JWT，改以 X-API-Key 驗證呼叫端系統身分）
+      </p>
     </div>
 
     <div class="flex flex-col gap-1.5">

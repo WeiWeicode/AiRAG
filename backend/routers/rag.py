@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from beanie import PydanticObjectId
 
 from models.knowledge_base import KnowledgeBase
+from models.user_profile import ExternalUserInfo
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
@@ -43,6 +44,7 @@ class ChatParams(BaseModel):
     pinned_filename: Optional[str] = None
     simulated_user_id: Optional[str] = None
     custom_system_prompt: Optional[str] = None
+    external_user: Optional[ExternalUserInfo] = None
 
 class ChatRequest(BaseModel):
     question: str
@@ -311,8 +313,13 @@ async def rag_chat_stream(request: ChatRequest):
             kb = await KnowledgeBase.get(kb_id)
             if kb:
                 try:
-                    simulated_user_id = request.params.simulated_user_id if request.params else None
-                    simulated_user = await PermissionService.get_user(simulated_user_id)
+                    external_user_info = request.params.external_user if request.params else None
+                    if external_user_info:
+                        # 外部應用傳入真實使用者資訊時優先採用，取代 simulated_user_id 查詢路徑
+                        simulated_user = PermissionService.get_user_from_external_info(external_user_info)
+                    else:
+                        simulated_user_id = request.params.simulated_user_id if request.params else None
+                        simulated_user = await PermissionService.get_user(simulated_user_id)
                     # 發送「語義分析」進行中事件
                     step_data = {
                         "step": "semantic_analysis",

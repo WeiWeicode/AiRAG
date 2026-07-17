@@ -37,8 +37,16 @@ export function buildExternalChatPayload(paramsStore, { question, chatHistory = 
       read_attachment_content: paramsStore.readAttachmentContent,
       history_context_turns: historyContextTurns,
       pinned_filename: paramsStore.pinnedFilename,
-      simulated_user_id: paramsStore.simulatedUserEnabled ? paramsStore.simulatedUserId : null,
-      custom_system_prompt: trimmedCustomPrompt ? trimmedCustomPrompt : undefined
+      custom_system_prompt: trimmedCustomPrompt ? trimmedCustomPrompt : undefined,
+      // 外部 API 改用 external_user 取代 simulated_user_id（見 NewFeaturesPlan_ExternalApiTestPlan.md 第 8.3 節決議 1）
+      external_user: {
+        employee_id: paramsStore.externalEmployeeId,
+        name: paramsStore.externalEmployeeName,
+        department_code: paramsStore.externalDepartmentCode,
+        department_name: paramsStore.externalDepartmentName,
+        job_title_name: paramsStore.externalJobTitleName,
+        job_title_level: paramsStore.externalJobTitleLevel
+      }
     }
   }
 }
@@ -49,7 +57,7 @@ export const useExternalChatStore = defineStore('externalChat', {
       {
         id: 'welcome',
         role: 'assistant',
-        content: '您好！這是「外部 API 測試」對話視窗，會直接呼叫不需登入驗證的 /api/external/chat 端點，行為與 RAG 功能測試一致。',
+        content: '您好！這是「外部 API 測試」對話視窗，會直接呼叫 /api/external/chat 端點（需帶 X-API-Key 與使用者身分資訊），行為與 RAG 功能測試一致。',
         sources: null,
       }
     ],
@@ -61,7 +69,7 @@ export const useExternalChatStore = defineStore('externalChat', {
         {
           id: 'welcome',
           role: 'assistant',
-          content: '您好！這是「外部 API 測試」對話視窗，會直接呼叫不需登入驗證的 /api/external/chat 端點，行為與 RAG 功能測試一致。',
+          content: '您好！這是「外部 API 測試」對話視窗，會直接呼叫 /api/external/chat 端點（需帶 X-API-Key 與使用者身分資訊），行為與 RAG 功能測試一致。',
           sources: null,
           thinking: '',
           isThinking: false
@@ -122,8 +130,9 @@ export const useExternalChatStore = defineStore('externalChat', {
       await streamChat({
         endpoint: `${import.meta.env.VITE_API_BASE_URL || '/api'}/external/chat`,
         headers: {
-          'Content-Type': 'application/json'
-          // 依規劃決策，此端點不驗證，因此不帶 Authorization 標頭
+          'Content-Type': 'application/json',
+          // 與內部 JWT 各自獨立，改用 X-API-Key（見 NewFeaturesPlan_ExternalApiTestPlan.md 第 10 節）
+          'X-API-Key': paramsStore.externalApiKey || ''
         },
         payload,
         messages: this.messages,

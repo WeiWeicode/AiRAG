@@ -43,6 +43,16 @@ export const useParamsStore = defineStore('params', {
     // 自訂總結提示詞（外部 API 測試頁專用），留空則使用後端預設模板
     customSystemPrompt: '',
 
+    // 外部 API 測試頁專用：真實使用者身分資訊（取代 simulated_user_id，見 NewFeaturesPlan_ExternalApiTestPlan.md 第 8 節）
+    externalEmployeeId: '',
+    externalEmployeeName: '',
+    externalDepartmentCode: '',
+    externalDepartmentName: '',
+    externalJobTitleName: '',
+    externalJobTitleLevel: 10,
+    // 外部 API 測試頁專用：呼叫 /api/external/chat 所需的 X-API-Key
+    externalApiKey: '',
+
     // Chunking / Embedding parameters
     chunkSize: 512,
     chunkOverlap: 50,

@@ -1,13 +1,22 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import userService from '../services/userService'
+import externalApiKeyService from '../services/externalApiKeyService'
 
 // Departments state
 const departments = ref([])
 const newDeptName = ref('')
+const newDeptCode = ref('')
 const isAddingDept = ref(false)
 const deptError = ref('')
 const deptSuccess = ref('')
+
+// External API Keys state
+const apiKeys = ref([])
+const newApiKeyName = ref('')
+const isAddingApiKey = ref(false)
+const apiKeyError = ref('')
+const newlyCreatedKey = ref('')
 
 // User Roster state
 const users = ref([])
@@ -56,11 +65,16 @@ const handleAddDepartment = async () => {
     deptError.value = '請輸入部門名稱'
     return
   }
+  if (!newDeptCode.value.trim()) {
+    deptError.value = '請輸入部門代號'
+    return
+  }
   isAddingDept.value = true
   try {
-    await userService.createDepartment(newDeptName.value.trim())
+    await userService.createDepartment(newDeptName.value.trim(), newDeptCode.value.trim())
     deptSuccess.value = `成功新增部門「${newDeptName.value.trim()}」`
     newDeptName.value = ''
+    newDeptCode.value = ''
     await loadDepartments()
   } catch (err) {
     deptError.value = err.response?.data?.detail || '新增部門失敗'
@@ -128,9 +142,49 @@ const handleDeleteUser = async (userId, userName) => {
   }
 }
 
+const loadApiKeys = async () => {
+  try {
+    const res = await externalApiKeyService.list()
+    apiKeys.value = res.data || []
+  } catch (err) {
+    console.error('無法載入外部 API 金鑰清單:', err)
+  }
+}
+
+const handleAddApiKey = async () => {
+  apiKeyError.value = ''
+  newlyCreatedKey.value = ''
+  if (!newApiKeyName.value.trim()) {
+    apiKeyError.value = '請輸入金鑰用途名稱'
+    return
+  }
+  isAddingApiKey.value = true
+  try {
+    const res = await externalApiKeyService.create(newApiKeyName.value.trim())
+    newlyCreatedKey.value = res.data.api_key
+    newApiKeyName.value = ''
+    await loadApiKeys()
+  } catch (err) {
+    apiKeyError.value = err.response?.data?.detail || '建立金鑰失敗'
+  } finally {
+    isAddingApiKey.value = false
+  }
+}
+
+const handleDeleteApiKey = async (keyId, keyName) => {
+  if (!confirm(`確定要刪除金鑰「${keyName}」嗎？刪除後該金鑰立即失效。`)) return
+  try {
+    await externalApiKeyService.remove(keyId)
+    await loadApiKeys()
+  } catch (err) {
+    console.error('刪除金鑰失敗:', err)
+  }
+}
+
 onMounted(() => {
   loadDepartments()
   loadUsers()
+  loadApiKeys()
 })
 </script>
 
@@ -173,6 +227,13 @@ onMounted(() => {
               class="flex-1 bg-[#1f2937]/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-purple-500/50 transition-colors"
               @keyup.enter="handleAddDepartment"
             />
+            <input
+              v-model="newDeptCode"
+              type="text"
+              placeholder="部門代號 (例如：RD、HR)"
+              class="w-48 bg-[#1f2937]/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-purple-500/50 transition-colors"
+              @keyup.enter="handleAddDepartment"
+            />
             <button
               @click="handleAddDepartment"
               :disabled="isAddingDept"
@@ -192,7 +253,7 @@ onMounted(() => {
               :key="dept.id"
               class="flex items-center gap-2 px-3.5 py-1.5 bg-white/5 border border-white/10 rounded-xl text-xs text-white/80 hover:border-purple-500/40 transition-colors"
             >
-              <span>🏢 {{ dept.name }}</span>
+              <span>🏢 {{ dept.name }} <span class="text-white/40 font-mono">({{ dept.code || '未設定代號' }})</span></span>
               <button
                 @click="handleDeleteDepartment(dept.id, dept.name)"
                 class="text-white/40 hover:text-red-400 font-bold ml-1 transition-colors"
@@ -313,6 +374,86 @@ onMounted(() => {
                   <td class="px-4 py-3 text-right">
                     <button
                       @click="handleDeleteUser(user.id, user.name)"
+                      class="text-red-400 hover:text-red-300 hover:underline text-xs"
+                    >
+                      刪除
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Panel 3: 外部 API 金鑰管理 -->
+        <section class="bg-[#111827]/70 border border-white/8 rounded-2xl p-6 backdrop-blur-xl shadow-xl">
+          <div class="flex items-center justify-between mb-4 pb-3 border-b border-white/8">
+            <div>
+              <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+                外部 API 金鑰管理 (External API Keys)
+              </h3>
+              <p class="text-xs text-white/50 mt-0.5">供公司內網外部應用呼叫 /api/external/chat 時於 X-API-Key 標頭帶入</p>
+            </div>
+          </div>
+
+          <!-- Alert Messages -->
+          <div v-if="apiKeyError" class="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-xs flex items-center gap-2">
+            <span>⚠️</span> {{ apiKeyError }}
+          </div>
+          <div v-if="newlyCreatedKey" class="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs flex flex-col gap-1.5">
+            <span>✅ 金鑰建立成功，請立即複製保存——關閉此提示後將無法再次取得完整金鑰：</span>
+            <code class="block bg-black/30 rounded-lg px-3 py-2 font-mono text-[11px] text-amber-200 break-all select-all">{{ newlyCreatedKey }}</code>
+          </div>
+
+          <!-- Add Form -->
+          <div class="flex gap-3 mb-6">
+            <input
+              v-model="newApiKeyName"
+              type="text"
+              placeholder="用途/系統名稱 (例如：HR 入口網站)"
+              class="flex-1 bg-[#1f2937]/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-amber-500/50 transition-colors"
+              @keyup.enter="handleAddApiKey"
+            />
+            <button
+              @click="handleAddApiKey"
+              :disabled="isAddingApiKey"
+              class="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-medium px-5 py-2.5 rounded-xl text-sm transition-all shadow-lg shadow-amber-600/20 disabled:opacity-50"
+            >
+              {{ isAddingApiKey ? '建立中...' : '建立金鑰' }}
+            </button>
+          </div>
+
+          <!-- API Key Table -->
+          <div class="overflow-x-auto border border-white/8 rounded-xl">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-[#1f2937]/50 text-white/60 uppercase text-[10px] tracking-wider border-b border-white/8">
+                <tr>
+                  <th class="px-4 py-3">名稱</th>
+                  <th class="px-4 py-3">前綴</th>
+                  <th class="px-4 py-3">狀態</th>
+                  <th class="px-4 py-3">建立時間</th>
+                  <th class="px-4 py-3">最後使用時間</th>
+                  <th class="px-4 py-3 text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-white/5">
+                <tr v-if="apiKeys.length === 0">
+                  <td colspan="6" class="px-4 py-6 text-center text-white/40">
+                    目前尚無任何外部 API 金鑰，請於上方建立。
+                  </td>
+                </tr>
+                <tr v-for="key in apiKeys" :key="key.id" class="hover:bg-white/3 transition-colors">
+                  <td class="px-4 py-3 font-semibold text-white">{{ key.name }}</td>
+                  <td class="px-4 py-3 text-white/70 font-mono">{{ key.key_prefix }}...</td>
+                  <td class="px-4 py-3">
+                    <span :class="key.is_active ? 'text-emerald-400' : 'text-white/40'">{{ key.is_active ? '啟用中' : '已停用' }}</span>
+                  </td>
+                  <td class="px-4 py-3 text-white/40">{{ key.created_at }}</td>
+                  <td class="px-4 py-3 text-white/40">{{ key.last_used_at || '尚未使用' }}</td>
+                  <td class="px-4 py-3 text-right">
+                    <button
+                      @click="handleDeleteApiKey(key.id, key.name)"
                       class="text-red-400 hover:text-red-300 hover:underline text-xs"
                     >
                       刪除

@@ -1,7 +1,8 @@
 import bcrypt
 import jwt
+import secrets
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 from config import settings
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -43,7 +44,7 @@ def decode_access_token(token: str) -> Optional[dict]:
     except jwt.PyJWTError:
         return None
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 security = HTTPBearer()
@@ -68,4 +69,37 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
             headers={"WWW-Authenticate": "Bearer"},
         )
     return username
+
+
+EXTERNAL_API_KEY_PREFIX_LENGTH = 12
+
+def generate_external_api_key() -> Tuple[str, str, str]:
+    """
+    產生一把新的外部 API 金鑰，回傳 (完整明碼, 前綴, bcrypt hash)。
+    明碼只在建立當下回傳一次，資料庫僅存前綴（供索引查找）與 hash，之後無法再次還原明碼。
+    """
+    plaintext = secrets.token_urlsafe(32)
+    prefix = plaintext[:EXTERNAL_API_KEY_PREFIX_LENGTH]
+    hashed = get_password_hash(plaintext)
+    return plaintext, prefix, hashed
+
+async def verify_external_api_key(x_api_key: str = Header(...)):
+    """
+    FastAPI 依賴注入：驗證 /api/external/chat 的 X-API-Key 標頭，通過後回傳對應的 ExternalApiKey 文件
+    （並更新 last_used_at）。與 get_current_user 的 JWT 登入驗證各自獨立、不共用——
+    這裡驗證的是「已授權的外部系統」，不是「已登入的人類使用者」。
+    """
+    from models.external_api_key import ExternalApiKey
+
+    if not x_api_key or len(x_api_key) < EXTERNAL_API_KEY_PREFIX_LENGTH:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="無效的 API Key")
+
+    prefix = x_api_key[:EXTERNAL_API_KEY_PREFIX_LENGTH]
+    key_doc = await ExternalApiKey.find_one(ExternalApiKey.key_prefix == prefix)
+    if not key_doc or not key_doc.is_active or not verify_password(x_api_key, key_doc.key_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="無效或已停用的 API Key")
+
+    key_doc.last_used_at = datetime.utcnow()
+    await key_doc.save()
+    return key_doc
 

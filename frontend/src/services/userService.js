@@ -5,8 +5,8 @@ export default {
   getDepartments() {
     return api.get('/api/users/departments')
   },
-  createDepartment(name) {
-    return api.post('/api/users/departments', { name })
+  createDepartment(name, code) {
+    return api.post('/api/users/departments', { name, code })
   },
   deleteDepartment(id) {
     return api.delete(`/api/users/departments/${id}`)

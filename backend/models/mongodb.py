@@ -31,6 +31,8 @@ from models.attachment import Attachment
 from models.retrieval_stats import RetrievalStats
 from models.department import Department
 from models.user_profile import UserProfile
+from models.external_api_key import ExternalApiKey
+from models.external_chat_log import ExternalChatLog
 
 
 logger = logging.getLogger("airag.mongodb")
@@ -207,7 +209,9 @@ async def init_mongodb():
                 Attachment,
                 RetrievalStats,
                 Department,
-                UserProfile
+                UserProfile,
+                ExternalApiKey,
+                ExternalChatLog
             ]
         )
         logger.info("MongoDB and Beanie ODM initialized successfully.")

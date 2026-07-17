@@ -2,11 +2,11 @@
 
 ## 1. 文件資訊
 * **專案名稱**：AiRAG 內部測試平台
-* **文件版本**：V 1.6（依實際程式碼校正）
+* **文件版本**：V 1.7（新增 `/api/external/chat` 的 API Key 驗證與 `external_user`、外部 API 金鑰管理 API、部門代號欄位）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-17（新增 §3.4 `/api/external/chat` 外部應用端點）
+* **更新日期**：2026-07-17（`/api/external/chat` 新增 `X-API-Key` 驗證與 `params.external_user` 必填欄位取代 `simulated_user_id`；新增 §19 外部 API 金鑰管理；`/api/users/departments`、`/api/users` 新增部門代號欄位）
 * **Base URL**：`http://<host>:8000/api`
-* **認證方式**：JWT Bearer Token（除 `/api/auth/login` 與 `/api/external/chat`（§3.4，供外部應用串接、暫無驗證機制）外，所有 API 皆掛載於各 router 的 `Depends(get_current_user)`，須帶 `Authorization: Bearer <token>`）
+* **認證方式**：兩套機制並存——(1) JWT Bearer Token：除 `/api/auth/login` 外，所有內部使用者操作的 API 皆掛載於各 router 的 `Depends(get_current_user)`，須帶 `Authorization: Bearer <token>`；(2) API Key：`/api/external/chat`（§3.4，供外部應用串接）改掛 `Depends(verify_external_api_key)`，須帶 `X-API-Key: <key>`，金鑰透過 §19 的管理 API（仍受 JWT 保護）建立，兩套機制彼此獨立、不互通。
 
 > 本版本已對照 `backend/routers/`、`backend/schemas/` 實際程式碼逐一校正欄位名稱、回應格式與端點清單。凡標記 **[Stub]** 者代表該端點目前為未完整實作的樁函式（stub），呼叫會成功但不執行真正的業務邏輯，請勿依賴其結果。
 
@@ -129,11 +129,24 @@
 ### 3.3 DELETE `/api/rag/history/{session_id}` — 刪除對話 **[Stub]**
 固定回傳 `{"message": "刪除成功"}`，不執行任何刪除操作。
 
-### 3.4 POST `/api/external/chat` — 外部應用對話（SSE 串流）【新增，2026-07-17】
-**描述**：供公司內網外部應用串接使用的獨立端點，實作依 [NewFeaturesPlan_ExternalApiTestPlan.md](DevelopmentProcess/NewFeaturesPlan_ExternalApiTestPlan.md) 規劃。底層直接重用與 `POST /api/rag/chat`（§3.1）完全相同的檢索/摘要/串流管線（`rag_chat_stream()`），因此 Request Body、Response SSE 事件格式與 §3.1 完全一致，差異僅有以下兩點：
+### 3.4 POST `/api/external/chat` — 外部應用對話（SSE 串流）【2026-07-17 新增，同日新增驗證機制】
+**描述**：供公司內網外部應用串接使用的獨立端點，實作依 [NewFeaturesPlan_ExternalApiTestPlan.md](DevelopmentProcess/NewFeaturesPlan_ExternalApiTestPlan.md) 規劃。底層直接重用與 `POST /api/rag/chat`（§3.1）完全相同的檢索/摘要/串流管線（`rag_chat_stream()`），因此 Response SSE 事件格式與 §3.1 完全一致；Request Body 差異如下：
 
-1. **不需要 `Authorization` 標頭**——此端點目前未掛 `Depends(get_current_user)`，僅能依賴公司內網存取限制把關，尚無 API Key 或其他驗證機制。
+1. **需要 `X-API-Key` 標頭**——此端點掛 `Depends(verify_external_api_key)`，與內部登入使用者的 JWT（`Authorization: Bearer`）各自獨立、不共用。金鑰於「角色與權限設定」頁（`/role-settings`）建立，見 §17.3。未帶或無效金鑰回傳 401。
 2. **`params` 內多一個選填欄位 `custom_system_prompt`**：若有帶入（去除頭尾空白後非空字串），會完全取代預設 System Prompt 的指示規則文字（含引用格式規則等）；檢索到的參考資料仍由後端自動接續在其後方。若 `knowledge_base_id` 為空（未檢索任何資料）且有帶 `custom_system_prompt`，回答會直接依這段文字生成，不會被強制接上「知識庫沒有相關資訊」的預設警語，可用於不掛知識庫的純 Prompt／LLM 行為測試；若 `knowledge_base_id` 有值但本次檢索結果為空或全數低於 `ai_summary_score_threshold`，仍會維持既有防幻覺機制提前回傳固定提示訊息、不呼叫 LLM，不受 `custom_system_prompt` 影響。留空則行為與 `/api/rag/chat` 完全相同。
+3. **`params.external_user`（必填）取代 `params.simulated_user_id`**：外部應用需帶入實際員工身分，缺少時回傳 400。格式：
+   ```json
+   {
+     "employee_id": "string (工號)",
+     "name": "string (姓名)",
+     "department_code": "string (部門代號，用於機密文件部門限制比對)",
+     "department_name": "string (部門名稱，僅供排除說明文字顯示)",
+     "job_title_name": "string (級職名稱，僅供排除說明文字顯示)",
+     "job_title_level": "int (級職等級 1~10，數字越小權限越高；由呼叫端直接信任帶入，後端不重新換算)"
+   }
+   ```
+   後端將其轉換為與內部「模擬使用者」相同形狀的物件，套用同一套機密權限過濾邏輯（`PermissionService.filter_results()`）；不會落地寫入 `users` collection（那是內部測試名冊專用）。`department_code` 比對邏輯與既有 `confidential_departments`（可能混雜部門名稱與代號）採雙軌相容，見 [04_DB_SCHEMA.md §4.2](04_DB_SCHEMA.md) 說明。
+4. **問答稽核紀錄**：每次呼叫（含正常結束與中途斷線）都會非同步寫入一筆 `external_chat_logs`（見 [04_DB_SCHEMA.md §3.18](04_DB_SCHEMA.md)），記錄呼叫端身分、問題、回答與精簡來源中繼資料；稽核寫入為 best-effort，失敗不影響本次對話回應。
 
 前端「外部 API 測試」頁（`/external-api-test`）提供組合此 JSON 的表單與即時預覽，供實際串接前參考。
 
@@ -729,27 +742,28 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
 
 ---
 
-## 17. 角色與權限管理 API (Users & Departments)【新增，2026-07-16】
+## 17. 角色與權限管理 API (Users & Departments)【2026-07-16 新增，2026-07-17 新增部門代號欄位】
 
 ### 17.1 GET `/api/users/departments` — 取得部門清單
 **Response 200**：
 ```json
 [
-  { "id": "660000000000000000000001", "name": "研發部" },
-  { "id": "660000000000000000000002", "name": "人資部" }
+  { "id": "660000000000000000000001", "name": "研發部", "code": "RD" },
+  { "id": "660000000000000000000002", "name": "人資部", "code": "HR" }
 ]
 ```
+`code`（部門代號，2026-07-17 新增，建立時必填，回應為 `string | null`）：供外部應用真實使用者資訊（`external_user.department_code`，見 §3.4）與機密文件 `confidential_departments` 比對使用。既有（此欄位新增前建立）的部門 `code` 會是 `null`——目前沒有編輯部門的 API，只能刪除後帶入代號重建；相關比對邏輯已對 `null` 做雙軌相容（退回以名稱比對），見 [04_DB_SCHEMA.md §3.15](04_DB_SCHEMA.md)。
 
 ### 17.2 POST `/api/users/departments` — 新增部門
 **Request Body**：
 ```json
-{ "name": "研發部" }
+{ "name": "研發部", "code": "RD" }
 ```
 **Response 200**：
 ```json
-{ "id": "660000000000000000000001", "name": "研發部" }
+{ "id": "660000000000000000000001", "name": "研發部", "code": "RD" }
 ```
-錯誤：`400` 部門已存在。
+錯誤：`400` 部門名稱不能為空、部門代號不能為空、部門名稱已存在、或部門代號已存在。
 
 ### 17.3 DELETE `/api/users/departments/{dept_id}` — 刪除部門
 **Response 200**：
@@ -766,12 +780,14 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
     "id": "660000000000000000000001",
     "name": "王小明",
     "department": "研發部",
+    "department_code": "RD",
     "job_title": "經理",
     "level": 6,
     "created_at": "2026-07-16T10:00:00Z"
   }
 ]
 ```
+`department_code`（2026-07-17 新增，`string | null`）：建立時自動從 `department` 對應的部門連動帶出；若找不到對應部門則為 `null`。
 
 ### 17.5 POST `/api/users` — 新增模擬使用者
 **Request Body**：
@@ -789,6 +805,7 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
   "id": "660000000000000000000001",
   "name": "王小明",
   "department": "研發部",
+  "department_code": "RD",
   "job_title": "經理",
   "level": 6,
   "created_at": "2026-07-16T10:00:00Z"
@@ -899,6 +916,54 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
   "knowledge_base_name": "預設知識庫"
 }
 ```
+
+---
+
+## 19. 外部 API 金鑰管理 API (External API Keys)【新增，2026-07-17】
+
+給內部管理者建立／管理 §3.4 `/api/external/chat` 所需 `X-API-Key` 的後台端點，**沿用 `get_current_user` JWT 保護**，與外部呼叫端使用的 `verify_external_api_key` 是兩套不同機制，不要混淆。前端管理介面掛在「角色與權限設定」頁（`/role-settings`）新增的「外部 API 金鑰管理」區塊。
+
+### 19.1 GET `/api/external-api-keys` — 取得金鑰清單
+**Response 200**：
+```json
+[
+  {
+    "id": "660000000000000000000010",
+    "name": "HR 入口網站",
+    "key_prefix": "iizdIkE5KSio",
+    "is_active": true,
+    "created_at": "2026-07-17T10:00:00Z",
+    "last_used_at": null
+  }
+]
+```
+不含 `key_hash` 或完整金鑰明碼。
+
+### 19.2 POST `/api/external-api-keys` — 建立新金鑰
+**Request Body**：
+```json
+{ "name": "HR 入口網站" }
+```
+**Response 201**：
+```json
+{
+  "id": "660000000000000000000010",
+  "name": "HR 入口網站",
+  "key_prefix": "iizdIkE5KSio",
+  "is_active": true,
+  "created_at": "2026-07-17T10:00:00Z",
+  "last_used_at": null,
+  "api_key": "iizdIkE5KSioXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+}
+```
+`api_key` 為完整金鑰明碼，**僅在此次回應回傳一次**，資料庫僅存 `key_prefix`（前 12 碼明碼，供索引查找）與 `key_hash`（bcrypt hash），之後無法再次取得，只能刪除後重新建立。錯誤：`400` 名稱不能為空。
+
+### 19.3 DELETE `/api/external-api-keys/{key_id}` — 刪除金鑰
+**Response 200**：
+```json
+{ "message": "已成功刪除金鑰 'HR 入口網站'" }
+```
+刪除後該金鑰立即失效。錯誤：`404` 金鑰不存在、`400` 無效的金鑰 ID 格式。
 
 
 
