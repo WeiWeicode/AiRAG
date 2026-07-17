@@ -5,7 +5,12 @@ import { useParamsStore } from '../../stores/paramsStore'
 import MessageBubble from './MessageBubble.vue'
 import FeedbackPanel from './FeedbackPanel.vue'
 
-const chatStore = useChatStore()
+// 可注入其他頁面自己的對話 store（例如外部 API 測試頁的 externalChatStore），
+// 未傳入時預設沿用內部 RAG 功能測試頁的 chatStore，維持既有行為不變
+const props = defineProps({
+  store: { type: Object, default: null }
+})
+const chatStore = props.store || useChatStore()
 
 const inputMessage = ref('')
 const messageContainer = ref(null)

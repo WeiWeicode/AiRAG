@@ -1,5 +1,28 @@
 <!-- 前端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-17 外部 API 測試頁面 (External API Test) 前端實作
+
+### 背景
+依據 [`NewFeaturesPlan_ExternalApiTestPlan.md`](NewFeaturesPlan_ExternalApiTestPlan.md) 規劃實作。新增「外部 API 測試」頁面，重用「RAG 功能測試」既有的檢索/生成參數表單，額外提供自訂總結提示詞與即時 API JSON 預覽，送出後沿用同一套對話視窗查看 SSE 處理過程。
+
+### 變更內容
+- `frontend/src/composables/useChatStream.js`（新檔）：從 `chatStore.js` 抽出 fetch + SSE 事件（`step`/`chunk`/`sources`/`message`）解析邏輯，改吃 `{ endpoint, headers, payload, messages, assistantMessageId, setLoading }` 參數，供內部與外部對話 store 共用，避免同一段複雜邏輯維護兩份。
+- `frontend/src/stores/chatStore.js`：`_streamChat()` 改為組好 payload 後呼叫 `streamChat()`，移除原本內嵌的 fetch/SSE 解析程式碼（純重構，行為不變）。
+- `frontend/src/stores/paramsStore.js`：新增 `customSystemPrompt: ''` 欄位（內部 RAG 測試頁 payload 組裝本來就不會讀取，不影響既有行為）。
+- `frontend/src/stores/externalChatStore.js`（新檔）：獨立於 `chatStore.js` 的對話狀態（`messages`/`isLoading`），實作 `sendQuestion()`/`clearMessages()`/`selectDbQueryProfile()` 三個同名介面；並匯出 `buildExternalChatPayload()` 純函式（供 `ApiJsonPreviewPanel.vue` 共用同一份 payload 組裝邏輯，避免預覽與實際送出各自組一次造成不一致）。`_streamChat()` 呼叫 `POST /api/external/chat`，不帶 `Authorization` 標頭。
+- `frontend/src/components/chat/ChatWindow.vue`：新增可選 `store` prop（`const chatStore = props.store || useChatStore()`），元件內原有 6 處 `chatStore.*` 引用（取得 store、`isLoading`×3、`messages`、`clearMessages()`、`selectDbQueryProfile()`）皆自動改讀取注入的 store，模板與其餘邏輯不變。
+- `frontend/src/components/params/CustomSystemPromptPanel.vue`（新檔）：自訂總結提示詞 `<textarea>`，`v-model="paramsStore.customSystemPrompt"`，留空則使用系統預設模板，僅放在外部 API 測試頁（未加進共用的 `LlmParamsPanel.vue`）。
+- `frontend/src/components/params/ApiJsonPreviewPanel.vue`（新檔）：顯示端點網址、Headers 說明、即時組出的 Request JSON（含複製按鈕）與逐欄位白話說明，供未來提供給外部應用開發者參考。
+- `frontend/src/views/ExternalApiTestView.vue`（新檔）：版面比照 `RagTestView.vue`，左側 `ChatWindow`（注入 `externalChatStore`）、右側依序排列 `RagParamsPanel`／`LlmParamsPanel`／`CustomSystemPromptPanel`／`ApiJsonPreviewPanel`。
+- `frontend/src/router/index.js`：新增 `/external-api-test` 路由（`meta: { requiresAuth: true }`，此測試工具頁仍需登入內部系統才能使用）。
+- `frontend/src/components/common/AppSidebar.vue`：新增「外部 API 測試 (External API)」導覽項目。
+
+### 驗證
+- `npm run build` 通過，無編譯錯誤。
+- 尚待使用者於瀏覽器手動驗證實際對話流程、JSON 預覽內容與複製功能（依專案慣例不由 AI 開瀏覽器驗證）。
+
+---
+
 ## 2026-07-16 手動建立與選擇 Qdrant 知識庫 (Knowledge Base / Collections) 實作
 
 ### 背景

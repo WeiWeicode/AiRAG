@@ -1,5 +1,24 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-17 外部 API 測試頁面 (External API Test) 後端實作
+
+### 背景
+依據 [`NewFeaturesPlan_ExternalApiTestPlan.md`](NewFeaturesPlan_ExternalApiTestPlan.md) 規劃實作。新增獨立於內部測試 API 的外部端點，供公司內網外部應用未來串接，並支援自訂總結提示詞。
+
+### 變更內容
+- `backend/routers/external.py`（新檔）：新增 `POST /api/external/chat`，`APIRouter(prefix="/external")` 未掛 `Depends(get_current_user)`（依規劃決策，暫不驗證，僅限公司內網存取把關）。直接 import 並重用 `routers.rag` 現有的 `ChatRequest` schema 與 `rag_chat_stream()` async generator，未複製檢索/摘要/串流管線邏輯。
+- `backend/routers/rag.py`：
+  - `ChatParams` 新增 `custom_system_prompt: Optional[str] = None`。
+  - `rag_chat_stream()` 新增區域變數擷取（去除頭尾空白後為空字串視同未帶）。
+  - 三處組裝 `system_prompt` 的分支（`semantic_db_query` 分支／一般 `context_str` 分支／無資料 `else` 分支）皆改為：有帶 `custom_system_prompt` 時完全取代預設的指示規則文字，檢索到的參考資料（或資料庫查詢結果）仍由後端接續附加在後方；`else` 分支（無知識庫／無檢索資料）額外處理為若有帶入則直接等於 `custom_system_prompt`，不再強制接上「知識庫沒有相關資訊」警語，可用於純 Prompt／LLM 行為測試。未帶此欄位時三處皆完全維持原本預設文字，`/api/rag/chat` 行為不受影響。
+- `backend/main.py`：`routers` import 新增 `external`，並註冊 `app.include_router(external.router, prefix="/api")`。
+
+### 驗證
+- `python -m py_compile routers/rag.py routers/external.py main.py` 通過。
+- 以 venv Python 執行 `import routers.external`／`routers.rag`，確認 `'custom_system_prompt' in rag.ChatParams.model_fields` 為 `True`，且 `external.router` 路由為 `POST /external/chat`。
+
+---
+
 ## 2026-07-16 手動建立與選擇 Qdrant 知識庫 (Knowledge Base / Collections) 實作
 
 ### 背景

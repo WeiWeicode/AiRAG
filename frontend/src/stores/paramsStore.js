@@ -40,6 +40,9 @@ export const useParamsStore = defineStore('params', {
     temperature: 0.3,
     maxTokens: 22768,
 
+    // 自訂總結提示詞（外部 API 測試頁專用），留空則使用後端預設模板
+    customSystemPrompt: '',
+
     // Chunking / Embedding parameters
     chunkSize: 512,
     chunkOverlap: 50,

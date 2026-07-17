@@ -4,9 +4,9 @@
 * **專案名稱**：AiRAG 內部測試平台
 * **文件版本**：V 1.6（依實際程式碼校正）
 * **建立日期**：2026-06-18
-* **更新日期**：2026-07-08（補齊 §3.1 sources 圖片相關 metadata 欄位，並記錄 2026-07-08 Context 組裝與圖片 token 統計修正）
+* **更新日期**：2026-07-17（新增 §3.4 `/api/external/chat` 外部應用端點）
 * **Base URL**：`http://<host>:8000/api`
-* **認證方式**：JWT Bearer Token（除 `/api/auth/login` 外，所有 API 皆掛載於各 router 的 `Depends(get_current_user)`，須帶 `Authorization: Bearer <token>`）
+* **認證方式**：JWT Bearer Token（除 `/api/auth/login` 與 `/api/external/chat`（§3.4，供外部應用串接、暫無驗證機制）外，所有 API 皆掛載於各 router 的 `Depends(get_current_user)`，須帶 `Authorization: Bearer <token>`）
 
 > 本版本已對照 `backend/routers/`、`backend/schemas/` 實際程式碼逐一校正欄位名稱、回應格式與端點清單。凡標記 **[Stub]** 者代表該端點目前為未完整實作的樁函式（stub），呼叫會成功但不執行真正的業務邏輯，請勿依賴其結果。
 
@@ -128,6 +128,14 @@
 
 ### 3.3 DELETE `/api/rag/history/{session_id}` — 刪除對話 **[Stub]**
 固定回傳 `{"message": "刪除成功"}`，不執行任何刪除操作。
+
+### 3.4 POST `/api/external/chat` — 外部應用對話（SSE 串流）【新增，2026-07-17】
+**描述**：供公司內網外部應用串接使用的獨立端點，實作依 [NewFeaturesPlan_ExternalApiTestPlan.md](DevelopmentProcess/NewFeaturesPlan_ExternalApiTestPlan.md) 規劃。底層直接重用與 `POST /api/rag/chat`（§3.1）完全相同的檢索/摘要/串流管線（`rag_chat_stream()`），因此 Request Body、Response SSE 事件格式與 §3.1 完全一致，差異僅有以下兩點：
+
+1. **不需要 `Authorization` 標頭**——此端點目前未掛 `Depends(get_current_user)`，僅能依賴公司內網存取限制把關，尚無 API Key 或其他驗證機制。
+2. **`params` 內多一個選填欄位 `custom_system_prompt`**：若有帶入（去除頭尾空白後非空字串），會完全取代預設 System Prompt 的指示規則文字（含引用格式規則等）；檢索到的參考資料仍由後端自動接續在其後方。若 `knowledge_base_id` 為空（未檢索任何資料）且有帶 `custom_system_prompt`，回答會直接依這段文字生成，不會被強制接上「知識庫沒有相關資訊」的預設警語，可用於不掛知識庫的純 Prompt／LLM 行為測試；若 `knowledge_base_id` 有值但本次檢索結果為空或全數低於 `ai_summary_score_threshold`，仍會維持既有防幻覺機制提前回傳固定提示訊息、不呼叫 LLM，不受 `custom_system_prompt` 影響。留空則行為與 `/api/rag/chat` 完全相同。
+
+前端「外部 API 測試」頁（`/external-api-test`）提供組合此 JSON 的表單與即時預覽，供實際串接前參考。
 
 ---
 

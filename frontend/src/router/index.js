@@ -4,6 +4,7 @@ import { useAuthStore } from '../stores/authStore'
 import LoginView from '../views/LoginView.vue'
 import DashboardView from '../views/DashboardView.vue'
 import RagTestView from '../views/RagTestView.vue'
+import ExternalApiTestView from '../views/ExternalApiTestView.vue'
 import RetrievalTestView from '../views/RetrievalTestView.vue'
 import EvaluationView from '../views/EvaluationView.vue'
 import PromptTestView from '../views/PromptTestView.vue'
@@ -33,6 +34,12 @@ const routes = [
     path: '/rag-test',
     name: 'RagTest',
     component: RagTestView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/external-api-test',
+    name: 'ExternalApiTest',
+    component: ExternalApiTestView,
     meta: { requiresAuth: true }
   },
   {

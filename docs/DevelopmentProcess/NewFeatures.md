@@ -1,5 +1,34 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-17 外部 API 測試頁面 (External API Test) 實作完成
+
+### 背景
+依規劃文件 [NewFeaturesPlan_ExternalApiTestPlan.md](NewFeaturesPlan_ExternalApiTestPlan.md) 實作。提供獨立於內部測試 API 的外部端點 `POST /api/external/chat`，供公司內網外部應用未來串接使用；並新增前端「外部 API 測試」頁，讓使用者用與「RAG 功能測試」相同的檢索/生成參數表單組出 Request JSON、即時預覽並附上逐欄位說明，同時可額外自訂「總結提示詞」，送出後在同一頁面對話視窗查看完整 SSE 處理過程。
+
+### 變更內容
+- **後端 (`backend/routers/`)**：
+  - `external.py`（新檔）：新增 `POST /api/external/chat`，未掛 `Depends(get_current_user)`，直接重用 `rag.py` 既有的 `ChatRequest` schema 與 `rag_chat_stream()` 管線，避免複製一份檢索/摘要/串流邏輯。
+  - `rag.py`：`ChatParams` 新增 `custom_system_prompt` 選填欄位；`rag_chat_stream()` 三處 System Prompt 組裝分支（`semantic_db_query`／一般參考資料／無資料）皆支援以此欄位覆蓋預設指示規則文字，檢索到的參考資料仍由後端自動接續在後方；未帶知識庫且有帶此欄位時不再強制接上「知識庫沒有相關資訊」警語，可用於純 Prompt／LLM 行為測試。
+  - `main.py`：註冊 `external.router`。
+- **前端 (`frontend/src/`)**：
+  - `composables/useChatStream.js`（新檔）：從 `chatStore.js` 抽出共用的 fetch + SSE 事件解析邏輯，供內部與外部兩個對話 store 共用。
+  - `stores/externalChatStore.js`（新檔）：獨立於 `chatStore.js` 的對話狀態，呼叫 `/api/external/chat`（不帶 `Authorization` 標頭），並匯出 `buildExternalChatPayload()` 供 JSON 預覽元件共用同一份 payload 組裝邏輯。
+  - `stores/chatStore.js`：改呼叫抽出後的 `useChatStream.js`（純重構，行為不變）。
+  - `stores/paramsStore.js`：新增 `customSystemPrompt` 欄位。
+  - `components/chat/ChatWindow.vue`：新增可選 `store` prop，未傳入時預設沿用 `useChatStore()`，供外部頁面注入 `externalChatStore`。
+  - `components/params/CustomSystemPromptPanel.vue`（新檔）：自訂總結提示詞輸入框。
+  - `components/params/ApiJsonPreviewPanel.vue`（新檔）：即時組出 Request JSON、逐欄位白話說明與複製按鈕。
+  - `views/ExternalApiTestView.vue`（新檔）：組裝對話視窗與四個參數面板。
+  - `router/index.js` / `components/common/AppSidebar.vue`：新增 `/external-api-test` 路由與導覽選單項目。
+- **文件與紀錄**：
+  - 更新 `docs/03_API_CONTRACT.md`（§1 認證方式說明、§3.4 新增端點條目）。
+  - 記錄於 `BackendCorrection.md` 與 `FrontendCorrection.md`。
+
+### 驗證
+- 後端：`py_compile` 通過；以 venv Python 實際 import `routers.external`／`routers.rag` 確認 `custom_system_prompt` 欄位存在且 `POST /external/chat` 路由正確註冊。
+- 前端：`npm run build` 通過，無編譯錯誤。
+- 尚待使用者於瀏覽器手動驗證實際對話流程與 JSON 預覽畫面（依專案慣例不由 AI 開瀏覽器驗證）。
+
 ## 2026-07-16 文件機密權限控管 (Confidential Document Access Control) 實作完成
 
 ### 背景

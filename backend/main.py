@@ -21,7 +21,8 @@ from routers import (
     ai_db_query,
     attachment,
     dashboard,
-    users
+    users,
+    external
 )
 
 # 設定日誌
@@ -73,6 +74,7 @@ app.include_router(ai_db_query.router, prefix="/api")
 app.include_router(attachment.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
+app.include_router(external.router, prefix="/api")
 
 @app.get("/health")
 async def health_check():

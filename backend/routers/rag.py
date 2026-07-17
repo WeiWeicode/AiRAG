@@ -42,6 +42,7 @@ class ChatParams(BaseModel):
     history_context_turns: Optional[int] = None
     pinned_filename: Optional[str] = None
     simulated_user_id: Optional[str] = None
+    custom_system_prompt: Optional[str] = None
 
 class ChatRequest(BaseModel):
     question: str
@@ -243,6 +244,7 @@ async def rag_chat_stream(request: ChatRequest):
     read_attachment_content = False
     history_context_turns = settings.SEMANTIC_JSON_HISTORY_TURNS
     pinned_filename_param = None
+    custom_system_prompt = None
 
     if request.params:
         if request.params.temperature is not None:
@@ -271,6 +273,8 @@ async def rag_chat_stream(request: ChatRequest):
             history_context_turns = request.params.history_context_turns
         if request.params.pinned_filename is not None:
             pinned_filename_param = request.params.pinned_filename
+        if request.params.custom_system_prompt is not None and request.params.custom_system_prompt.strip():
+            custom_system_prompt = request.params.custom_system_prompt.strip()
 
     sources = []
     attachments_to_send = []
@@ -737,46 +741,58 @@ async def rag_chat_stream(request: ChatRequest):
 
     # 2. 構建 System Prompt 與 Messages
     if search_type == "semantic_db_query" and context_str:
-        # 語義資料庫查詢法專用總結 Prompt：內容是資料庫查詢結果（非文件段落），不需要段落引用格式，
-        # 避免既有文件引用格式的規則誤導模型過度保守地判定「查無相關資訊」。
-        system_prompt = (
-            "你是一個專業的資料庫問答助理。以下「資料庫查詢結果」是依照使用者問題實際從資料庫執行 SQL 查詢後取得的真實資料，"
-            "請直接根據這些資料回答使用者的問題。\n"
-            "規則：\n"
-            "1. 只要查詢結果中有任何一筆資料合理對應使用者問題描述的對象（即使欄位用詞與使用者問法不完全一致），就應該根據該筆資料直接回答，不要因為用詞不完全相同就判定無關。\n"
-            "2. 只有在查詢結果完全是空的、或所有資料列明顯都與問題無關時，才回答『知識庫沒有相關資訊。』，不要編造查詢結果中沒有的內容。\n"
-            "3. 保持回答清晰、專業且符合邏輯，可視需要簡述用了哪張表格或欄位得出結論。\n\n"
-            f"【資料庫查詢結果】\n{context_str}"
-        )
+        if custom_system_prompt:
+            # 外部 API 客製化總結提示詞：完全取代預設的指示規則文字，資料庫查詢結果仍由後端接續附加
+            system_prompt = f"{custom_system_prompt}\n\n【資料庫查詢結果】\n{context_str}"
+        else:
+            # 語義資料庫查詢法專用總結 Prompt：內容是資料庫查詢結果（非文件段落），不需要段落引用格式，
+            # 避免既有文件引用格式的規則誤導模型過度保守地判定「查無相關資訊」。
+            system_prompt = (
+                "你是一個專業的資料庫問答助理。以下「資料庫查詢結果」是依照使用者問題實際從資料庫執行 SQL 查詢後取得的真實資料，"
+                "請直接根據這些資料回答使用者的問題。\n"
+                "規則：\n"
+                "1. 只要查詢結果中有任何一筆資料合理對應使用者問題描述的對象（即使欄位用詞與使用者問法不完全一致），就應該根據該筆資料直接回答，不要因為用詞不完全相同就判定無關。\n"
+                "2. 只有在查詢結果完全是空的、或所有資料列明顯都與問題無關時，才回答『知識庫沒有相關資訊。』，不要編造查詢結果中沒有的內容。\n"
+                "3. 保持回答清晰、專業且符合邏輯，可視需要簡述用了哪張表格或欄位得出結論。\n\n"
+                f"【資料庫查詢結果】\n{context_str}"
+            )
     elif context_str:
-        # 圖片攤平後可能有多張圖片各自的獨立描述被塞進 context_str，用 [圖片描述] 標記出現次數
-        # 判斷是否為多圖情境，只有在確實有多張圖片時才額外提醒模型逐一交代每張圖片，避免這條規則
-        # 影響一般大 top_k 純文字問答（大量段落彼此重複/僅次要佐證時，仍應允許模型自行摘要整合）。
-        multi_image_note = (
-            "5. 若參考資料中出現多筆各自描述不同「圖片」的內容（標記為 [圖片描述]，通常是同一份文件、"
-            "同一段落區塊底下的多張圖片各自的描述），代表每一張圖片提供的資訊都不相同。請針對每一張圖片"
-            "逐一說明或至少提及其重點內容，並各自標註其段落編號，不要只挑其中一張圖片作為代表、略過其餘"
-            "圖片的描述；但如果使用者的問題明顯只與特定幾張圖片有關，則只需聚焦於相關的那幾張即可。\n"
-            if context_str.count("[圖片描述]") >= 2 else ""
-        )
-        system_prompt = (
-            "你是一個專業的 RAG 智慧對話助理。請根據以下提供的「參考資料」回答使用者的問題。\n"
-            "規則：\n"
-            "1. 儘量使用參考資料中的資訊來回答。\n"
-            "2. 如果參考資料不足以回答問題，請直接回答『知識庫沒有相關資訊。』，絕對不要使用你的既有知識回答，也不要編造任何內容。\n"
-            "3. 保持回答清晰、專業且符合邏輯。\n"
-            "4. 回答時，必須明確在回答的開頭或結尾指出你是參考了哪些文檔引用段落，格式範例：\n"
-            "   「依據 [文件名] 段落: #段落編號 做出以下結論：」或是「（參考來源：[文件名] 段落: #段落編號）」\n"
-            "   若是引用多個段落，請使用頓號（、）或逗號分隔，例如：「依據[知識庫操作說明.md] 段落: #43、[知識庫操作說明.md] 段落: #45、[知識庫操作說明.md] 段落: #10 做出以下結論：」\n"
-            "   以上範例僅為引用格式示範，並非引用數量上限：請如實列出你在回答中實際用到的所有段落編號，"
-            "可能只有 1、2 筆，也可能有 10 筆以上，數量沒有固定上限，不要為了精簡而省略其他同樣被你實際引用的段落。\n"
-            f"{multi_image_note}\n"
-            f"【參考資料】\n{context_str}"
-        )
+        if custom_system_prompt:
+            # 外部 API 客製化總結提示詞：完全取代預設的指示規則文字（含引用格式規則），參考資料仍由後端接續附加
+            system_prompt = f"{custom_system_prompt}\n\n【參考資料】\n{context_str}"
+        else:
+            # 圖片攤平後可能有多張圖片各自的獨立描述被塞進 context_str，用 [圖片描述] 標記出現次數
+            # 判斷是否為多圖情境，只有在確實有多張圖片時才額外提醒模型逐一交代每張圖片，避免這條規則
+            # 影響一般大 top_k 純文字問答（大量段落彼此重複/僅次要佐證時，仍應允許模型自行摘要整合）。
+            multi_image_note = (
+                "5. 若參考資料中出現多筆各自描述不同「圖片」的內容（標記為 [圖片描述]，通常是同一份文件、"
+                "同一段落區塊底下的多張圖片各自的描述），代表每一張圖片提供的資訊都不相同。請針對每一張圖片"
+                "逐一說明或至少提及其重點內容，並各自標註其段落編號，不要只挑其中一張圖片作為代表、略過其餘"
+                "圖片的描述；但如果使用者的問題明顯只與特定幾張圖片有關，則只需聚焦於相關的那幾張即可。\n"
+                if context_str.count("[圖片描述]") >= 2 else ""
+            )
+            system_prompt = (
+                "你是一個專業的 RAG 智慧對話助理。請根據以下提供的「參考資料」回答使用者的問題。\n"
+                "規則：\n"
+                "1. 儘量使用參考資料中的資訊來回答。\n"
+                "2. 如果參考資料不足以回答問題，請直接回答『知識庫沒有相關資訊。』，絕對不要使用你的既有知識回答，也不要編造任何內容。\n"
+                "3. 保持回答清晰、專業且符合邏輯。\n"
+                "4. 回答時，必須明確在回答的開頭或結尾指出你是參考了哪些文檔引用段落，格式範例：\n"
+                "   「依據 [文件名] 段落: #段落編號 做出以下結論：」或是「（參考來源：[文件名] 段落: #段落編號）」\n"
+                "   若是引用多個段落，請使用頓號（、）或逗號分隔，例如：「依據[知識庫操作說明.md] 段落: #43、[知識庫操作說明.md] 段落: #45、[知識庫操作說明.md] 段落: #10 做出以下結論：」\n"
+                "   以上範例僅為引用格式示範，並非引用數量上限：請如實列出你在回答中實際用到的所有段落編號，"
+                "可能只有 1、2 筆，也可能有 10 筆以上，數量沒有固定上限，不要為了精簡而省略其他同樣被你實際引用的段落。\n"
+                f"{multi_image_note}\n"
+                f"【參考資料】\n{context_str}"
+            )
     else:
-        system_prompt = (
-            "你是一個專業的 RAG 智慧對話助理。由於目前沒有提供任何參考資料，請直接回答『知識庫沒有相關資訊。』，絕對不要回答其他內容。"
-        )
+        if custom_system_prompt:
+            # 無知識庫／無檢索資料時，若有帶自訂提示詞，直接使用（供純 Prompt/LLM 行為測試，不強制接上「知識庫沒有相關資訊」警語）
+            system_prompt = custom_system_prompt
+        else:
+            system_prompt = (
+                "你是一個專業的 RAG 智慧對話助理。由於目前沒有提供任何參考資料，請直接回答『知識庫沒有相關資訊。』，絕對不要回答其他內容。"
+            )
 
     messages = [{"role": "system", "content": system_prompt}]
     
