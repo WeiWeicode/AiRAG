@@ -1,5 +1,24 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-22 後端支援 Qdrant API Key 安全認證與多應用連線配置
+
+### 背景
+為支援外部不同應用程式（如微服務、批次腳本等）直接連線至 Qdrant 向量資料庫進行資料寫入與查詢，同時強化系統資料庫之存取安全性，於 Docker 環境與後端服務中引入了 Qdrant API Key 認證機制。
+
+### 變更內容
+- **環境設定 (`docker-compose.yml` & `backend/.env`)**：
+  - `docker-compose.yml` 中的 `qdrant` 服務新增環境變數 `QDRANT__SERVICE__API_KEY`，開啟 Qdrant 服務端 API Key 防護。
+  - `docker-compose.yml` 中的 `backend` 服務與 `backend/.env` 新增 `QDRANT_API_KEY` 環境變數傳遞。
+- **後端架構 (`backend/config.py` & `backend/services/qdrant_service.py`)**：
+  - `backend/config.py` 中的 `Settings` 新增 `QDRANT_API_KEY: Optional[str]` 設定項。
+  - `backend/services/qdrant_service.py` 於 `AsyncQdrantClient` 連線初始化時帶入 `api_key=settings.QDRANT_API_KEY` 與 `https=False` 參數，保證後端能帶著憑證並經由 HTTP 協議穩定連線至 Qdrant。
+
+### 驗證
+- 驗證 Qdrant API Key 安全機制：未帶 Key 存取 REST API 均回傳 `401 Unauthorized`；攜帶 Header `api-key` 後可正常存取。
+- `airag-backend` 容器重新編譯並啟動後，與 Qdrant 之間建立 Collection、點位寫入與向量檢索操作皆保持正常連線。
+
+---
+
 ## 2026-07-17 外部 API 真實使用者身分、問答稽核紀錄、API Key 驗證機制實作完成
 
 ### 背景

@@ -1,5 +1,32 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-07-22 Qdrant 啟用 API Key 時 AsyncQdrantClient 誤用 HTTPS 導致 SSL 握手失敗修正
+
+### 背景
+為支援多應用存取與提升安全性，於 `docker-compose.yml` 中為 Qdrant 服務啟用 `QDRANT__SERVICE__API_KEY` 認證。設定後，前端「知識庫管理」無法建立知識庫 Collection（報錯：「無法在向量資料庫中建立對應的知識集合」），且「自訂資料向量化」無法讀取 Collection metadata。
+檢視 `airag-backend` 容器日誌發現錯誤：
+```text
+[ERROR] airag.qdrant: Failed to create Qdrant collection '...': [SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1016)
+```
+原因：Python 官方 `qdrant-client` SDK 存在預設特性，當連線參數包含 `api_key` 且未指定 `https` 時，SDK 會預設開啟 `https=True`。因 Docker 容器內部 Qdrant (埠 6333) 為 HTTP 協定，後端發送 HTTPS 握手給 HTTP 服務導致 SSL 協定版本錯誤，進而使所有 Qdrant 操作失效。
+
+### 變更內容
+1. `docker-compose.yml`：
+   - `qdrant` 服務新增環境變數 `QDRANT__SERVICE__API_KEY`。
+   - `backend` 服務環境變數同步新增 `QDRANT_API_KEY` 傳遞金鑰。
+2. `backend/.env`：新增 `QDRANT_API_KEY` 環境變數。
+3. `backend/config.py`：新增 `QDRANT_API_KEY: Optional[str] = os.getenv("QDRANT_API_KEY", None)` 支援讀取金鑰。
+4. `backend/services/qdrant_service.py`：
+   - 初始化 `AsyncQdrantClient` 時帶入 `api_key=settings.QDRANT_API_KEY`。
+   - **關鍵修正**：明確加上 `https=False` 參數，強制連線採用 HTTP 協定，防止 SDK 因設定 `api_key` 誤啟用 HTTPS 導致 SSL 握手失敗。
+
+### 驗證
+- 執行 `docker-compose up -d --build backend` 重新編譯並啟動後端容器。
+- 檢視 `airag-backend` 容器日誌，`SSL: WRONG_VERSION_NUMBER` 錯誤訊息已消失。
+- 前端「知識庫管理」建立 Collection 及「自訂資料向量化」檢索功能已恢復正常運作。
+
+---
+
 ## 2026-07-17 `Department.code` 新增唯一索引導致既有部署啟動失敗修正
 
 ### 背景

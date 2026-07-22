@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from dotenv import load_dotenv
 
 # 載入 .env 檔案
@@ -29,6 +30,7 @@ class Settings:
     # Qdrant
     QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
     QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))
+    QDRANT_API_KEY: Optional[str] = os.getenv("QDRANT_API_KEY", None)
 
     # MongoDB
     MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb://localhost:27017")

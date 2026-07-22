@@ -16,8 +16,13 @@ class QdrantService:
     @classmethod
     def get_client(cls) -> AsyncQdrantClient:
         if cls._client is None:
-            # 建立非同步 Qdrant 客戶端連線
-            cls._client = AsyncQdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
+            # 建立非同步 Qdrant 客戶端連線（預設為 HTTP，停用 SSL 以免帶入 api_key 時誤啟用 https）
+            cls._client = AsyncQdrantClient(
+                host=settings.QDRANT_HOST,
+                port=settings.QDRANT_PORT,
+                api_key=settings.QDRANT_API_KEY,
+                https=False
+            )
         return cls._client
 
     @classmethod
