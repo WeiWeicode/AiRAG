@@ -11,6 +11,8 @@ db.sqlite3
 *.njsproj
 *.sln
 *.sw?
+.agents/
+.claude/
 
 # Python (Backend)
 __pycache__/
