@@ -36,6 +36,10 @@ class Settings:
     MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
     MONGODB_DATABASE: str = os.getenv("MONGODB_DATABASE", "airag")
 
+    # Redis (arq 背景佇列，供多應用 RAG 同步 ingest 任務使用，見 MULTI_APP_RAG_SYNC_PLAN.md 5.1 節第 7 點)
+    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+
     # SQL Server (唯讀連線字串)
     SQLSERVER_CONNECTION_STRING: str = os.getenv("SQLSERVER_CONNECTION_STRING", "")
 

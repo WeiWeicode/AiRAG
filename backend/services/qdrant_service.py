@@ -522,7 +522,17 @@ class QdrantService:
                         "image_filename": payload.get("image_filename"),
                         "is_confidential": payload.get("is_confidential", False),
                         "confidential_level": payload.get("confidential_level"),
-                        "confidential_departments": payload.get("confidential_departments", [])
+                        "confidential_departments": payload.get("confidential_departments", []),
+                        "app_id": payload.get("app_id"),
+                        "doc_type": payload.get("doc_type"),
+                        "source_id": payload.get("source_id"),
+                        "version": payload.get("version"),
+                        "updated_date": payload.get("updated_date"),
+                        "is_public": payload.get("is_public"),
+                        "access_dept": payload.get("access_dept"),
+                        "access_level": payload.get("access_level"),
+                        "access_members": payload.get("access_members", []),
+                        "total_chunks": payload.get("total_chunks")
                     },
                     "score": score,
                     "semantic_score": semantic_score,
@@ -804,7 +814,17 @@ class QdrantService:
                             "image_filename": payload.get("image_filename"),
                             "is_confidential": payload.get("is_confidential", False),
                             "confidential_level": payload.get("confidential_level"),
-                            "confidential_departments": payload.get("confidential_departments", [])
+                            "confidential_departments": payload.get("confidential_departments", []),
+                            "app_id": payload.get("app_id"),
+                            "doc_type": payload.get("doc_type"),
+                            "source_id": payload.get("source_id"),
+                            "version": payload.get("version"),
+                            "updated_date": payload.get("updated_date"),
+                            "is_public": payload.get("is_public"),
+                            "access_dept": payload.get("access_dept"),
+                            "access_level": payload.get("access_level"),
+                            "access_members": payload.get("access_members", []),
+                            "total_chunks": payload.get("total_chunks")
                         },
                         "score": score,
                         "semantic_score": semantic_score,
@@ -1127,6 +1147,55 @@ class QdrantService:
             return count
         except Exception as e:
             logger.error(f"Failed to delete points by filename '{filename}' from collection '{collection_name}': {e}")
+            raise e
+
+    @classmethod
+    async def delete_by_app_source(cls, collection_name: str, app_id: str, doc_type: str, source_id: Any) -> int:
+        """
+        依 (app_id, doc_type, source_id) 複合條件刪除所有既有 Points，並回傳刪除的數量。
+        供多應用 RAG 同步 (MULTI_APP_RAG_SYNC_PLAN.md 4 節) 在 upsert 前清除該文件舊 chunk 使用，
+        避免切分後 chunk 數變少時，舊版多餘的 point 殘留在 Qdrant 中持續被搜尋到。
+        """
+        client = cls.get_client()
+        try:
+            scroll_result = await client.scroll(
+                collection_name=collection_name,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(key="app_id", match=models.MatchValue(value=app_id)),
+                        models.FieldCondition(key="doc_type", match=models.MatchValue(value=doc_type)),
+                        models.FieldCondition(key="source_id", match=models.MatchValue(value=source_id))
+                    ]
+                ),
+                limit=10000,  # 預期單一文件的 Chunks 不會超過 10000
+                with_payload=True,
+                with_vectors=False
+            )
+            points = scroll_result[0]
+            count = len(points)
+
+            if count > 0:
+                payloads = [p.payload for p in points if p.payload is not None]
+                image_filenames = cls._get_image_filenames_from_payloads(payloads)
+
+                point_ids = [p.id for p in points]
+                await client.delete(
+                    collection_name=collection_name,
+                    points_selector=models.PointIdsList(points=point_ids)
+                )
+                logger.info(
+                    f"Successfully deleted {count} points for app_id='{app_id}', doc_type='{doc_type}', "
+                    f"source_id='{source_id}' from collection '{collection_name}'."
+                )
+
+                if image_filenames:
+                    await cls._cleanup_orphaned_image_files(collection_name, image_filenames)
+            return count
+        except Exception as e:
+            logger.error(
+                f"Failed to delete points by app_id='{app_id}', doc_type='{doc_type}', source_id='{source_id}' "
+                f"from collection '{collection_name}': {e}"
+            )
             raise e
 
     @staticmethod
@@ -1505,7 +1574,17 @@ class QdrantService:
                         "image_filename": payload.get("image_filename"),
                         "is_confidential": payload.get("is_confidential", False),
                         "confidential_level": payload.get("confidential_level"),
-                        "confidential_departments": payload.get("confidential_departments", [])
+                        "confidential_departments": payload.get("confidential_departments", []),
+                        "app_id": payload.get("app_id"),
+                        "doc_type": payload.get("doc_type"),
+                        "source_id": payload.get("source_id"),
+                        "version": payload.get("version"),
+                        "updated_date": payload.get("updated_date"),
+                        "is_public": payload.get("is_public"),
+                        "access_dept": payload.get("access_dept"),
+                        "access_level": payload.get("access_level"),
+                        "access_members": payload.get("access_members", []),
+                        "total_chunks": payload.get("total_chunks")
                     }
                 })
             

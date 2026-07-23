@@ -13,6 +13,7 @@ db.sqlite3
 *.sw?
 .agents/
 .claude/
+scratch/
 
 # Python (Backend)
 __pycache__/

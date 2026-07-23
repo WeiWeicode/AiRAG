@@ -19,12 +19,45 @@ services:
       - MONGODB_URL=mongodb://mongodb:27017
       - QDRANT_HOST=qdrant
       - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - REDIS_HOST=redis
       - HF_HUB_DISABLE_TELEMETRY=1
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       - mongodb
       - qdrant
+      - redis
+    networks:
+      - airag-network
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: airag-worker
+    command: ["arq", "worker.WorkerSettings"]
+    volumes:
+      - ./backend:/app
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017
+      - QDRANT_HOST=qdrant
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - REDIS_HOST=redis
+      - HF_HUB_DISABLE_TELEMETRY=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mongodb
+      - qdrant
+      - redis
+    networks:
+      - airag-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: airag-redis
+    ports:
+      - "6379:6379"
     networks:
       - airag-network
 

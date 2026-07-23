@@ -10,7 +10,11 @@ from beanie import PydanticObjectId
 from routers.rag import ChatRequest, rag_chat_stream
 from models.external_api_key import ExternalApiKey
 from models.external_chat_log import ExternalChatLog, SourceSummaryItem
-from utils.security import verify_external_api_key
+from models.app_registration import AppRegistration
+from models.knowledge_base import KnowledgeBase
+from schemas.ingest import IngestTriggerRequest
+from services.arq_pool import ArqPool
+from utils.security import verify_external_api_key, verify_ingest_api_key
 
 logger = logging.getLogger("airag.external_router")
 # 供公司內網外部應用串接使用，掛 verify_external_api_key（X-API-Key 標頭）驗證，
@@ -113,3 +117,51 @@ async def external_chat(
         _external_chat_with_logging(request, api_key.id),
         media_type="text/event-stream"
     )
+
+
+@router.post("/ingest/trigger", status_code=202)
+async def trigger_ingest(
+    request: IngestTriggerRequest,
+    api_key: ExternalApiKey = Depends(verify_ingest_api_key)
+):
+    """
+    多應用 RAG 同步觸發端點（見 MULTI_APP_RAG_SYNC_PLAN.md 2.1 節）。
+    立即回應 202 並將實際切分/embedding/寫入 Qdrant 交給 arq 背景佇列處理，
+    避免呼叫端 HTTP 連線因等待處理完成而逾時／斷線。
+    """
+    app_reg = await AppRegistration.find_one(AppRegistration.app_id == request.app_id)
+    if not app_reg or not app_reg.is_active:
+        raise HTTPException(status_code=400, detail=f"appId '{request.app_id}' 未登錄或已停用")
+
+    if app_reg.report_mode == "webhook" and not request.callback_url:
+        raise HTTPException(status_code=400, detail="report_mode='webhook' 的 App 呼叫觸發端點時必須帶 callbackUrl")
+
+    try:
+        kb_object_id = PydanticObjectId(request.knowledge_base_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="無效的 knowledgeBaseId 格式")
+
+    kb = await KnowledgeBase.get(kb_object_id)
+    if not kb:
+        raise HTTPException(status_code=400, detail=f"knowledgeBaseId '{request.knowledge_base_id}' 對應的知識庫不存在")
+
+    job_payload = {
+        "app_id": request.app_id,
+        "doc_type": request.doc_type,
+        "source_id": request.source_id,
+        "title": request.title,
+        "target_version": request.target_version,
+        "action": request.action,
+        "knowledge_base_id": request.knowledge_base_id,
+        "callback_url": request.callback_url,
+        "permissions": request.permissions.model_dump() if request.permissions else None
+    }
+
+    pool = await ArqPool.get_pool()
+    job = await pool.enqueue_job("process_ingest_task", job_payload)
+
+    return {
+        "success": True,
+        "message": "Task queued successfully",
+        "taskId": job.job_id
+    }

@@ -20,7 +20,8 @@ class PermissionService:
             department=info.department_name,
             department_code=info.department_code,
             job_title=info.job_title_name,
-            level=info.job_title_level
+            level=info.job_title_level,
+            employee_id=info.employee_id
         )
 
     @classmethod
@@ -84,6 +85,60 @@ class PermissionService:
 
         for item in raw_results:
             meta = item.get("metadata", {}) or {}
+
+            # 新式多應用權限欄位（is_public/access_dept/access_level/access_members，
+            # 見 MULTI_APP_RAG_SYNC_PLAN.md 4 節）：與舊式 is_confidential 欄位互斥，
+            # 只有透過多應用 RAG 同步寫入的 point 才會帶 is_public（非 None），
+            # 既有 embedding 上傳流程的 point 一律落入下方舊邏輯。
+            if meta.get("is_public") is not None:
+                if meta.get("is_public"):
+                    allowed.append(item)
+                    continue
+
+                reasons: List[str] = []
+                dept_level_ok = True
+
+                access_level = meta.get("access_level")
+                if access_level is not None:
+                    try:
+                        access_level_int = int(access_level)
+                        if user.level > access_level_int:
+                            dept_level_ok = False
+                            reasons.append(
+                                f"檔案存取等級: {access_level_int}，{user.name}（{user.job_title}，等級 {user.level}）權限不足"
+                            )
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "無法將 access_level '%s' 轉型為整數 (filename: %s)",
+                            access_level,
+                            meta.get("filename", "未知檔名")
+                        )
+
+                access_dept = meta.get("access_dept")
+                if access_dept:
+                    dept_matched = (
+                        user.department == access_dept or
+                        (user.department_code and user.department_code == access_dept)
+                    )
+                    if not dept_matched:
+                        dept_level_ok = False
+                        reasons.append(
+                            f"部門限制: 僅限「{access_dept}」，{user.name} 所屬部門「{user.department}」不符"
+                        )
+
+                # access_members 為個人層級白名單：即使不符部門/等級限制，
+                # 只要使用者工號在名單內即視為有權存取（覆蓋一般政策，而非額外限制）
+                access_members = meta.get("access_members") or []
+                member_matched = bool(user.employee_id) and user.employee_id in access_members
+
+                if dept_level_ok or member_matched:
+                    allowed.append(item)
+                else:
+                    item_copy = dict(item)
+                    item_copy["_exclusion_reason"] = " 且 ".join(reasons) if reasons else "權限不足"
+                    excluded.append(item_copy)
+                continue
+
             is_confidential = bool(meta.get("is_confidential"))
 
             # 未標記為機密的文件 -> 直接放行

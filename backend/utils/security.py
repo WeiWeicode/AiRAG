@@ -83,11 +83,12 @@ def generate_external_api_key() -> Tuple[str, str, str]:
     hashed = get_password_hash(plaintext)
     return plaintext, prefix, hashed
 
-async def verify_external_api_key(x_api_key: str = Header(...)):
+async def _verify_external_api_key_by_scope(x_api_key: str, required_scope: str):
     """
-    FastAPI 依賴注入：驗證 /api/external/chat 的 X-API-Key 標頭，通過後回傳對應的 ExternalApiKey 文件
-    （並更新 last_used_at）。與 get_current_user 的 JWT 登入驗證各自獨立、不共用——
-    這裡驗證的是「已授權的外部系統」，不是「已登入的人類使用者」。
+    共用查找邏輯：驗證 X-API-Key 標頭並確認金鑰的 scope 與呼叫端點所需的 scope 相符，
+    通過後回傳對應的 ExternalApiKey 文件（並更新 last_used_at）。
+    scope 區隔問答 (chat) 與寫入 (ingest) 用途的金鑰，避免共用同一把金鑰導致權限無法分開管控
+    （見 MULTI_APP_RAG_SYNC_PLAN.md 5.2 節第 8 點）。
     """
     from models.external_api_key import ExternalApiKey
 
@@ -98,8 +99,25 @@ async def verify_external_api_key(x_api_key: str = Header(...)):
     key_doc = await ExternalApiKey.find_one(ExternalApiKey.key_prefix == prefix)
     if not key_doc or not key_doc.is_active or not verify_password(x_api_key, key_doc.key_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="無效或已停用的 API Key")
+    if key_doc.scope != required_scope:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="此 API Key 的用途 (scope) 與此端點不符")
 
     key_doc.last_used_at = datetime.utcnow()
     await key_doc.save()
     return key_doc
+
+async def verify_external_api_key(x_api_key: str = Header(...)):
+    """
+    FastAPI 依賴注入：驗證 /api/external/chat 的 X-API-Key 標頭（要求 scope="chat"）。
+    與 get_current_user 的 JWT 登入驗證各自獨立、不共用——
+    這裡驗證的是「已授權的外部系統」，不是「已登入的人類使用者」。
+    """
+    return await _verify_external_api_key_by_scope(x_api_key, "chat")
+
+async def verify_ingest_api_key(x_api_key: str = Header(...)):
+    """
+    FastAPI 依賴注入：驗證 /api/external/ingest/trigger 的 X-API-Key 標頭（要求 scope="ingest"）。
+    刻意與 verify_external_api_key 分離，確保問答用途與寫入(ingest)用途的金鑰互不相通。
+    """
+    return await _verify_external_api_key_by_scope(x_api_key, "ingest")
 

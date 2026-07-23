@@ -7,6 +7,7 @@ class ExternalApiKey(Document):
     name: str
     key_prefix: Indexed(str, unique=True)
     key_hash: str
+    scope: str = "chat"  # "chat"（/api/external/chat 用）| "ingest"（/api/external/ingest/trigger 用），兩者金鑰互不相通
     is_active: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_used_at: Optional[datetime] = None

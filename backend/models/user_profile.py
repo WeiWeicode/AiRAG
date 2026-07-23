@@ -17,6 +17,7 @@ class UserProfile(Document):
     department_code: Optional[str] = None
     job_title: str
     level: int
+    employee_id: Optional[str] = None  # 供 access_members 個人白名單比對用（見 MULTI_APP_RAG_SYNC_PLAN.md 4 節）
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

@@ -33,6 +33,7 @@ from models.department import Department
 from models.user_profile import UserProfile
 from models.external_api_key import ExternalApiKey
 from models.external_chat_log import ExternalChatLog
+from models.app_registration import AppRegistration
 
 
 logger = logging.getLogger("airag.mongodb")
@@ -211,7 +212,8 @@ async def init_mongodb():
                 Department,
                 UserProfile,
                 ExternalApiKey,
-                ExternalChatLog
+                ExternalChatLog,
+                AppRegistration
             ]
         )
         logger.info("MongoDB and Beanie ODM initialized successfully.")

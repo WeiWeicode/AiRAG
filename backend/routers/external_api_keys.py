@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional
+from typing import List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from beanie import PydanticObjectId
@@ -16,12 +16,16 @@ router = APIRouter(prefix="/external-api-keys", tags=["External API Keys"], depe
 
 class ExternalApiKeyCreateRequest(BaseModel):
     name: str = Field(..., description="用途/系統名稱標示，例如「HR 入口網站」")
+    scope: Literal["chat", "ingest"] = Field(
+        "chat", description="金鑰用途：chat（/api/external/chat 問答）或 ingest（/api/external/ingest/trigger 寫入）"
+    )
 
 
 class ExternalApiKeyResponse(BaseModel):
     id: str
     name: str
     key_prefix: str
+    scope: str
     is_active: bool
     created_at: str
     last_used_at: Optional[str] = None
@@ -36,6 +40,7 @@ def _to_response(key: ExternalApiKey) -> ExternalApiKeyResponse:
         id=str(key.id),
         name=key.name,
         key_prefix=key.key_prefix,
+        scope=key.scope,
         is_active=key.is_active,
         created_at=key.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         last_used_at=key.last_used_at.strftime("%Y-%m-%d %H:%M:%S") if key.last_used_at else None
@@ -65,7 +70,7 @@ async def create_external_api_key(
 
     plaintext, prefix, key_hash = generate_external_api_key()
 
-    key = ExternalApiKey(name=name, key_prefix=prefix, key_hash=key_hash)
+    key = ExternalApiKey(name=name, key_prefix=prefix, key_hash=key_hash, scope=request.scope)
     await key.insert()
 
     return ExternalApiKeyCreatedResponse(

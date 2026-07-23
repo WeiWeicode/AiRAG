@@ -1,5 +1,69 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-23 新增多應用 RAG 向量同步系統測試計畫 (MultiAppRAGSyncTestPlan.md)
+
+### 背景
+針對已建置完成的多應用 RAG 向量同步與附件 API 整合架構（[MULTI_APP_RAG_SYNC_PLAN.md](MULTI_APP_RAG_SYNC_PLAN.md) / [08_EXTERNAL_INGEST_API_GUIDE.md](../08_EXTERNAL_INGEST_API_GUIDE.md)），於 `docs/DevelopmentProcess/` 新增完整的測試計畫文件，供開發團隊與 QA 進行驗證。
+
+### 變更內容
+- **新增文件 `docs/DevelopmentProcess/MultiAppRAGSyncTestPlan.md`**：
+  - 測試目標與範疇：涵蓋 API Key 驗證、`arq worker` 背景佇列、`AppRegistration` 樣板、`AppContentClient` 拉取、Qdrant 向量點位寫入/清掃、混合進度回報與雙權限過濾。
+  - 測試環境與前置條件配置說明。
+  - 詳細測試案例（TC-API、TC-PULL、TC-VEC、TC-RPT、TC-PERM 五大階段 13 個測試案例）。
+  - 自動化與 cURL 指令驗證步驟與驗收標準。
+
+### 驗證
+- 檢查文件 Markdown 語法與內部文件連結引用正確性。
+
+---
+
+
+### 背景
+配合多應用 RAG 向量同步與附件 API 整合規範（[MULTI_APP_RAG_SYNC_PLAN.md](MULTI_APP_RAG_SYNC_PLAN.md)），在 `docs/` 目錄下建立針對外部應用系統開發者的獨立串接指南文件，提供 `POST /api/external/ingest/trigger` 端點的完整規範與介面說明。
+
+### 變更內容
+- **新增文件 `docs/08_EXTERNAL_INGEST_API_GUIDE.md`**：
+  - 核心機制：說明非同步 Pull 模式（Trigger 傳送 Metadata 立即回傳 ACK 202，背景佇列主動向外部 App 拉取全文/二進位附件並執行向量化，完成後 Webhook 回調）。
+  - Base URL 與認證：明確配置規範（`AIRAG_BASE_URL` 勿加 `/api`）與 Ingest 專屬 `X-API-Key` 驗證。
+  - 前置 App 登錄規範 (`AppRegistration`)。
+  - API 契約 (Request Header, camelCase Body, `permissions` 結構, Response 202 與 `taskId`)。
+  - 外部應用需配合開放之端點契約（文章拉取 API、附件拉取 API、Webhook Callback 端點）。
+  - 常見問題（Target Version 防競態覆蓋、刪除 Action 處理方式）。
+
+### 驗證
+- 檢查 Markdown 連結與標題層級正確性，完成文件落地。
+
+---
+
+
+### 背景
+依規劃文件 [MULTI_APP_RAG_SYNC_PLAN.md](MULTI_APP_RAG_SYNC_PLAN.md)（v1.2）第 6 節「後續執行步驟」第 2 項施作：AiRAG 引擎擴充，讓多個外部應用（KB、BPM、Meeting 等）能透過標準化 API 觸發 AiRAG 對文件進行切分、embedding 並寫入 Qdrant，取代原本僅支援單一 KB 系統的假設。本次施作範圍為 AiRAG 側（步驟 2），各應用自己的接入（步驟 3）與 App Registry／ingest 金鑰的前端管理介面不在本次範圍（已與使用者確認：先做後端 CRUD，UI 之後再補）。
+
+### 變更內容
+- **背景佇列（新引入 arq + Redis）**：
+  - `docker-compose.yml` 新增 `redis` 服務與 `worker` 服務（沿用 `backend` 的 build context，`command: arq worker.WorkerSettings`）；`backend` 服務新增 `REDIS_HOST=redis` 環境變數。
+  - `backend/requirements.txt` 新增 `arq>=0.26.0`；`backend/config.py` 新增 `REDIS_HOST`/`REDIS_PORT`。
+  - `backend/services/arq_pool.py`（新檔）：`ArqPool.get_pool()` lazy singleton，供 API 行程端推入任務。
+  - `backend/worker.py`（新檔）：arq `WorkerSettings`，`process_ingest_task` 委派給 `IngestService.process()`；`on_startup` 呼叫既有 `init_mongodb()` 初始化 worker 行程自己的 MongoDB/Beanie 連線。
+- **App Registry（`app_registrations` collection，見規劃文件 2.4 節）**：
+  - `backend/models/app_registration.py`（新檔）：`AppRegistration` Document（`app_id` 唯一索引、`base_url`、內容/附件路徑樣板、`report_mode`）。
+  - `backend/routers/app_registrations.py`（新檔）：JWT 保護的 CRUD，掛載於 `/api/app-registrations`；`report_mode="direct_db"` 僅開放 `app_id="kb"`（程式邏輯白名單）。
+- **Ingest 觸發端點與處理管線**：
+  - `backend/schemas/ingest.py`（新檔）：`IngestTriggerRequest`/`IngestPermissions`，以 Pydantic alias 對應規劃文件 2.1 節的 camelCase 傳輸契約。
+  - `backend/routers/external.py`：新增 `POST /ingest/trigger`（最終路徑 `/api/external/ingest/trigger`），驗證 App Registry 登錄狀態、webhook 模式必須帶 `callbackUrl`、`knowledgeBaseId` 需存在，通過後推入 arq 佇列並立即回傳 `202`。
+  - `backend/services/app_content_client.py`（新檔）：依 App Registry 登錄的路徑樣板呼叫各應用的內容/附件端點（`X-RAG-Sync-Key` 標頭）。
+  - `backend/services/ingest_service.py`（新檔）：核心處理邏輯——拉取內容（`doc_type=="attachment_file"` 走附件二進位端點，其餘走文字端點）、重用既有 `ChunkingService`/`EmbeddingService` 切分與 embedding、呼叫 `QdrantService` 清舊 chunk 後 upsert、更新 `KnowledgeBase.chunk_count`。
+  - `backend/services/ingest_report_service.py`（新檔）：混合回報機制，依 `report_mode` 分派至 `_report_webhook`（POST 回呼 `callbackUrl`）或 `_report_direct_db`（pyodbc 直連目標 App DB，SQL 對應 `RAG_SYNC_PLAN.md` 6 節第 5 點，含 `target_version` 防競態條件）。
+- **`QdrantService`（`backend/services/qdrant_service.py`）**：新增 `delete_by_app_source(collection_name, app_id, doc_type, source_id)`（比照既有 `delete_by_filename` 的 scroll+delete 模式）；`search_similar`／`search_similar_two_step`／`get_by_parent_id` 的 payload 讀回投影補上 `app_id`/`doc_type`/`source_id`/`version`/`updated_date`/`is_public`/`access_dept`/`access_level`/`access_members`/`total_chunks`。
+- **API Key 用途分離（規劃文件 5.2 節第 8 點）**：`ExternalApiKey` 新增 `scope`（`chat`/`ingest`，預設 `chat`，既有金鑰自動相容）；`utils/security.py` 拆分為 `verify_external_api_key`（`scope=chat`）與新增的 `verify_ingest_api_key`（`scope=ingest`），確保問答與寫入金鑰互不相通；`external_api_keys.py` 建立/查詢回應同步補上 `scope` 欄位。
+- **`PermissionService` 雙欄位支援（規劃文件 5.1 節第 6 點）**：`UserProfile` 新增 `employee_id`（`get_user_from_external_info` 一併帶入），供 `access_members` 個人白名單比對；`filter_results()` 新增與舊式 `is_confidential` 互斥的新分支——`is_public` 為 true 直接放行，否則套用「(部門符合 AND 等級足夠) OR 工號在 `access_members` 名單內」的覆蓋式規則。
+
+### 驗證
+- 後端：`ast.parse` 全數新增/修改檔案語法檢查通過；以 venv Python 實際 `import main` 確認所有路由正確註冊（`/api/external/ingest/trigger`、`/api/app-registrations` 及其子路徑皆出現在 OpenAPI schema 中）。
+- 啟動本機 `mongodb`+`redis` 容器，直接呼叫 `trigger_ingest()` 驗證五種分支：未登錄 App、webhook 缺 `callbackUrl`、`knowledgeBaseId` 格式錯誤、`knowledgeBaseId` 不存在皆正確回傳 `400`；成功案例正確推入 arq 佇列並回傳 `taskId`。
+- 實際啟動 `arq worker.WorkerSettings`：worker 成功消費佇列中的任務，`AppRegistration` 查無登錄時正確記錄錯誤並提前中止（未崩潰），確認 Qdrant 未連線時 `init_mongodb()` 的索引檢查僅記錄警告、不影響 worker 啟動。
+- 尚待驗證（需要真實外部應用或 KB 端實際部署，非本次可測範圍）：對真實 App 內容端點的實際拉取與切分、`direct_db` 模式對真實 KB SQL Server 的寫入、webhook 模式對真實回呼端點的送達。
+
 ## 2026-07-22 後端支援 Qdrant API Key 安全認證與多應用連線配置
 
 ### 背景
