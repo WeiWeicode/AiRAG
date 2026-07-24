@@ -65,6 +65,31 @@ class PermissionService:
             )
 
     @classmethod
+    def _match_dept(cls, user: UserProfile, target_dept: Any) -> bool:
+        """
+        判斷使用者部門是否符合目標限制部門。
+        支援：
+        1. 部門名稱或代號完全比對 (如 user.department == "資訊服務部" 或 user.department_code == "S1800")
+        2. 部門代號前三碼相符歸類為同部門 (例如 S1810 網路通訊課 與 S1800 資訊服務部 前三碼皆為 S18)
+        """
+        if not target_dept:
+            return True
+        target_str = str(target_dept).strip()
+        if not target_str:
+            return True
+
+        # 1. 完全比對
+        if user.department == target_str or (user.department_code and str(user.department_code) == target_str):
+            return True
+
+        # 2. 前三碼歸類比對 (例如 S1810 與 S1800 皆為 S18)
+        if user.department_code and len(user.department_code) >= 3 and len(target_str) >= 3:
+            if user.department_code[:3].upper() == target_str[:3].upper():
+                return True
+
+        return False
+
+    @classmethod
     def filter_results(
         cls,
         raw_results: List[dict],
@@ -116,10 +141,7 @@ class PermissionService:
 
                 access_dept = meta.get("access_dept")
                 if access_dept:
-                    dept_matched = (
-                        user.department == access_dept or
-                        (user.department_code and user.department_code == access_dept)
-                    )
+                    dept_matched = cls._match_dept(user, access_dept)
                     if not dept_matched:
                         dept_level_ok = False
                         reasons.append(
@@ -166,16 +188,10 @@ class PermissionService:
                     )
 
             # 部門過濾驗證：文件有指定部門且使用者部門（代號或名稱皆可）不在列表中 -> 部門不符
-            # 雙軌比對：confidential_departments 可能混雜舊資料（部門名稱）與新資料（部門代號），
-            # 任一種格式命中即視為符合，過渡期不需要遷移既有資料（見 NewFeaturesPlan_ExternalApiTestPlan.md 第 8.4 節）
             if c_depts:
-                dept_str_list = [str(d) for d in c_depts if d]
-                matched = (
-                    user.department in dept_str_list or
-                    (user.department_code and user.department_code in dept_str_list)
-                )
-                if dept_str_list and not matched:
-                    dept_join = "、".join(dept_str_list)
+                matched = any(cls._match_dept(user, d) for d in c_depts if d)
+                if not matched:
+                    dept_join = "、".join([str(d) for d in c_depts if d])
                     reasons.append(
                         f"部門限制: 僅限「{dept_join}」，{user.name} 所屬部門「{user.department}」不符"
                     )
@@ -186,6 +202,80 @@ class PermissionService:
                 excluded.append(item_copy)
             else:
                 allowed.append(item)
+
+        return allowed, excluded
+
+    @classmethod
+    def filter_results_kb_semantic_hybrid(
+        cls,
+        raw_results: List[dict],
+        user: Optional[UserProfile]
+    ) -> Tuple[List[dict], List[dict]]:
+        """
+        針對 KB_semantic_hybrid 檢索結果執行專屬機密權限過濾。
+        - is_public == True: 公開文件（不限制部門），但必須符合職級門檻 (user.level <= access_level)
+        - is_public == False: 非公開文件，必須符合部門限制 (access_dept) 且符合職級門檻 (access_level)
+        - access_members: 白名單成員直接放行。
+        - 無 is_public 欄位之舊式檔案：退回既有 filter_results 邏輯。
+        """
+        if user is None or not raw_results:
+            return raw_results, []
+
+        allowed: List[dict] = []
+        excluded: List[dict] = []
+
+        for item in raw_results:
+            meta = item.get("metadata", {}) or {}
+
+            if meta.get("is_public") is not None:
+                is_pub = bool(meta.get("is_public"))
+                reasons: List[str] = []
+                dept_level_ok = True
+
+                # 1. 職級門檻驗證 (無論 is_public 是否為 True，均需檢驗職級)
+                access_level = meta.get("access_level")
+                if access_level is not None:
+                    try:
+                        access_level_int = int(access_level)
+                        if user.level > access_level_int:
+                            dept_level_ok = False
+                            reasons.append(
+                                f"檔案存取等級: {access_level_int}，{user.name}（{user.job_title}，等級 {user.level}）權限不足"
+                            )
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "無法將 access_level '%s' 轉型為整數 (filename: %s)",
+                            access_level,
+                            meta.get("filename", "未知檔名")
+                        )
+
+                # 2. 部門限制驗證 (僅當 is_public == False 時需比對部門；is_public == True 為公開文件不限制部門)
+                if not is_pub:
+                    access_dept = meta.get("access_dept")
+                    if access_dept:
+                        dept_matched = cls._match_dept(user, access_dept)
+                        if not dept_matched:
+                            dept_level_ok = False
+                            reasons.append(
+                                f"部門限制: 僅限「{access_dept}」，{user.name} 所屬部門「{user.department}」不符"
+                            )
+
+                # 3. 個人白名單 (access_members) 覆蓋
+                access_members = meta.get("access_members") or []
+                member_matched = bool(user.employee_id) and user.employee_id in access_members
+
+                if dept_level_ok or member_matched:
+                    allowed.append(item)
+                else:
+                    item_copy = dict(item)
+                    item_copy["_exclusion_reason"] = " 且 ".join(reasons) if reasons else "權限不足"
+                    excluded.append(item_copy)
+                continue
+
+            # 若舊式檔案未帶 is_public 欄位，單一項目委派給既有 filter_results 判斷
+            single_allowed, single_excluded = cls.filter_results([item], user)
+            allowed.extend(single_allowed)
+            excluded.extend(single_excluded)
 
         return allowed, excluded
 

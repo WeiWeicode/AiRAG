@@ -1,6 +1,45 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
-## 2026-07-23 QdrantService.upsert_chunks 預設分批 (batch_size=20) 寫入實作
+## 2026-07-24 子部門權限比對（部門代號前三碼相符歸類）實作
+
+### 背景
+集團內部包含諸多課級與子部門（例如 `S1800` 資訊服務部、`S1810` 網路通訊課），為使同部門群組內之子部門能互相存取該部門限制的文件，新增部門代號前三碼相符即歸類為相同部門之比對邏輯。
+
+### 變更內容
+- `backend/services/permission_service.py`：
+  - 新增 `PermissionService._match_dept(user, target_dept)` 類別方法：
+    1. 首先進行部門名稱與代號之完全比對 (`user.department == target_str` 或 `user.department_code == target_str`)。
+    2. 若未完全相同，檢查使用者 `department_code` 與限制部門 `target_str` 長度是否皆 >= 3，若前三碼不分大小寫相同（如 `S1810` 與 `S1800` 皆為 `S18`），即判定為部門相符放行。
+  - 將 `filter_results()` 與 `filter_results_kb_semantic_hybrid()` 中的所有 `access_dept` 與 `confidential_departments` 比對點統一代換為 `_match_dept()` 呼叫。
+
+### 驗證
+- 執行 `scratch/test_kb_semantic_hybrid.py` 單元測試：
+  - `S1810`（網路通訊課）使用者成功匹配存取限制為 `S1800`（資訊服務部）之文件。
+  - `S1720`（生產二課）使用者成功匹配存取限制為 `S1700`（生產管理部）之文件，且跨部門 `S1800` 文件被正確排除。
+- 後端容器編譯與重啟 (`docker-compose up --build -d backend worker`) 順利完成。
+
+---
+
+### 背景
+配合 [NewFeaturesPlan_KBSemanticHybridPlan.md](NewFeaturesPlan_KBSemanticHybridPlan.md) 規劃，新增獨立檢索模式 `KB_semantic_hybrid`。針對 Qdrant Point Payload 中的 `is_public` 欄位進行獨立的部門與職級過濾。
+
+### 變更內容
+- `backend/services/permission_service.py`：
+  - 新增 `PermissionService.filter_results_kb_semantic_hybrid(raw_results, user)` 類別方法。
+  - 當 Point Payload 包含 `is_public` 時：
+    - `is_public == true`：開放跨部門存取，但必須符合職級門檻 (`user.level <= access_level`)。
+    - `is_public == false`：必須符合部門限制 (`user.department == access_dept` 或代號相符) **且** 符合職級門檻 (`user.level <= access_level`)。
+    - 個人白名單 `access_members` 優先覆蓋放行。
+- `backend/routers/rag.py`：
+  - 在 `rag_chat_stream()` 的檢索條件與 `search_similar_two_step` 呼叫點加入 `KB_semantic_hybrid` 模式。
+  - 於機密過濾處新增判斷：`search_type == "KB_semantic_hybrid"` 時呼叫 `filter_results_kb_semantic_hybrid`，其餘模式維持原 `filter_results`。
+- `backend/routers/retrieval.py`：
+  - 在 `/api/retrieval/search` 檢索測試端點的 `is_semantic_hybrid_family` 判斷與權限過濾處加入 `KB_semantic_hybrid` 分流。
+
+### 驗證
+- 執行 `scratch/test_kb_semantic_hybrid.py` 權限過濾邏輯單元測試，全數 Test Cases 通過。
+
+---
 
 ### 背景
 外部 Ingest API 與系統核心在呼叫 `QdrantService.upsert_chunks` 時，此前一次性傳送全部 points 給 Qdrant。當長文件產生大量 chunks 時，單次 HTTP Payload 可能太大導致連線失敗。

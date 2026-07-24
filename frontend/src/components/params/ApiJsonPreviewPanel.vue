@@ -41,7 +41,7 @@ const fieldDocs = [
   { field: 'knowledge_base_id', desc: '要檢索的知識庫 ID；留空則不執行檢索，直接以 params.custom_system_prompt（若有填寫）進行純 LLM 對話' },
   { field: 'chat_history', desc: '對話歷史陣列，格式為 [{ role: "user"|"assistant", content: "..." }, ...]，供多輪對話與指代消解使用' },
   { field: 'selected_db_profile_id', desc: '僅 search_type 為 semantic_db_query 且需二次選定候選查詢設定檔時才帶入' },
-  { field: 'params.search_type', desc: '檢索模式：vector / hybrid / semantic_hybrid / semantic_hybrid_feedback / semantic_hybrid_attachment / semantic_db_query' },
+  { field: 'params.search_type', desc: '檢索模式：vector / hybrid / semantic_hybrid / semantic_hybrid_feedback / semantic_hybrid_attachment / KB_semantic_hybrid / semantic_db_query' },
   { field: 'params.top_k', desc: '檢索筆數上限' },
   { field: 'params.score_threshold', desc: '檢索相似度最低門檻，低於此分數的片段不會被檢索回傳' },
   { field: 'params.ai_summary_score_threshold', desc: 'AI 總結門檻，低於此分數的片段不會納入 AI 總結上下文（但仍會出現在 sources）' },

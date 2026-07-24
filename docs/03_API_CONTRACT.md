@@ -29,7 +29,7 @@
 ## 3. RAG 功能測試 API (§4.1)
 
 ### 3.1 POST `/api/rag/chat` — RAG 對話（SSE 串流）
-**描述**：端到端 RAG 對話，支援 `vector`、`hybrid`、`semantic_hybrid`、`semantic_hybrid_feedback`、`semantic_hybrid_attachment`、`semantic_db_query` 六種模式。當 `search_type` 為 `semantic_hybrid`/`semantic_hybrid_feedback`/`semantic_hybrid_attachment` 時，實際呼叫的是**雙階段關聯檢索** `search_similar_two_step`（見 `02_ARCHITECTURE.md` §5.1），而非單純的雙路混合搜尋。`semantic_hybrid_attachment`（語義混合附件查詢法，2026-07-06 新增）另見第 14 節。
+**描述**：端到端 RAG 對話，支援 `vector`、`hybrid`、`semantic_hybrid`、`semantic_hybrid_feedback`、`semantic_hybrid_attachment`、`KB_semantic_hybrid`、`semantic_db_query` 七種模式。當 `search_type` 為 `semantic_hybrid`/`semantic_hybrid_feedback`/`semantic_hybrid_attachment`/`KB_semantic_hybrid` 時，實際呼叫的是**雙階段關聯檢索** `search_similar_two_step`（見 `02_ARCHITECTURE.md` §5.1）。`KB_semantic_hybrid`（集團知識庫語義混合查詢法，2026-07-24 新增）針對 Point 的 `is_public` 欄位執行專屬的「部門 + 職級門檻」機密權限過濾。
 
 **Request Body**：
 ```json
@@ -48,7 +48,7 @@
     "score_threshold": 0.65,
     "ai_summary_score_threshold": 0.60,
     "filter_tags": ["string"],
-    "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_hybrid_attachment | semantic_db_query",
+    "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_hybrid_attachment | KB_semantic_hybrid | semantic_db_query",
     "context_summarize_trigger_tokens": 50000,
     "read_attachment_content": false,
     "history_context_turns": 3,

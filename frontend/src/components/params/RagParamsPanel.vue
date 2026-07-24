@@ -142,6 +142,7 @@ loadUsers()
         <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合查詢 (Semantic Hybrid Search)</option>
         <option value="semantic_hybrid_feedback" class="bg-[#111827] text-white">語義混合回饋查詢法 (Semantic Hybrid + Feedback)</option>
         <option value="semantic_hybrid_attachment" class="bg-[#111827] text-white">語義混合附件查詢法 (Semantic Hybrid + Attachment)</option>
+        <option value="KB_semantic_hybrid" class="bg-[#111827] text-white">集團知識庫語義混合查詢 (KB Semantic Hybrid)</option>
         <option value="semantic_db_query" class="bg-[#111827] text-white">語義資料庫查詢法 (Semantic DB Query)</option>
       </select>
     </div>
@@ -208,7 +209,7 @@ loadUsers()
     </div>
 
     <!-- 多輪對話指代消解：語義混合家族查詢法專用（自動指代消解 + 手動鎖定檔案） -->
-    <div v-if="['semantic_hybrid', 'semantic_hybrid_feedback', 'semantic_hybrid_attachment'].includes(paramsStore.searchMode)" class="flex flex-col gap-4 border-t border-white/8 pt-4 animate-fade-in">
+    <div v-if="['semantic_hybrid', 'semantic_hybrid_feedback', 'semantic_hybrid_attachment', 'KB_semantic_hybrid'].includes(paramsStore.searchMode)" class="flex flex-col gap-4 border-t border-white/8 pt-4 animate-fade-in">
       <div class="flex flex-col gap-2">
         <label class="flex items-center gap-2 text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">
           <input type="checkbox" v-model="paramsStore.autoContextEnabled" class="accent-[#8b5cf6]" />

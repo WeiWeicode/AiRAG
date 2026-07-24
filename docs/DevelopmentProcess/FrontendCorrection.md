@@ -1,6 +1,26 @@
 <!-- 前端修正紀錄(最新紀錄放最前面) -->
 
-## 2026-07-23 Nginx 動態容器 IP 解析最佳化 (解決 502 Bad Gateway)
+## 2026-07-24 新增集團知識庫專用語義混合查詢法 (`KB_semantic_hybrid`) 前端介面支援
+
+### 背景
+配合 [NewFeaturesPlan_KBSemanticHybridPlan.md](NewFeaturesPlan_KBSemanticHybridPlan.md) 規劃，在前端對話參數設定、檢索測試、API 預覽與測試集管理介面中加入 `KB_semantic_hybrid` 檢索模式選單與邏輯支援。
+
+### 變更內容
+- `frontend/src/components/params/RagParamsPanel.vue`：
+  - 檢索模式下拉選單新增 `<option value="KB_semantic_hybrid">集團知識庫語義混合查詢 (KB Semantic Hybrid)</option>`。
+  - 將 `KB_semantic_hybrid` 加入 `isSemanticHybridFamily` 判斷，自動為該模式開啟指代消解與手動鎖定檔案面板。
+- `frontend/src/views/RetrievalTestView.vue`：
+  - 下拉選單新增 `KB_semantic_hybrid` 選項。
+  - 更新語義分析步驟 (Steps) 載入條件與分數標籤 (RRF Score) 顯示。
+- `frontend/src/components/params/ApiJsonPreviewPanel.vue`：
+  - `fieldDocs` 的 `params.search_type` 加入 `KB_semantic_hybrid` 註解。
+- `frontend/src/components/eval/TestSetManager.vue`：
+  - 下拉選單新增 `KB_semantic_hybrid`。
+
+### 驗證
+- 對話與檢索測試頁面可順利選擇 `KB_semantic_hybrid` 模式並產生正確之 JSON Payload。
+
+---
 
 ### 背景
 當單獨重啟或升級後端容器 (`docker-compose up --build -d backend`) 時，後端容器獲得新的容器 IP。但因 `nginx.conf` 原先直接撰寫 `proxy_pass http://backend:53020;`，Nginx 在啟動時靜態快取了舊 IP，導致 Nginx 無法連線至新 IP 的後端服務而回傳 `502 Bad Gateway`。

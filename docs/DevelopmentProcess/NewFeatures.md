@@ -268,8 +268,29 @@
    - 新增 `frontend/src/services/knowledgeBaseService.js`：封裝 `list()`、`create()`、`remove()` 三支知識庫管理 API。
    - 新增 `frontend/src/views/KnowledgeBaseSettingsView.vue`：提供建立知識庫表單、知識庫清單與已向量化段落數統計、刪除確認彈窗（包含輸入檔名二次確認警示），並於刪除當前選用知識庫時自動重置全域 `paramsStore.knowledgeBaseId`。
    - `frontend/src/router/index.js` & `frontend/src/components/common/AppSidebar.vue`：註冊 `/knowledge-base-settings` 路由，並於側邊選單加入「知識庫管理 (Knowledge Base)」與 Database 意象 SVG 圖示。
-3. **文件**：
-   - `docs/03_API_CONTRACT.md`：新增第 18 節知識庫管理與人工回饋 API 合約說明。
 
-### 驗證
-已對照計劃 Checklist 完成所有改動。測試依 `AGENT.md` 規範交由使用者手動測試驗證。
+---
+
+## 2026-07-24 新增集團知識庫專用語義混合查詢法 (`KB_semantic_hybrid`) 實作完成
+
+### 背景與功能說明
+依據 [NewFeaturesPlan_KBSemanticHybridPlan.md](NewFeaturesPlan_KBSemanticHybridPlan.md) 實作，新增獨立檢索模式 `KB_semantic_hybrid`（集團知識庫語義混合查詢法）。透過此模式，將集團內部文件檢索邏輯與既有 `semantic_hybrid` 進行隔離，並針對 Qdrant Point Payload 中的 `is_public` (boolean) 屬性執行客製化的機密權限過濾。
+
+### 主要變更
+1. **後端**：
+   - `backend/services/permission_service.py`：新增 `PermissionService.filter_results_kb_semantic_hybrid()` 類別方法，依 `is_public` 進行分流過濾：
+     - `is_public == true`：公開文件（不限制部門），但必須符合職級門檻 (`user.level <= access_level`)。
+     - `is_public == false`：非公開文件，必須符合部門限制 (`user.department` 或 `department_code` 等於 `access_dept`) **且** 符合職級門檻 (`user.level <= access_level`)。
+     - `access_members` 為個人白名單，優先放行。
+   - `backend/routers/rag.py`：`rag_chat_stream()` 內新增 `KB_semantic_hybrid` 選項判斷與專屬權限過濾呼叫。
+   - `backend/routers/retrieval.py`：`/api/retrieval/search` 檢索測試端點支援 `KB_semantic_hybrid`。
+2. **前端**：
+   - `frontend/src/components/params/RagParamsPanel.vue`：新增「集團知識庫語義混合查詢 (KB Semantic Hybrid)」下拉選項與指代消解判斷。
+   - `frontend/src/views/RetrievalTestView.vue`：新增 `KB_semantic_hybrid` 選項、RRF Score 標籤顯示與步驟狀態更新。
+   - `frontend/src/components/params/ApiJsonPreviewPanel.vue`：更新 API 參數預覽註解。
+   - `frontend/src/components/eval/TestSetManager.vue`：測試集管理頁面新增該選項。
+3. **文件與測試**：
+   - `docs/DevelopmentProcess/NewFeaturesPlan_KBSemanticHybridPlan.md`：建立新功能規劃與實作說明文件。
+   - `docs/03_API_CONTRACT.md`：更新 API 合約說明。
+   - 通過 `test_kb_semantic_hybrid.py` 權限單元測試（包含公開/非公開、部門限制、職級門檻與白名單過濾案例）。
+

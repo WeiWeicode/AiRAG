@@ -330,7 +330,7 @@ async def rag_chat_stream(request: ChatRequest):
                     
                     filter_filename = pinned_filename_param  # 使用者手動鎖定優先；若未鎖定則為 None
                     # 取得提問向量
-                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment"):
+                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment", "KB_semantic_hybrid"):
                         # 先發送進行中事件表示在進行 Instruct 語義分析
                         step_data = {
                             "step": "semantic_analysis",
@@ -431,7 +431,7 @@ async def rag_chat_stream(request: ChatRequest):
 
                     # Qdrant 相似度與雙路融合檢索
                     feedback_boost_applied = False
-                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment"):
+                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment", "KB_semantic_hybrid"):
                         raw_results = await QdrantService.search_similar_two_step(
                             collection_name=kb.qdrant_collection_name,
                             query_vector=query_vector,
@@ -453,8 +453,11 @@ async def rag_chat_stream(request: ChatRequest):
                             )
                             feedback_boost_applied = True
 
-                        # 執行機密權限過濾 (重點：必須在附件收集前執行，避免無權限之關聯附件資料外洩)
-                        raw_results, excluded_items = PermissionService.filter_results(raw_results, simulated_user)
+                        # 執行機密權限過濾 (KB_semantic_hybrid 套用專屬 is_public 篩選機制)
+                        if search_type == "KB_semantic_hybrid":
+                            raw_results, excluded_items = PermissionService.filter_results_kb_semantic_hybrid(raw_results, simulated_user)
+                        else:
+                            raw_results, excluded_items = PermissionService.filter_results(raw_results, simulated_user)
 
                         # 語義混合附件查詢法：收集並查詢關聯附件
                         if search_type == "semantic_hybrid_attachment" and raw_results:

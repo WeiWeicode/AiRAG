@@ -158,7 +158,7 @@ const handleSearch = async () => {
   transformedQuery.value = ''
   selectedChunkIds.value = []
 
-  if (['semantic_hybrid', 'semantic_hybrid_feedback'].includes(searchType.value)) {
+  if (['semantic_hybrid', 'semantic_hybrid_feedback', 'KB_semantic_hybrid'].includes(searchType.value)) {
     semanticSteps.value = [
       { key: 'semantic_analysis', name: '語義分析', status: 'running', content: '正在發送提問至地端 AI 進行語義分析與結構化轉換...\n原始提問："' + queryText.value.trim() + '"', expanded: true },
       { key: 'vector_search', name: '向量資料查詢', status: 'pending', content: '', expanded: false }
@@ -185,7 +185,7 @@ const handleSearch = async () => {
         simulated_user_id: paramsStore.simulatedUserEnabled ? paramsStore.simulatedUserId : null
       }
     }
-    const isSemanticHybridFamily = ['semantic_hybrid', 'semantic_hybrid_feedback'].includes(searchType.value)
+    const isSemanticHybridFamily = ['semantic_hybrid', 'semantic_hybrid_feedback', 'KB_semantic_hybrid'].includes(searchType.value)
     const response = isSemanticHybridFamily
       ? await retrievalService.semanticHybridSearch(payload)
       : await retrievalService.search(payload)
@@ -517,9 +517,9 @@ const handleBatchDelete = async () => {
               </span>
               <div class="flex gap-2 items-center flex-shrink-0">
                 <span class="bg-[#10b981]/15 text-[#10b981] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
-                  {{ ['hybrid', 'semantic_hybrid'].includes(searchType) ? 'RRF Score' : 'Score' }}: {{ (res.score || 0).toFixed(4) }}
+                  {{ ['hybrid', 'semantic_hybrid', 'KB_semantic_hybrid'].includes(searchType) ? 'RRF Score' : 'Score' }}: {{ (res.score || 0).toFixed(4) }}
                 </span>
-                <span v-if="!['hybrid', 'semantic_hybrid'].includes(searchType) && res.distance" class="bg-[#3b82f6]/15 text-[#3b82f6] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
+                <span v-if="!['hybrid', 'semantic_hybrid', 'KB_semantic_hybrid'].includes(searchType) && res.distance" class="bg-[#3b82f6]/15 text-[#3b82f6] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
                   Distance: {{ (res.distance || 0).toFixed(4) }}
                 </span>
               </div>
@@ -614,6 +614,7 @@ const handleBatchDelete = async () => {
             <option value="hybrid" class="bg-[#111827] text-white">混合搜尋 (Hybrid Search)</option>
             <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合搜尋 (Semantic Hybrid Search)</option>
             <option value="semantic_hybrid_feedback" class="bg-[#111827] text-white">語義混合回饋查詢法 (Semantic Hybrid + Feedback)</option>
+            <option value="KB_semantic_hybrid" class="bg-[#111827] text-white">集團知識庫語義混合查詢 (KB Semantic Hybrid)</option>
             <option value="semantic_db_query" class="bg-[#111827] text-white">語義資料庫查詢法 (Semantic DB Query)</option>
           </select>
         </div>
