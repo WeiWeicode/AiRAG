@@ -14,9 +14,16 @@ const deptSuccess = ref('')
 // External API Keys state
 const apiKeys = ref([])
 const newApiKeyName = ref('')
+const newApiKeyScope = ref('chat')
 const isAddingApiKey = ref(false)
 const apiKeyError = ref('')
 const newlyCreatedKey = ref('')
+
+const apiKeyScopeOptions = [
+  { label: '問答 chat（/api/external/chat）', value: 'chat' },
+  { label: '寫入 ingest（/api/external/ingest/trigger）', value: 'ingest' },
+]
+const apiKeyScopeLabel = (scope) => apiKeyScopeOptions.find(o => o.value === scope)?.label || scope
 
 // User Roster state
 const users = ref([])
@@ -160,7 +167,7 @@ const handleAddApiKey = async () => {
   }
   isAddingApiKey.value = true
   try {
-    const res = await externalApiKeyService.create(newApiKeyName.value.trim())
+    const res = await externalApiKeyService.create(newApiKeyName.value.trim(), newApiKeyScope.value)
     newlyCreatedKey.value = res.data.api_key
     newApiKeyName.value = ''
     await loadApiKeys()
@@ -393,7 +400,7 @@ onMounted(() => {
                 <span class="w-2 h-2 rounded-full bg-amber-500"></span>
                 外部 API 金鑰管理 (External API Keys)
               </h3>
-              <p class="text-xs text-white/50 mt-0.5">供公司內網外部應用呼叫 /api/external/chat 時於 X-API-Key 標頭帶入</p>
+              <p class="text-xs text-white/50 mt-0.5">供公司內網外部應用呼叫 /api/external/chat（問答）或 /api/external/ingest/trigger（寫入）時於 X-API-Key 標頭帶入，兩種用途金鑰互不相通，建立時請選對 scope</p>
             </div>
           </div>
 
@@ -415,6 +422,12 @@ onMounted(() => {
               class="flex-1 bg-[#1f2937]/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-amber-500/50 transition-colors"
               @keyup.enter="handleAddApiKey"
             />
+            <select
+              v-model="newApiKeyScope"
+              class="bg-[#1f2937]/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500/50 transition-colors"
+            >
+              <option v-for="opt in apiKeyScopeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            </select>
             <button
               @click="handleAddApiKey"
               :disabled="isAddingApiKey"
@@ -430,6 +443,7 @@ onMounted(() => {
               <thead class="bg-[#1f2937]/50 text-white/60 uppercase text-[10px] tracking-wider border-b border-white/8">
                 <tr>
                   <th class="px-4 py-3">名稱</th>
+                  <th class="px-4 py-3">用途 (Scope)</th>
                   <th class="px-4 py-3">前綴</th>
                   <th class="px-4 py-3">狀態</th>
                   <th class="px-4 py-3">建立時間</th>
@@ -439,12 +453,15 @@ onMounted(() => {
               </thead>
               <tbody class="divide-y divide-white/5">
                 <tr v-if="apiKeys.length === 0">
-                  <td colspan="6" class="px-4 py-6 text-center text-white/40">
+                  <td colspan="7" class="px-4 py-6 text-center text-white/40">
                     目前尚無任何外部 API 金鑰，請於上方建立。
                   </td>
                 </tr>
                 <tr v-for="key in apiKeys" :key="key.id" class="hover:bg-white/3 transition-colors">
                   <td class="px-4 py-3 font-semibold text-white">{{ key.name }}</td>
+                  <td class="px-4 py-3">
+                    <span :class="key.scope === 'ingest' ? 'text-sky-400' : 'text-white/70'">{{ apiKeyScopeLabel(key.scope) }}</span>
+                  </td>
                   <td class="px-4 py-3 text-white/70 font-mono">{{ key.key_prefix }}...</td>
                   <td class="px-4 py-3">
                     <span :class="key.is_active ? 'text-emerald-400' : 'text-white/40'">{{ key.is_active ? '啟用中' : '已停用' }}</span>
