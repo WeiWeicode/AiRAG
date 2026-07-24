@@ -123,9 +123,9 @@ async def delete_knowledge_base(id: str):
         )
 
 @router.get("/{id}/metadata")
-async def get_kb_metadata(id: str):
+async def get_kb_metadata(id: str, refresh: bool = False):
     """
-    獲取知識庫內的所有唯一檔案名稱與標籤。
+    獲取知識庫內的所有唯一檔案名稱與標籤。傳入 refresh=True 可強制清除舊快取並重新讀取。
     """
     try:
         kb_id = PydanticObjectId(id)
@@ -142,5 +142,8 @@ async def get_kb_metadata(id: str):
             detail="指定的知識庫不存在"
         )
         
+    if refresh:
+        QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
+
     metadata = await QdrantService.get_unique_metadata(kb.qdrant_collection_name)
     return metadata

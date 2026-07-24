@@ -1,5 +1,74 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-23 QdrantService.upsert_chunks 預設分批 (batch_size=20) 寫入實作
+
+### 背景
+外部 Ingest API 與系統核心在呼叫 `QdrantService.upsert_chunks` 時，此前一次性傳送全部 points 給 Qdrant。當長文件產生大量 chunks 時，單次 HTTP Payload 可能太大導致連線失敗。
+
+### 變更內容
+- `backend/services/qdrant_service.py`：
+  - `upsert_chunks()` 方法新增 `batch_size: int = 20` 參數，內部改採 `range(0, total_points, batch_size)` 迴圈。
+  - 將向量點位分割為每批最多 20 筆（相容密集與稀疏雙向量，以及 fallback 單一密集向量模態），避免單次 Payload 過大。
+
+### 驗證
+- `python -m py_compile backend/services/qdrant_service.py` 語法檢驗通過。
+
+---
+
+## 2026-07-23 多應用 RAG 同步段落 Prompt 結構化文字前綴自動注入實作
+
+### 背景
+依據需求與手動切分慣例，外部應用同步傳入的文檔/文章在經過 Parent-Child 階層切分與圖片描述生成後，需於每個 chunk 的內文前自動注入 `[檔案名稱]`、`[段落編號]`、`[分類標籤]`、`[主要內容]` 結構化樣板前綴並同步向量化。
+
+### 變更內容
+- `backend/services/ingest_service.py`：
+  - 在 `_process_upsert()` 產出文字與圖片 chunks 後，於組裝 Qdrant payload 階段為每個 chunk 自動注入結構化標頭前綴：
+    ```
+    [檔案名稱] {filename}
+    [段落編號] 第 {chunk_index + 1} 段
+    [分類標籤] {tags}
+    [主要內容]
+    {chunk_content}
+    ```
+  - 重新計算結構化內文的 `token_count` 與 `char_count`，並將包含結構化標頭的內文送入 `EmbeddingService.get_embeddings_batch()` 產生向量，確保向量空間與手動批量寫入完全一致。
+
+### 驗證
+- `python -m py_compile backend/services/ingest_service.py` 語法檢驗通過。
+
+---
+
+## 2026-07-23 Qdrant 結構化元資料快取 (Metadata Cache) 跨容器與無刷新問題修復
+
+### 背景
+外部 Ingest API 在 worker 容器寫入資料後，僅清除 worker 進程內的快取，backend 容器仍沿用高達 600 秒的舊記憶體快取，導致前端 `GET /api/knowledge-bases/{id}/metadata` 無法即時取得最新寫入的檔案名稱選單。
+
+### 變更內容
+- `backend/services/qdrant_service.py`：將 `_METADATA_CACHE_TTL` 由 `600` 秒調降為 `60` 秒保底，降低跨容器異動延遲。
+- `backend/routers/knowledge_base.py`：`GET /api/knowledge-bases/{id}/metadata` 新增 `refresh: bool = False` 參數，傳入 `refresh=True` 時主動呼叫 `invalidate_metadata_cache()` 清除該 Collection 快取並重新從 Qdrant 掃描最新檔案名稱與標籤。
+
+### 驗證
+- `python -m py_compile backend/routers/knowledge_base.py backend/services/qdrant_service.py` 通過。
+
+---
+
+## 2026-07-23 多應用 RAG 同步服務（IngestService）預設 Parent-Child 大小雙層切分與 PDF/Word 圖片自動擷取描述實作
+
+### 背景
+依據 [`MULTI_APP_RAG_SYNC_PLAN.md`](MULTI_APP_RAG_SYNC_PLAN.md) 規劃與需求，外部應用（如 Knowledge Base, BPM, Meeting 等）透過 API 同步文件與附件至 AiRAG 時，切區段預設套用 Parent-Child 大小雙層結構，並自動針對 PDF 及 Word 檔擷取內嵌圖片透過 VLM/LLM 產生說明描述後獨立向量化。
+
+### 變更內容
+- `backend/services/ingest_service.py`：
+  - 擴充 `_process_upsert()` 邏輯：
+    1. **圖片擷取與描述**：當 `doc_type == "attachment_file"` 且副檔名為 `pdf`, `docx`, `dotx` 時，調用 `DocumentParser.extract_images_from_pdf` / `extract_images_from_docx` 提取圖片。
+    2. 使用 `caption_semaphore` 非同步控制併發，呼叫 `LLMService.describe_image` 產生圖片描述，並將實體圖檔儲存於 `FILE_ATTACHMENTS_DIR/image`。
+    3. **Parent-Child 雙層切分**：對傳入文字內容（支援 Markdown, Word, PDF, 4GL, 4FD）進行 Parent-Child 大小雙層結構切分，計算各 Parent Block 的 Child 索引範圍並設定 `parent_id` 與 `parent_chunk_index_range`。
+    4. **組合圖片 Chunk 與寫入 Qdrant**：將圖片描述轉為 `chunk_type="image"` 的 Chunk，附加 `"圖片"` Tag（若 MongoDB 無此 Tag 則自動建置），連同文字片段取得向量後批次寫入 Qdrant。
+
+### 驗證
+- 執行 `python -m py_compile backend/services/ingest_service.py` 檢查語法無誤。
+
+---
+
 ## 2026-07-17 外部 API 真實使用者身分、問答稽核紀錄、API Key 驗證機制後端實作
 
 ### 背景

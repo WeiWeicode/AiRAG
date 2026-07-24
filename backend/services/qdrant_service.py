@@ -11,7 +11,7 @@ logger = logging.getLogger("airag.qdrant")
 class QdrantService:
     _client: Optional[AsyncQdrantClient] = None
     _metadata_cache: Dict[str, Dict[str, Any]] = {}
-    _METADATA_CACHE_TTL = 600  # 秒，作為主動 invalidate 遺漏時的保底
+    _METADATA_CACHE_TTL = 60  # 秒，作為主動 invalidate 遺漏或跨容器異動時的保底
 
     @classmethod
     def get_client(cls) -> AsyncQdrantClient:
@@ -217,10 +217,12 @@ class QdrantService:
         cls, 
         collection_name: str, 
         chunks: List[Dict[str, Any]], 
-        vectors: List[List[float]]
+        vectors: List[List[float]],
+        batch_size: int = 20
     ) -> int:
         """
         批次將切分好的區塊與對應向量寫入 Qdrant（包含密集向量與稀疏向量）。
+        預設每 20 筆分批寫入，避免單一 HTTP Payload 過大連線失敗。
         """
         client = cls.get_client()
         # 確保 Collection 存在
@@ -245,40 +247,46 @@ class QdrantService:
                 )
             )
         
-        try:
-            await client.upsert(
-                collection_name=collection_name,
-                points=points
-            )
-            logger.info(f"Upserted {len(points)} points into Qdrant collection '{collection_name}' with sparse vectors.")
-            return len(points)
-        except Exception as e:
-            error_str = str(e)
-            if "Not existing vector name error: sparse-text" in error_str or "sparse-text" in error_str:
-                logger.warning(f"Collection '{collection_name}' does not support sparse vectors. Falling back to dense vector only upsert.")
-                points_dense_only = []
-                for i, chunk in enumerate(chunks):
-                    point_id = points[i].id
-                    points_dense_only.append(
-                        models.PointStruct(
-                            id=point_id,
-                            vector=vectors[i],  # 純密集向量
-                            payload=chunk
+        total_inserted = 0
+        total_points = len(points)
+
+        for start_idx in range(0, total_points, batch_size):
+            batch_points = points[start_idx:start_idx + batch_size]
+            try:
+                await client.upsert(
+                    collection_name=collection_name,
+                    points=batch_points
+                )
+                total_inserted += len(batch_points)
+            except Exception as e:
+                error_str = str(e)
+                if "Not existing vector name error: sparse-text" in error_str or "sparse-text" in error_str:
+                    logger.warning(f"Collection '{collection_name}' does not support sparse vectors. Falling back to dense vector only upsert for batch.")
+                    batch_dense_only = []
+                    for idx_in_batch, p in enumerate(batch_points):
+                        global_idx = start_idx + idx_in_batch
+                        batch_dense_only.append(
+                            models.PointStruct(
+                                id=p.id,
+                                vector=vectors[global_idx],  # 純密集向量
+                                payload=p.payload
+                            )
                         )
-                    )
-                try:
-                    await client.upsert(
-                        collection_name=collection_name,
-                        points=points_dense_only
-                    )
-                    logger.info(f"Successfully upserted {len(points_dense_only)} points with dense vectors only.")
-                    return len(points_dense_only)
-                except Exception as ex_dense:
-                    logger.error(f"Fallback dense-only upsert failed: {ex_dense}")
-                    raise ex_dense
-            else:
-                logger.error(f"Failed to upsert points to Qdrant collection '{collection_name}': {e}")
-                raise e
+                    try:
+                        await client.upsert(
+                            collection_name=collection_name,
+                            points=batch_dense_only
+                        )
+                        total_inserted += len(batch_dense_only)
+                    except Exception as ex_dense:
+                        logger.error(f"Fallback dense-only upsert failed for batch range {start_idx}:{start_idx+len(batch_points)}: {ex_dense}")
+                        raise ex_dense
+                else:
+                    logger.error(f"Failed to upsert points batch to Qdrant collection '{collection_name}': {e}")
+                    raise e
+
+        logger.info(f"Successfully upserted {total_inserted} points into Qdrant collection '{collection_name}' in batches (batch_size={batch_size}).")
+        return total_inserted
 
     @staticmethod
     def _extract_dense_vector(vector: Any) -> Optional[List[float]]:

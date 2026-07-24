@@ -83,10 +83,11 @@ const getAttachmentName = (attachmentId) => {
   return found ? found.original_filename : attachmentId
 }
 
-const fetchManagementMetadata = async () => {
+const fetchManagementMetadata = async (refresh = false) => {
   if (!paramsStore.knowledgeBaseId) return
   try {
-    const response = await api.get(`/api/knowledge-bases/${paramsStore.knowledgeBaseId}/metadata`)
+    const url = `/api/knowledge-bases/${paramsStore.knowledgeBaseId}/metadata${refresh ? '?refresh=true' : ''}`
+    const response = await api.get(url)
     managementFilenames.value = response.data?.filenames || []
     managementStructuredMetadata.value = response.data?.structured_metadata || []
     
@@ -108,6 +109,18 @@ const fetchManagementMetadata = async () => {
     }
   } catch (error) {
     console.error('無法取得知識庫元資料:', error)
+  }
+}
+
+const handleReload = async () => {
+  isLoadingManagement.value = true
+  try {
+    await fetchManagementMetadata(true)
+    if (managementFilterFilename.value) {
+      await loadManagementPoints()
+    }
+  } finally {
+    isLoadingManagement.value = false
   }
 }
 
@@ -351,8 +364,8 @@ onMounted(() => {
           </select>
         </div>
         <button 
-          @click="loadManagementPoints"
-          :disabled="isLoadingManagement || !managementFilterFilename"
+          @click="handleReload"
+          :disabled="isLoadingManagement"
           class="bg-[#8b5cf6] hover:bg-[#a78bfa] disabled:bg-purple-900/50 disabled:text-purple-300/50 text-white font-semibold px-5 py-2.5 rounded-lg text-xs transition-all h-[42px] whitespace-nowrap flex items-center gap-1.5"
         >
           <svg v-if="isLoadingManagement" class="animate-spin h-3.5 w-3.5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">

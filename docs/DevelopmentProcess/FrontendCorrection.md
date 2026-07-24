@@ -1,5 +1,38 @@
 <!-- 前端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-23 Nginx 動態容器 IP 解析最佳化 (解決 502 Bad Gateway)
+
+### 背景
+當單獨重啟或升級後端容器 (`docker-compose up --build -d backend`) 時，後端容器獲得新的容器 IP。但因 `nginx.conf` 原先直接撰寫 `proxy_pass http://backend:53020;`，Nginx 在啟動時靜態快取了舊 IP，導致 Nginx 無法連線至新 IP 的後端服務而回傳 `502 Bad Gateway`。
+
+### 變更內容
+- `nginx.conf`：
+  - 加入 Docker 內建 DNS 伺服器解析器設定：`resolver 127.0.0.11 valid=10s ipv6=off;`。
+  - 將 `/api` 與 `/health` location 的 `proxy_pass` 改為透過變數 `set $backend_upstream http://backend:53020; proxy_pass $backend_upstream;`，確保 Nginx 每次連線時皆能動態解析最新容器 IP。
+
+### 驗證
+- `docker exec airag-frontend nginx -t` 語法測試通過。
+- `docker exec airag-frontend nginx -s reload` 設定重新載入成功。
+- `curl http://localhost:53010/health` 測試成功回傳 `200 OK {"status":"healthy"}`。
+
+---
+
+## 2026-07-23 「已向量化資料管理」元資料強制刷新與重新整理按鈕優化
+
+### 背景
+外部 Ingest API 寫入檔案後，前端「已向量化資料管理與刪除」頁面因預設使用快取的 `GET /metadata` 端點，且「重新整理 / 載入」按鈕原本僅綁定點位載入 (`loadManagementPoints`)，導致點擊按鈕或外部寫入後下拉選單無法即時出現新檔名。
+
+### 變更內容
+- `frontend/src/components/embedding/VectorManagementTab.vue`：
+  - `fetchManagementMetadata(refresh = false)`：支援 `refresh: bool` 參數，帶入 `true` 時請求 `/api/knowledge-bases/{id}/metadata?refresh=true` 強制後端清空快取掃描 Qdrant。
+  - 新增 `handleReload()` 處理函式，當點擊「重新整理 / 載入」按鈕時同時刷新檔案下拉選單與已選選單點位。
+  - 將「重新整理 / 載入」按鈕的 `:disabled` 限制改為僅 `isLoadingManagement` 時禁用，允許使用者在未選擇檔案前即可點擊刷新下拉選單。
+
+### 驗證
+- 變更已編譯通過。
+
+---
+
 ## 2026-07-17 外部 API 真實使用者身分、API Key 管理介面前端實作
 
 ### 背景

@@ -143,11 +143,18 @@ Content-Type: application/json
     "content": "# 標題\n這是 Markdown 全文內容...",
     "version": 1,
     "updatedAt": "2026-07-23T10:00:00Z",
+    "tags": ["公告", "IT"],
+    "class": ["資訊部"],
+    "linksTo": ["系統修復說明書.pdf"],
     "permissions": {
       "isPublic": true
     }
   }
   ```
+  * `tags`（選填，String[]）：文件標籤，寫入 Qdrant payload 的 `tags` 欄位（會與圖片 chunk 自動附加的 `圖片` 標籤合併）。
+  * `class`（選填，String[]）：文件所屬分類/目錄名稱，寫入 Qdrant payload 的 `class` 欄位。
+  * `linksTo`（選填，String[]）：關聯文件名稱（如關聯附件標題），寫入 Qdrant payload 的 `links_to` 欄位。
+  * 以上三者未提供時預設為空陣列，不影響既有整合。
 
 ### 5.2 附件二進位拉取端點 (AiRAG 呼叫 外部應用)
 * **HTTP Method**：`GET`
@@ -158,6 +165,10 @@ Content-Type: application/json
   * `X-Doc-Version`: 版本號（例如 `3`）
   * `X-Doc-App-Id`: 應用識別碼（例如 `bpm`）
   * `X-Doc-Is-Public`: `"true"` 或 `"false"`
+  * `X-Doc-Tags`（選填）：`encodeURIComponent(JSON.stringify(string[]))`，例如標籤陣列 `["公告","IT"]` 編碼後的字串。AiRAG 端會 `unquote` 後解析 JSON，寫入 Qdrant payload 的 `tags` 欄位。
+  * `X-Doc-Class`（選填）：同上編碼方式，寫入 Qdrant payload 的 `class` 欄位。
+  * `X-Doc-Links-To`（選填）：同上編碼方式，寫入 Qdrant payload 的 `links_to` 欄位。
+  * 因 HTTP Header 建議僅使用 ASCII 字元，`tags` / `class` / `links_to` 若含中文等非 ASCII 字元，務必先 `encodeURIComponent` 再設定 Header，否則可能導致 Header 寫入失敗或亂碼。
 
 ### 5.3 Webhook 回調端點 (AiRAG 回報進度給 外部應用)
 * **HTTP Method**：`POST`
