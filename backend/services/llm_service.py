@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import json
 import logging
@@ -245,4 +246,36 @@ class LLMService:
                 f"content may be incomplete (context_hint={context_hint!r})"
             )
         return accumulated_content.strip(), truncated
+
+    @classmethod
+    async def describe_image_with_retry(
+        cls, image_bytes: bytes, mime_type: str, context_hint: str = ""
+    ) -> tuple:
+        """
+        describe_image() 的重試包裝，回傳格式與 describe_image() 相同的 (description, truncated)。
+        每次嘗試套用 IMAGE_CAPTION_TIMEOUT 牆鐘上限（describe_image() 內的 httpx timeout 在串流
+        模式下只約束單次讀取，無法限制總生成時間）；失敗則遞增等待後重試，最多
+        IMAGE_CAPTION_MAX_ATTEMPTS 次，全部失敗才拋出最後一次的例外交由呼叫端處理。
+        描述被 max_tokens 截斷（truncated=True）仍有可用內容，不視為失敗、不重試。
+        """
+        last_error = None
+        for attempt in range(1, settings.IMAGE_CAPTION_MAX_ATTEMPTS + 1):
+            try:
+                return await asyncio.wait_for(
+                    cls.describe_image(
+                        image_bytes=image_bytes,
+                        mime_type=mime_type,
+                        context_hint=context_hint
+                    ),
+                    timeout=settings.IMAGE_CAPTION_TIMEOUT
+                )
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Image captioning attempt {attempt}/{settings.IMAGE_CAPTION_MAX_ATTEMPTS} failed "
+                    f"({type(e).__name__}: {e!r}), context_hint={context_hint!r}"
+                )
+                if attempt < settings.IMAGE_CAPTION_MAX_ATTEMPTS:
+                    await asyncio.sleep(settings.IMAGE_CAPTION_RETRY_DELAY * attempt)
+        raise last_error
 

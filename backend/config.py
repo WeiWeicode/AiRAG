@@ -62,6 +62,21 @@ class Settings:
     FILE_ATTACHMENTS_IMAGE_SUBDIR: str = os.getenv("FILE_ATTACHMENTS_IMAGE_SUBDIR", "image")
     # 圖片描述並行處理的併發數量上限（同時最多幾張圖片一起送給 vLLM 做多模態描述）
     IMAGE_CAPTION_CONCURRENCY: int = int(os.getenv("IMAGE_CAPTION_CONCURRENCY", "3"))
+    # 單張圖片描述的牆鐘時間上限（秒）。串流模式下 httpx timeout 只約束單次讀取，
+    # 需要這道上限才能讓整份文件的圖片處理時間可預估，避免拖垮整個 ingest 任務
+    IMAGE_CAPTION_TIMEOUT: int = int(os.getenv("IMAGE_CAPTION_TIMEOUT", "180"))
+    # 單張圖片描述的最大嘗試次數（含第一次）與每次重試前的等待秒數（等待時間隨次數遞增）。
+    # 地端 vLLM 偶發逾時或無限重複迴圈時自動重試，減少寫入「[圖片描述產生失敗]」佔位段落
+    IMAGE_CAPTION_MAX_ATTEMPTS: int = int(os.getenv("IMAGE_CAPTION_MAX_ATTEMPTS", "3"))
+    IMAGE_CAPTION_RETRY_DELAY: int = int(os.getenv("IMAGE_CAPTION_RETRY_DELAY", "5"))
+
+    # arq ingest 任務的執行時間上限（秒）。arq 預設僅 300 秒，含大量內嵌圖片的
+    # Word/PDF 光是圖片描述就會超過而被判定 TimeoutError，需放寬。
+    # 最壞情況約 = ceil(圖片數 / IMAGE_CAPTION_CONCURRENCY)
+    #              × IMAGE_CAPTION_MAX_ATTEMPTS × IMAGE_CAPTION_TIMEOUT
+    INGEST_JOB_TIMEOUT: int = int(os.getenv("INGEST_JOB_TIMEOUT", "7200"))
+    # ingest 任務失敗後的最大嘗試次數（含第一次），避免逾時任務反覆重跑消耗 vLLM 資源
+    INGEST_JOB_MAX_TRIES: int = int(os.getenv("INGEST_JOB_MAX_TRIES", "2"))
 
     # 語義資料庫查詢法 (Semantic DB Query)
     AI_DB_QUERY_MAX_ROWS: int = int(os.getenv("AI_DB_QUERY_MAX_ROWS", "50"))

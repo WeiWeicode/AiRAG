@@ -88,6 +88,13 @@ class UpdateAttachmentsRequest(BaseModel):
     filename: str
     attachment_ids: List[str]
 
+class RegenerateImageCaptionsRequest(BaseModel):
+    # 二者擇一：point_ids 指定要重新產生描述的圖片段落；filename 則掃出該檔案的所有圖片段落
+    point_ids: Optional[List[str]] = None
+    filename: Optional[str] = None
+    # 預設只處理描述失敗的段落，避免誤覆蓋已成功的描述
+    only_failed: bool = True
+
 class UpdatePermissionsRequest(BaseModel):
     filename: str
     is_confidential: bool

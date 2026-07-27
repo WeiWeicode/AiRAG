@@ -1,5 +1,71 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-07-27 附件 `.doc` 解析亂碼與含大量內嵌圖片 `.docx` 同步逾時修正
+
+### 背景
+使用者同步知識庫附件時回報兩個問題：
+
+1. **`.doc` 解析出亂碼**：例如 `會議記錄_專案會議_110329 教育訓練.doc` 在向量庫中的段落內容為
+   `ÇŒ™e`、`h˜®U-ŠŠ+^ÿË¡ÃS±` 這類無意義字元，且夾雜 `HYPERLINK "http://..."` 等 Word 功能代碼。
+   原因：`parse_doc_to_markdown()` 依序嘗試 textract → pypandoc → comtypes → 二進位字串擷取，但
+   `requirements.txt` 從未安裝 textract / pypandoc（pypandoc 本身也不支援讀取舊版 `.doc`），
+   comtypes 僅限 Windows 而實際部署為 Linux 容器。四段 fallback 必定全數落到最後的
+   「逐位元組取可列印字元」，等於把 OLE2 二進位內容當文字讀，產生的亂碼還會被 embedding 寫入 Qdrant。
+2. **`.docx` 同步失敗**：`ERP Tiptop災難實境演練.docx` 在 worker 中報 `TimeoutError`：
+   ```text
+   300.00s ! a8661c8177d24708b216683cc964e66c:process_ingest_task failed, TimeoutError:
+     File "/app/services/ingest_service.py", line 227, in _process_upsert
+       extracted_images = list(await asyncio.gather(*[process_one_image(img) for img in raw_images]))
+   ```
+   文字解析與圖片抽取其實都正常（1773 字、19 張圖片），真正原因是 `worker.py` 的 `WorkerSettings`
+   未設定 `job_timeout`，沿用 arq 預設值 300 秒；19 張圖片在 `IMAGE_CAPTION_CONCURRENCY=3` 下
+   至少需 7 輪多模態描述，必定超出 300 秒。另外 `describe_image()` 內的 `timeout=300.0` 是 httpx
+   的單次讀取逾時，串流模式下無法約束單張圖片的總生成時間，整份文件耗時因此不可預估。
+
+### 變更內容
+1. `backend/services/word_parent_child_chunker.py`：
+   - 新增 `_extract_doc_pieces()`，改以 OLE2 Compound File 直接解析舊版 `.doc`：從 `WordDocument`
+     stream 的 FIB flags（offset `0x000A`）判斷 table stream 為 `1Table` 或 `0Table`，讀取
+     `FibRgFcLcb97` 的 `fcClx`/`lcbClx`（offset `0x01A2`）取得 Clx，跳過 Prc（`0x01`）後解析
+     Pcdt（`0x02`）內的 PlcPcd piece table，再依各 piece 的 `fc` 旗標分別以 UTF-16LE 或
+     cp950（失敗才退 cp1252）解碼，可正確還原繁體中文內容。
+   - 新增 `_clean_doc_text()`：移除 field instruction（`\x13`…`\x14` 之間的 `HYPERLINK` 等代碼）
+     只保留顯示結果，並把儲存格結束 `\x07`、手動換行 `\x0b`、分頁 `\x0c`、段落結束 `\r` 統一轉為換行。
+   - `parse_doc_to_markdown()` 改以上述解析為唯一路徑；副檔名為 `.doc` 但實際是 OOXML（`PK` 開頭）
+     時轉交 `parse_docx_to_markdown()`；非 OLE2 檔案（RTF / HTML 另存）直接拋出可讀錯誤訊息。
+     **移除二進位字串擷取 fallback**，解析失敗改為明確 `ValueError`，避免亂碼污染向量庫。
+2. `backend/requirements.txt`：新增 `olefile>=0.47`（純 Python、無編譯依賴）。
+3. `backend/worker.py`：`WorkerSettings` 新增 `job_timeout = settings.INGEST_JOB_TIMEOUT` 與
+   `max_tries = settings.INGEST_JOB_MAX_TRIES`，避免逾時任務以預設 5 次反覆重跑消耗 vLLM 資源。
+4. `backend/services/ingest_service.py`：`process_one_image()` 內的 `LLMService.describe_image()`
+   改以 `asyncio.wait_for(..., timeout=settings.IMAGE_CAPTION_TIMEOUT)` 包裹，逾時走既有
+   `caption_failed` 佔位描述邏輯，讓整份文件的圖片處理時間上限可預估
+   （最壞情況約 `ceil(圖片數 / IMAGE_CAPTION_CONCURRENCY) × IMAGE_CAPTION_TIMEOUT`）。
+5. `backend/config.py`、`backend/.env.example`：新增 `IMAGE_CAPTION_TIMEOUT`（預設 180 秒）、
+   `INGEST_JOB_TIMEOUT`（預設 3600 秒）、`INGEST_JOB_MAX_TRIES`（預設 2），並補上原本未列於
+   `.env.example` 的 `IMAGE_CAPTION_CONCURRENCY`。
+
+### 驗證
+- `DocumentParser.parse_file()` 實測兩份問題檔案：
+  - `會議記錄_專案會議_110317 教育訓練.doc`：1327 字、`U+FFFD` 取代字元 0 個，會議主題／參與人員／
+    系統設定路徑等內容完整正確，`HYPERLINK` 功能代碼已不出現，表格儲存格正確斷行；切分後 3 個 chunk。
+  - `ERP Tiptop災難實境演練.docx`：1773 字、`U+FFFD` 0 個，標題階層與 Markdown 表格正常；
+    切分後 8 個 chunk，圖片抽取 19 張（0.84 MB）皆成功。
+- `python tests/test_word_chunker.py` 通過（exit code 0，需以 `PYTHONIOENCODING=utf-8` 執行，
+  否則 Windows cp950 主控台在列印 `✔` 時會 `UnicodeEncodeError`，屬既有環境問題非本次變更）。
+- `worker.py` / `config.py` import 檢查通過，`job_timeout=3600`、`max_tries=2`、
+  `IMAGE_CAPTION_TIMEOUT=180` 讀取正確。
+
+### 已知限制
+- 舊版 `.doc` 仍不會抽取內嵌圖片做描述（`ingest_service.py` 的圖片抽取僅涵蓋 `pdf` / `docx` / `dotx`），
+  此次未變更該行為。
+- `.doc` 解析結果為純文字（無 Markdown 標題階層），Parent-Child 切分會視為單一 parent；
+  舊版格式無可靠的 outline 資訊，維持現狀。
+- 需重新 `docker-compose up -d --build`（含 worker）讓 `olefile` 與新設定生效，並對先前寫入亂碼的
+  `.doc` 附件重新觸發一次同步以覆蓋舊 chunk。
+
+---
+
 ## 2026-07-22 Qdrant 啟用 API Key 時 AsyncQdrantClient 誤用 HTTPS 導致 SSL 握手失敗修正
 
 ### 背景

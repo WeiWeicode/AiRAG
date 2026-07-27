@@ -35,3 +35,7 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings(host=settings.REDIS_HOST, port=settings.REDIS_PORT)
+    # arq 預設 job_timeout 只有 300 秒，含大量內嵌圖片的 Word/PDF 會在圖片描述階段被
+    # 判定 TimeoutError 而整份文件同步失敗，這裡改為可由環境變數調整
+    job_timeout = settings.INGEST_JOB_TIMEOUT
+    max_tries = settings.INGEST_JOB_MAX_TRIES

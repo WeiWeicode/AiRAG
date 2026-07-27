@@ -157,78 +157,119 @@ def parse_docx_to_markdown(docx_bytes: bytes) -> str:
     return "\n\n".join(markdown_parts).strip()
 
 
+def _extract_doc_pieces(doc_bytes: bytes) -> str:
+    """
+    Extracts the raw text of a legacy Word .doc (OLE2 Compound File) by walking the
+    FIB piece table (MS-DOC 規格的 Clx / PlcPcd)，回傳含 Word 控制字元的原始文字。
+
+    每個 piece 的 fc 若帶有 0x40000000 旗標代表以單位元組（文件 code page）儲存，
+    否則為 UTF-16LE。中文 .doc 多為 UTF-16LE，單位元組時優先以 cp950 解碼。
+    """
+    import struct
+
+    import olefile
+
+    with olefile.OleFileIO(io.BytesIO(doc_bytes)) as ole:
+        if not ole.exists("WordDocument"):
+            raise ValueError("OLE2 檔案內找不到 WordDocument stream，可能不是 Word .doc 檔")
+        word_stream = ole.openstream("WordDocument").read()
+
+        # FIB base 的 flags（offset 0x000A）第 9 個 bit 決定 table stream 是 1Table 還是 0Table
+        flags = struct.unpack_from("<H", word_stream, 0x000A)[0]
+        table_name = "1Table" if (flags & 0x0200) else "0Table"
+        if not ole.exists(table_name):
+            raise ValueError(f"OLE2 檔案內找不到 {table_name} stream，無法取得 piece table")
+        table_stream = ole.openstream(table_name).read()
+
+    # FibRgFcLcb97 中 fcClx / lcbClx 的固定位移
+    fc_clx, lcb_clx = struct.unpack_from("<iI", word_stream, 0x01A2)
+    clx = table_stream[fc_clx:fc_clx + lcb_clx]
+
+    # Clx = 若干個 Prc（0x01）後接唯一一個 Pcdt（0x02），Pcdt 內才是 PlcPcd
+    plc_pcd = None
+    pos = 0
+    while pos < len(clx):
+        if clx[pos] == 0x01:
+            cb_grpprl = struct.unpack_from("<H", clx, pos + 1)[0]
+            pos += 3 + cb_grpprl
+        elif clx[pos] == 0x02:
+            lcb = struct.unpack_from("<I", clx, pos + 1)[0]
+            plc_pcd = clx[pos + 5:pos + 5 + lcb]
+            break
+        else:
+            break
+    if not plc_pcd or len(plc_pcd) < 16:
+        raise ValueError("解析 .doc piece table 失敗（Clx 內找不到有效的 PlcPcd）")
+
+    # PlcPcd = (n+1) 個 CP（各 4 bytes）後接 n 個 PCD（各 8 bytes）
+    piece_count = (len(plc_pcd) - 4) // 12
+    cps = struct.unpack_from(f"<{piece_count + 1}I", plc_pcd, 0)
+
+    parts = []
+    for i in range(piece_count):
+        pcd_offset = 4 * (piece_count + 1) + 8 * i
+        fc = struct.unpack_from("<I", plc_pcd, pcd_offset + 2)[0]
+        is_single_byte = bool(fc & 0x40000000)
+        fc &= 0x3FFFFFFF
+        char_count = cps[i + 1] - cps[i]
+        if char_count <= 0:
+            continue
+        if is_single_byte:
+            raw = word_stream[fc // 2: fc // 2 + char_count]
+            try:
+                parts.append(raw.decode("cp950"))
+            except UnicodeDecodeError:
+                parts.append(raw.decode("cp1252", errors="ignore"))
+        else:
+            raw = word_stream[fc: fc + char_count * 2]
+            parts.append(raw.decode("utf-16-le", errors="ignore"))
+
+    return "".join(parts)
+
+
+def _clean_doc_text(raw_text: str) -> str:
+    """
+    將 .doc piece 的原始文字中的 Word 控制字元轉為純文字：
+    移除功能代碼（field instruction，例如 HYPERLINK "..."）只保留顯示結果，
+    表格儲存格結束、換行、分頁符號統一轉為換行，其餘控制字元去除。
+    """
+    # \x13 field begin ... \x14 separator ... \x15 field end：只保留 separator 之後的顯示文字
+    raw_text = re.sub(r"\x13[^\x14\x15]*\x14?", "", raw_text)
+    raw_text = raw_text.replace("\x15", "")
+    # \x07 儲存格/列結束、\x0b 手動換行、\x0c 分頁、\r 段落結束
+    for ch in ("\x07", "\x0b", "\x0c", "\r"):
+        raw_text = raw_text.replace(ch, "\n")
+    raw_text = re.sub(r"[\x00-\x08\x0e-\x1f]", "", raw_text)
+    lines = [line.strip() for line in raw_text.split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
 def parse_doc_to_markdown(doc_bytes: bytes, filename: str) -> str:
     """
-    Parses legacy Word .doc files into Markdown format.
-    Gracefully falls back across textract, pypandoc, comtypes, and binary string extraction.
+    Parses legacy Word .doc files into plain text / Markdown format.
+    以 OLE2 piece table 直接解析（可正確處理中文 UTF-16LE 與 cp950 內容）；
+    若檔案其實是被改名的 .docx（zip）則轉交 parse_docx_to_markdown。
+    解析失敗時直接拋出例外，不再回退到二進位字串擷取（會產生亂碼並污染向量庫）。
     """
-    import tempfile
-    
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    temp_dir = os.path.join(current_dir, "../temp")
-    os.makedirs(temp_dir, exist_ok=True)
-    
-    temp_fd, temp_path = tempfile.mkstemp(suffix=".doc", dir=temp_dir)
+    if doc_bytes[:2] == b"PK":
+        logger.info(f"{filename} 副檔名為 .doc 但實際為 OOXML（zip）格式，改用 docx 解析")
+        return parse_docx_to_markdown(doc_bytes)
+
+    if doc_bytes[:8] != b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        raise ValueError(
+            f"{filename} 不是有效的 Word .doc（OLE2）檔案，若為 RTF 或 HTML 另存的檔案請先轉存為 .docx"
+        )
+
     try:
-        with os.fdopen(temp_fd, 'wb') as tmp:
-            tmp.write(doc_bytes)
-        
-        # 1. Try textract
-        try:
-            import textract
-            text_bytes = textract.process(temp_path)
-            return text_bytes.decode('utf-8', errors='ignore').strip()
-        except Exception as e:
-            logger.debug(f"textract failed: {e}")
-            
-        # 2. Try pypandoc
-        try:
-            import pypandoc
-            output = pypandoc.convert_file(temp_path, 'markdown', format='doc')
-            return output.strip()
-        except Exception as e:
-            logger.debug(f"pypandoc failed: {e}")
-            
-        # 3. Try comtypes Word Automation (Windows only)
-        if os.name == 'nt':
-            try:
-                import comtypes.client
-                word = comtypes.client.CreateObject('Word.Application')
-                word.Visible = False
-                doc = word.Documents.Open(temp_path)
-                docx_path = temp_path + "x"
-                doc.SaveAs(docx_path, FileFormat=16) # 16 is wdFormatXMLDocument
-                doc.Close()
-                word.Quit()
-                
-                if os.path.exists(docx_path):
-                    with open(docx_path, "rb") as df:
-                        docx_bytes = df.read()
-                    os.remove(docx_path)
-                    return parse_docx_to_markdown(docx_bytes)
-            except Exception as e:
-                logger.debug(f"comtypes Word automation failed: {e}")
-                
-        # 4. Binary text extraction fallback
-        logger.warning(f"All standard doc parsers failed for {filename}. Using basic binary text extraction fallback.")
-        import string
-        printable = set(string.printable)
-        text_chars = []
-        for b in doc_bytes:
-            c = chr(b)
-            if c in printable or b >= 128:
-                text_chars.append(c)
-        extracted = "".join(text_chars)
-        cleaned = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f]', '', extracted)
-        lines = [line.strip() for line in cleaned.split('\n') if len(line.strip()) > 3]
-        return "\n\n".join(lines)
-        
-    finally:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except Exception:
-                pass
+        text = _clean_doc_text(_extract_doc_pieces(doc_bytes))
+    except Exception as e:
+        logger.error(f"Error parsing DOC {filename}: {type(e).__name__}: {e}")
+        raise ValueError(f"DOC 解析失敗: {e}") from e
+
+    if not text.strip():
+        raise ValueError(f"DOC 解析後內容為空: {filename}")
+
+    return text
 
 
 def chunk_word_content(

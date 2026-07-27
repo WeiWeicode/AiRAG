@@ -309,6 +309,64 @@ const handleBatchDeleteManagement = async () => {
   }
 }
 
+// 圖片描述重新產生：以磁碟留存的原圖重新呼叫多模態模型，成功後覆蓋原段落
+const regeneratingChunkIds = ref([])
+const isRegeneratingFile = ref(false)
+
+const isCaptionFailed = (point) => {
+  if (point.metadata?.caption_failed === true) return true
+  return (point.content || '').includes('[圖片描述產生失敗')
+}
+
+const failedCaptionCount = computed(() => {
+  return managementPoints.value.filter(p => p.metadata?.chunk_type === 'image' && isCaptionFailed(p)).length
+})
+
+const handleRegenerateSingleCaption = async (pointId) => {
+  if (regeneratingChunkIds.value.includes(pointId)) return
+
+  regeneratingChunkIds.value.push(pointId)
+  try {
+    const response = await retrievalService.regenerateImageCaptions(paramsStore.knowledgeBaseId, {
+      pointIds: [pointId],
+      onlyFailed: false
+    })
+    if (response.repaired_count > 0) {
+      await loadManagementPoints()
+    } else {
+      const detail = response.details?.[0]
+      alert(`重新產生描述未成功：${detail?.message || response.message}`)
+    }
+  } catch (error) {
+    console.error('重新產生圖片描述失敗:', error)
+    alert(error.response?.data?.detail || '重新產生圖片描述失敗，請檢查後端連線與多模態模型服務。')
+  } finally {
+    regeneratingChunkIds.value = regeneratingChunkIds.value.filter(id => id !== pointId)
+  }
+}
+
+const handleRegenerateFailedCaptions = async () => {
+  if (!managementFilterFilename.value) return
+  if (!confirm(`確定要重新產生檔案「${managementFilterFilename.value}」中所有描述失敗的圖片段落嗎？\n此動作會呼叫多模態模型，可能需要數分鐘。`)) return
+
+  isRegeneratingFile.value = true
+  try {
+    const response = await retrievalService.regenerateImageCaptions(paramsStore.knowledgeBaseId, {
+      filename: managementFilterFilename.value,
+      onlyFailed: true
+    })
+    alert(response.message)
+    if (response.repaired_count > 0) {
+      await loadManagementPoints()
+    }
+  } catch (error) {
+    console.error('批次重新產生圖片描述失敗:', error)
+    alert(error.response?.data?.detail || '批次重新產生圖片描述失敗，請檢查後端連線與多模態模型服務。')
+  } finally {
+    isRegeneratingFile.value = false
+  }
+}
+
 const handleDeleteFile = async () => {
   if (!managementFilterFilename.value) return
   if (!confirm(`確定要永久刪除檔案「${managementFilterFilename.value}」的所有向量段落資料嗎？`)) return
@@ -374,7 +432,23 @@ onMounted(() => {
           </svg>
           {{ isLoadingManagement ? '載入中...' : '重新整理 / 載入' }}
         </button>
-        <button 
+        <button
+          v-if="managementFilterFilename && failedCaptionCount > 0"
+          @click="handleRegenerateFailedCaptions"
+          :disabled="isLoadingManagement || isRegeneratingFile"
+          class="bg-[#f59e0b]/20 hover:bg-[#f59e0b]/30 disabled:opacity-50 text-amber-300 border border-[#f59e0b]/30 font-semibold px-5 py-2.5 rounded-lg text-xs transition-all h-[42px] whitespace-nowrap flex items-center gap-1.5"
+          title="以留存的原圖重新呼叫多模態模型產生描述，成功後覆蓋原本的失敗段落"
+        >
+          <svg v-if="isRegeneratingFile" class="animate-spin h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+          </svg>
+          {{ isRegeneratingFile ? '重新產生中...' : `重新產生失敗描述 (${failedCaptionCount})` }}
+        </button>
+        <button
           v-if="managementFilterFilename"
           @click="handleDeleteFile"
           :disabled="isLoadingManagement"
@@ -656,7 +730,27 @@ onMounted(() => {
                 </span>
               </span>
             </span>
-            <button 
+            <button
+              v-if="point.metadata?.chunk_type === 'image'"
+              @click="handleRegenerateSingleCaption(point.chunk_id)"
+              :disabled="regeneratingChunkIds.includes(point.chunk_id)"
+              :class="[
+                'p-1.5 rounded transition-all flex-shrink-0 disabled:opacity-50',
+                isCaptionFailed(point)
+                  ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-500/10'
+                  : 'text-[#9ca3af] hover:text-white hover:bg-white/10'
+              ]"
+              title="重新產生此圖片的 AI 描述（成功後覆蓋原段落）"
+            >
+              <svg v-if="regeneratingChunkIds.includes(point.chunk_id)" class="animate-spin h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+              </svg>
+            </button>
+            <button
               @click="handleDeleteSingleManagement(point.chunk_id)"
               class="text-red-400 hover:text-red-300 hover:bg-red-500/10 p-1.5 rounded transition-all flex-shrink-0"
               title="刪除此向量段落"
@@ -700,7 +794,12 @@ onMounted(() => {
               </div>
             </div>
             <div class="flex-grow flex flex-col gap-1.5 w-full">
-              <span class="text-[10px] font-semibold text-[#a78bfa] uppercase tracking-wider select-none">圖片描述 (AI Generated Caption)</span>
+              <span class="text-[10px] font-semibold text-[#a78bfa] uppercase tracking-wider select-none flex items-center gap-2">
+                圖片描述 (AI Generated Caption)
+                <span v-if="isCaptionFailed(point)" class="bg-amber-500/10 border border-amber-500/30 text-amber-300 px-1.5 py-0.5 rounded text-[9px] normal-case tracking-normal">
+                  描述失敗，可按上方 ↻ 重新產生
+                </span>
+              </span>
               <p class="text-xs text-white leading-relaxed whitespace-pre-wrap">
                 {{ point.content }}
               </p>

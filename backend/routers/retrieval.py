@@ -7,9 +7,11 @@ from datetime import datetime
 from schemas.retrieval import (
     RetrievalRequest, RetrievalResponse, RetrievalResultItem, RetrievalMetadata,
     QueryTransformRequest, QueryTransformResponse, BatchDeleteRequest, DeleteByFilenameRequest,
-    UpdateLinksRequest, UpdateAttachmentsRequest, UpdatePermissionsRequest, ExcludedResultItem
+    UpdateLinksRequest, UpdateAttachmentsRequest, UpdatePermissionsRequest, ExcludedResultItem,
+    RegenerateImageCaptionsRequest
 )
 from services.embedding_service import EmbeddingService
+from services.image_caption_repair_service import ImageCaptionRepairService
 from services.qdrant_service import QdrantService
 from services.llm_service import LLMService
 from services.rerank_service import RerankService
@@ -627,6 +629,61 @@ async def update_file_permissions(knowledge_base_id: str, request: UpdatePermiss
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"無法在向量資料庫中更新機密權限: {str(e)}"
+        )
+
+
+@router.post("/knowledge-bases/{knowledge_base_id}/images/regenerate-captions")
+async def regenerate_image_captions(knowledge_base_id: str, request: RegenerateImageCaptionsRequest):
+    """
+    重新產生圖片段落的 AI 描述：以磁碟上留存的原圖重新呼叫多模態模型，成功後以
+    相同 point id 覆蓋該段落（等同刪除原本的失敗段落再寫入新描述），失敗則保留原段落。
+    可指定 point_ids（單筆/多筆段落）或 filename（整個檔案的圖片段落）。
+    """
+    try:
+        kb_id = PydanticObjectId(knowledge_base_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="無效的知識庫 ID 格式"
+        )
+
+    kb = await KnowledgeBase.get(kb_id)
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定的知識庫不存在"
+        )
+
+    if not request.point_ids and not (request.filename or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="請提供 point_ids 或 filename 以指定要重新產生描述的圖片段落"
+        )
+
+    try:
+        result = await ImageCaptionRepairService.repair(
+            collection_name=kb.qdrant_collection_name,
+            filename=request.filename,
+            point_ids=request.point_ids,
+            only_failed=request.only_failed
+        )
+        if result["repaired_count"] > 0:
+            QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
+            kb.updated_at = datetime.utcnow()
+            await kb.save()
+
+        return {
+            "message": (
+                f"重新產生完成：成功 {result['repaired_count']} 筆、"
+                f"失敗 {result['failed_count']} 筆、略過 {result['skipped_count']} 筆"
+            ),
+            **result
+        }
+    except Exception as e:
+        logger.error(f"Regenerate image captions failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"無法重新產生圖片描述: {str(e)}"
         )
 
 

@@ -200,7 +200,8 @@ class IngestService:
                     description = ""
                     try:
                         async with caption_semaphore:
-                            description, caption_truncated = await LLMService.describe_image(
+                            # 內含單張圖片的牆鐘時間上限與自動重試，避免偶發逾時就留下佔位描述
+                            description, caption_truncated = await LLMService.describe_image_with_retry(
                                 image_bytes=img_bytes,
                                 mime_type=mime_type,
                                 context_hint=context_hint
@@ -334,7 +335,8 @@ class IngestService:
                             "page": img_item.page or 1,
                             "filename": filename,
                             "parent_id": p_id,
-                            "parent_chunk_index_range": ""
+                            "parent_chunk_index_range": "",
+                            "caption_failed": img_item.caption_failed
                         },
                         "chunk_type": "image"
                     })
@@ -417,6 +419,8 @@ class IngestService:
             if c_type == "image":
                 payload_item["chunk_type"] = "image"
                 payload_item["image_filename"] = meta.get("image_filename", "")
+                # 供「重新產生圖片描述」修復功能篩選出描述失敗的段落
+                payload_item["caption_failed"] = bool(meta.get("caption_failed", False))
 
             chunks_payload.append(payload_item)
 

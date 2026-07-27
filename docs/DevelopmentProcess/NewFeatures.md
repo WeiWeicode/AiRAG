@@ -1,5 +1,90 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-27 圖片描述失敗自動重試與「重新產生圖片描述」修復功能
+
+### 背景
+同日修正 `.docx` 圖片描述逾時問題後（見 [BugFix.md](BugFix.md) 2026-07-27），仍有少部分圖片會因地端 vLLM
+偶發逾時或無限重複迴圈而落到 `caption_failed` 佔位邏輯，在向量庫留下
+`[圖片描述產生失敗：ERP Tiptop災難實境演練.docx_img2]` 這類無檢索價值的段落。使用者需求為
+「針對少部分圖片描述產生失敗，自動刪除該段落並重新產生描述」。
+
+原本無法修復既有失敗段落的關鍵限制與可行性：
+- `caption_failed` 只存在於 `ExtractedImageItem`，**沒有寫進 Qdrant payload**，只能靠內文字串辨識。
+- 但**原圖有留存在磁碟**（`FILE_ATTACHMENTS_DIR/FILE_ATTACHMENTS_IMAGE_SUBDIR/<uuid>.<ext>`），
+  且 `image_filename` 在 payload 中，因此可以取回原圖重新產生描述。
+
+### 變更內容
+**1. 同步時自動重試（降低失敗率）**
+- `backend/services/llm_service.py`：新增 `LLMService.describe_image_with_retry()`，包裝
+  `describe_image()`，每次嘗試套用 `IMAGE_CAPTION_TIMEOUT` 牆鐘上限，失敗則遞增等待後重試，
+  最多 `IMAGE_CAPTION_MAX_ATTEMPTS` 次，全部失敗才拋出最後一次例外交由呼叫端處理。
+  描述被 `max_tokens` 截斷（`truncated=True`）仍有可用內容，不視為失敗、不重試。
+- `backend/services/ingest_service.py`：改呼叫 `describe_image_with_retry()`（取代前次修正加入的
+  單層 `asyncio.wait_for`）；圖片 chunk 的 metadata 與 Qdrant payload 新增 `caption_failed` 欄位，
+  供修復功能篩選。
+
+**2. 重新產生描述的修復 API（處理既有資料）**
+- 新增 `backend/services/image_caption_repair_service.py`：
+  - `is_caption_failed()`：優先看 payload 的 `caption_failed`，舊資料退回比對內文
+    `[圖片描述產生失敗` 前綴。
+  - `_resolve_image_path()`：只取 `os.path.basename()` 組路徑，避免 payload 被竄改造成路徑穿越。
+  - `_replace_main_content()`：**只替換 `[主要內容]` 之後的描述本文**，保留原本
+    `[檔案名稱]` / `[段落編號]` / `[分類標籤]` 結構化前綴，確保與 ingest 寫入格式一致。
+  - `repair()`：依 `point_ids` 或 `filename` 取出圖片段落，以 `IMAGE_CAPTION_CONCURRENCY`
+    併發重新產生描述，成功者重新 embedding 並**以相同 point id upsert 覆蓋**
+    （Qdrant upsert 同 ID 會整筆換掉 payload 與向量，等同刪除失敗段落再寫入新描述，
+    因此 `chunk_count` 不需調整）；失敗者保留原段落不動並逐筆回報原因。
+- `backend/services/qdrant_service.py`：
+  - 新增 `get_image_points()`：依 `point_ids` 取回或依 `filename` + `chunk_type == "image"` 掃出圖片段落。
+  - `upsert_chunks()` 新增選用參數 `point_ids`，未提供時行為與原本完全相同（產生新 UUID），
+    提供時沿用指定 ID 以原地覆蓋。既有 4 個呼叫端皆為位置參數呼叫，不受影響。
+- `backend/schemas/retrieval.py`：新增 `RegenerateImageCaptionsRequest`
+  （`point_ids` / `filename` 二者擇一、`only_failed` 預設 `true` 避免誤覆蓋已成功的描述）。
+- `backend/routers/retrieval.py`：新增
+  `POST /api/retrieval/knowledge-bases/{knowledge_base_id}/images/regenerate-captions`，
+  回傳 `repaired_count` / `failed_count` / `skipped_count` 與逐筆 `details`；有成功筆數才
+  invalidate metadata cache 並更新 `kb.updated_at`。
+
+**3. 前端操作入口**
+- `frontend/src/services/retrievalService.js`：新增 `regenerateImageCaptions()`。
+- `frontend/src/components/embedding/VectorManagementTab.vue`：
+  - 圖片段落標題列新增 ↻ 按鈕，單筆重新產生描述（`only_failed: false`，可強制重做成功的描述），
+    處理中顯示 spinner 並停用；描述失敗時按鈕呈琥珀色。
+  - 描述失敗的段落在「圖片描述 (AI Generated Caption)」旁顯示「描述失敗，可按上方 ↻ 重新產生」標記。
+  - 檔案工具列在該檔案存在失敗段落時顯示「重新產生失敗描述 (N)」按鈕，一次修復整個檔案
+    （`only_failed: true`），完成後 alert 統計並重新載入段落。
+
+**4. 設定項**
+- `backend/config.py`、`backend/.env.example`、`backend/.env`：新增
+  `IMAGE_CAPTION_MAX_ATTEMPTS`（預設 3）、`IMAGE_CAPTION_RETRY_DELAY`（預設 5 秒）；
+  `INGEST_JOB_TIMEOUT` 預設由 3600 調整為 7200 秒（含重試後最壞情況約
+  `ceil(19 / 3) × 3 × 180 = 3780` 秒，需留足餘裕）。
+
+### 驗證
+- `main.py` import 成功，OpenAPI 已註冊
+  `/api/retrieval/knowledge-bases/{knowledge_base_id}/images/regenerate-captions`。
+- `upsert_chunks` 簽章確認為
+  `(collection_name, chunks, vectors, batch_size=20, point_ids=None)`，既有呼叫端不受影響。
+- `ImageCaptionRepairService` 純函式實測：
+  - `_replace_main_content()` 正確保留 `[檔案名稱]` / `[段落編號]` / `[分類標籤]` 前綴，只換描述本文；
+    無結構化前綴時回退為直接使用新描述。
+  - `is_caption_failed()` 對「僅內文有失敗前綴的舊資料」、「payload `caption_failed=true`」皆為 True，
+    正常描述為 False。
+  - `_build_context_hint()` 依序取 `section` → `第 N 頁` → 空字串。
+  - `_resolve_image_path('../../etc/passwd')` 被 `basename` 收斂後拋 `FileNotFoundError`，路徑穿越無效。
+- `npm run build` 通過（僅既有的 chunk > 500 kB 警告）。
+- 依專案慣例未自行開啟瀏覽器驗證，實際 UI 操作與地端 vLLM 重試行為待使用者手動測試。
+
+### 已知限制
+- Word 圖片的標題階層（`header_path`）在 ingest 時已被雜湊為 `parent_id`，無法還原，
+  修復時的 `context_hint` 只能退回 `section` 或頁碼，因此重新產生的描述上下文提示會比首次同步時薄。
+- 修復 API 為同步呼叫，整個檔案的圖片較多時 HTTP 請求會持續數分鐘（前端有 spinner 但無進度回報）；
+  若日後需求擴大可改走 arq 背景任務。
+- 若原圖檔案已被 `_cleanup_orphaned_image_files` 清掉或人為刪除，該段落無法修復，
+  會回報 `FileNotFoundError` 並保留原失敗段落。
+
+---
+
 ## 2026-07-23 新增多應用 RAG 向量同步系統測試計畫 (MultiAppRAGSyncTestPlan.md)
 
 ### 背景

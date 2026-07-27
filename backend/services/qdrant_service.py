@@ -216,26 +216,29 @@ class QdrantService:
     async def upsert_chunks(
         cls, 
         collection_name: str, 
-        chunks: List[Dict[str, Any]], 
+        chunks: List[Dict[str, Any]],
         vectors: List[List[float]],
-        batch_size: int = 20
+        batch_size: int = 20,
+        point_ids: Optional[List[str]] = None
     ) -> int:
         """
         批次將切分好的區塊與對應向量寫入 Qdrant（包含密集向量與稀疏向量）。
         預設每 20 筆分批寫入，避免單一 HTTP Payload 過大連線失敗。
+        `point_ids` 未提供時每筆產生新的 UUID；提供時沿用指定 ID，
+        Qdrant upsert 會整筆覆蓋（payload 與向量皆換新），用於原地更新既有段落。
         """
         client = cls.get_client()
         # 確保 Collection 存在
         await cls.create_collection(collection_name)
-        
+
         # 批次生成 Chunks 的稀疏向量
         from services.sparse_embedding_service import SparseEmbeddingService
         texts = [chunk.get("content", "") for chunk in chunks]
         sparse_vectors = SparseEmbeddingService.get_sparse_vectors_batch(texts)
-        
+
         points = []
         for i, chunk in enumerate(chunks):
-            point_id = str(uuid.uuid4())
+            point_id = point_ids[i] if point_ids else str(uuid.uuid4())
             points.append(
                 models.PointStruct(
                     id=point_id,
@@ -1537,6 +1540,53 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Failed to search db query profiles in collection '{collection_name}': {e}")
             return []
+
+    @classmethod
+    async def get_image_points(
+        cls,
+        collection_name: str,
+        filename: Optional[str] = None,
+        point_ids: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        取回圖片段落的原始 payload，供「重新產生圖片描述」修復功能使用，回傳
+        [{"point_id": str, "payload": dict}, ...]。
+        傳入 point_ids 時直接依 ID 取回（不過濾 chunk_type，由呼叫端驗證）；
+        否則取回該 filename 底下所有 chunk_type == "image" 的段落。
+        """
+        client = cls.get_client()
+        try:
+            if point_ids:
+                records = await client.retrieve(
+                    collection_name=collection_name,
+                    ids=point_ids,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                return [{"point_id": str(r.id), "payload": r.payload or {}} for r in records]
+
+            scroll_result = await client.scroll(
+                collection_name=collection_name,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="filename",
+                            match=models.MatchValue(value=filename)
+                        ),
+                        models.FieldCondition(
+                            key="chunk_type",
+                            match=models.MatchValue(value="image")
+                        )
+                    ]
+                ),
+                limit=10000,
+                with_payload=True,
+                with_vectors=False
+            )
+            return [{"point_id": str(p.id), "payload": p.payload or {}} for p in scroll_result[0]]
+        except Exception as e:
+            logger.error(f"Failed to get image points from collection '{collection_name}': {e}")
+            raise e
 
     @classmethod
     async def get_by_parent_id(cls, collection_name: str, parent_id: str) -> List[Dict[str, Any]]:

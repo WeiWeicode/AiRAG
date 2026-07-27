@@ -47,6 +47,14 @@ export default {
       confidential_departments: confidentialDepartments
     })
     return response.data
+  },
+  async regenerateImageCaptions(knowledgeBaseId, { pointIds = null, filename = null, onlyFailed = true } = {}) {
+    const response = await api.post(`/api/retrieval/knowledge-bases/${knowledgeBaseId}/images/regenerate-captions`, {
+      point_ids: pointIds,
+      filename: filename,
+      only_failed: onlyFailed
+    })
+    return response.data
   }
 }
 
