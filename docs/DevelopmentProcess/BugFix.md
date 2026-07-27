@@ -1,5 +1,50 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-07-27 Word 內嵌附件（PDF/Excel 等）的檔案圖示被誤判為文件圖片修正
+
+### 背景
+KB 全量校驗回報「`電子發票設定.docx` 有 1 個內嵌圖片段落的 AI 描述產生失敗」。檢視原始文件後發現，
+該「圖片」其實是 Word 內插入的 **PDF 附件（OLE 內嵌物件）在版面上顯示的檔案圖示**
+（一個 PDF 小圖示加檔名文字），並非文件內容圖片。
+
+`DocumentParser.extract_images_from_docx()` 的 `extract_rids_from_element()` 以
+`.//v:imagedata` / `.//a:blip` 無條件掃出段落內所有圖片關聯，因此把 `<w:object>` 底下的
+圖示也一併抽出送去多模態模型描述。這類圖示沒有可描述的內容，必然得到無意義描述或直接失敗，
+既浪費 vLLM 資源，也在向量庫留下無檢索價值的段落。
+
+Word 插入檔案附件時的實際結構：
+
+```xml
+<w:object w:dxaOrig="1531" w:dyaOrig="994">
+  <v:shape id="_x0000_i1025" type="#_x0000_t75">
+    <v:imagedata r:id="rId10" o:title=""/>   <!-- ← 這是檔案圖示 -->
+  </v:shape>
+  <o:OLEObject Type="Embed" ProgID="AcroExch.Document.DC" DrawAspect="Icon" r:id="rId99"/>
+</w:object>
+```
+
+### 變更內容
+- `backend/services/document_parser.py`：`extract_images_from_docx()` 內新增
+  `collect_embedded_object_rids()`，先掃出所有 `<w:object>` 底下的 `v:imagedata` / `a:blip` 關聯 ID，
+  `extract_rids_from_element()` 再據此排除。不限定附件類型，PDF / Excel / 簡報等各種內嵌檔案的
+  圖示一律略過；有略過時輸出 info log。
+- 只排除 `<w:object>` 內的圖片，一般的 `<w:drawing>`（現代格式）與 `<w:pict>`（舊版 VML 圖片）
+  不受影響。
+
+### 驗證
+- 以程式建構含內嵌 OLE 物件的測試 docx（一張真正的內容圖片 + 一個模擬 PDF 附件的
+  `<w:object>` 圖示，ProgID `AcroExch.Document.DC`）：
+  - 抽取到的圖片數 = 1（預期 1）
+  - 包含真正內容圖片 = True ✅
+  - 包含附件圖示 = False ✅
+- 回歸驗證 `ERP Tiptop災難實境演練.docx`：仍為 **19** 張，與修正前一致，未誤刪正常圖片。
+
+### 後續處理
+- 已寫入向量庫的失敗段落不會自動消失，需重新觸發一次該附件的同步；
+  或在 AiRAG「向量資料管理」頁直接刪除該圖片段落。
+
+---
+
 ## 2026-07-27 vLLM 400（max_tokens 超出上下文）與外部對話稽核紀錄驗證失敗修正
 
 ### 背景

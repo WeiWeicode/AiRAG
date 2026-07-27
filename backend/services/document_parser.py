@@ -57,20 +57,44 @@ class DocumentParser:
             current_headers = {}
             img_counter = 0
 
+            def collect_embedded_object_rids(element):
+                """
+                收集 <w:object>（Word 內嵌 OLE 物件，例如插入的 PDF / Excel / 簡報附件）底下的圖片 rId。
+                這些圖片只是該附件在版面上顯示的「檔案圖示」或縮圖，不是文件本身的內容圖片，
+                送去多模態模型只會得到無意義的描述或直接失敗，必須排除。
+                """
+                skip_rids = set()
+                for obj in element.findall('.//' + qn('w:object')):
+                    for imgdata in obj.findall('.//' + qn('v:imagedata')):
+                        rid = imgdata.get(qn('r:id'))
+                        if rid:
+                            skip_rids.add(rid)
+                    for blip in obj.findall('.//' + qn('a:blip')):
+                        rid = blip.get(qn('r:embed')) or blip.get(qn('r:link'))
+                        if rid:
+                            skip_rids.add(rid)
+                return skip_rids
+
             def extract_rids_from_element(element):
                 rids = []
+                skip_rids = collect_embedded_object_rids(element)
                 # 1. Modern drawings
                 blips = element.findall('.//' + qn('a:blip'))
                 for blip in blips:
                     rid = blip.get(qn('r:embed')) or blip.get(qn('r:link'))
-                    if rid:
+                    if rid and rid not in skip_rids:
                         rids.append(rid)
                 # 2. Legacy drawings (VML)
                 imagedatas = element.findall('.//' + qn('v:imagedata'))
                 for imgdata in imagedatas:
                     rid = imgdata.get(qn('r:id'))
-                    if rid:
+                    if rid and rid not in skip_rids:
                         rids.append(rid)
+                if skip_rids:
+                    logger.info(
+                        f"Skipped {len(skip_rids)} embedded object icon image(s) in DOCX "
+                        f"(內嵌附件檔案的圖示，非文件內容圖片)"
+                    )
                 return rids
 
             def append_images_for_rids(rids, header_path):
