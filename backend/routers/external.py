@@ -129,9 +129,19 @@ async def trigger_ingest(
     立即回應 202 並將實際切分/embedding/寫入 Qdrant 交給 arq 背景佇列處理，
     避免呼叫端 HTTP 連線因等待處理完成而逾時／斷線。
     """
+    # 「未登錄」與「已停用」的處理方式完全不同（前者要 POST 新建、後者要 PUT 改 is_active），
+    # 故分開回報，避免呼叫端拿到同一句訊息而無法判斷該做什麼
     app_reg = await AppRegistration.find_one(AppRegistration.app_id == request.app_id)
-    if not app_reg or not app_reg.is_active:
-        raise HTTPException(status_code=400, detail=f"appId '{request.app_id}' 未登錄或已停用")
+    if not app_reg:
+        raise HTTPException(
+            status_code=400,
+            detail=f"appId '{request.app_id}' 未登錄，請先以 POST /api/app-registrations 建立登錄資料"
+        )
+    if not app_reg.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail=f"appId '{request.app_id}' 已登錄但目前為停用狀態，請以 PUT /api/app-registrations/{request.app_id} 設定 is_active=true"
+        )
 
     if app_reg.report_mode == "webhook" and not request.callback_url:
         raise HTTPException(status_code=400, detail="report_mode='webhook' 的 App 呼叫觸發端點時必須帶 callbackUrl")

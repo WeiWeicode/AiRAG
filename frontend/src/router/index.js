@@ -12,6 +12,7 @@ import EmbeddingTestView from '../views/EmbeddingTestView.vue'
 import FeedbackView from '../views/FeedbackView.vue'
 import RoleSettingsView from '../views/RoleSettingsView.vue'
 import KnowledgeBaseSettingsView from '../views/KnowledgeBaseSettingsView.vue'
+import AppRegistrationSettingsView from '../views/AppRegistrationSettingsView.vue'
 
 const routes = [
   {
@@ -82,6 +83,12 @@ const routes = [
     path: '/knowledge-base-settings',
     name: 'KnowledgeBaseSettings',
     component: KnowledgeBaseSettingsView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/app-registrations',
+    name: 'AppRegistrationSettings',
+    component: AppRegistrationSettingsView,
     meta: { requiresAuth: true }
   }
 ]

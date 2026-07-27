@@ -37,8 +37,11 @@ class IngestService:
         callback_url = payload.get("callback_url")
 
         app_reg = await AppRegistration.find_one(AppRegistration.app_id == app_id)
-        if not app_reg or not app_reg.is_active:
-            logger.error(f"[IngestService] app_id='{app_id}' 未登錄或已停用，任務中止")
+        if not app_reg:
+            logger.error(f"[IngestService] app_id='{app_id}' 未登錄（app_registrations 查無此筆），任務中止")
+            return
+        if not app_reg.is_active:
+            logger.error(f"[IngestService] app_id='{app_id}' 已登錄但為停用狀態（is_active=false），任務中止")
             return
 
         kb = await KnowledgeBase.get(PydanticObjectId(knowledge_base_id))

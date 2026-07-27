@@ -9,13 +9,12 @@ async def check():
     keys = await ExternalApiKey.find_all().to_list()
     print("=== External Api Keys ===")
     for k in keys:
-        print(f"ID: {k.id}, Name: {k.name}, KeyPrefix: {k.key_prefix}, Scope: getattr(k, 'scope', 'chat'), Active: {k.is_active}")
-        print(f"  -> Scope actual: {getattr(k, 'scope', None)}")
-    
+        print(f"ID: {k.id}, Name: {k.name}, KeyPrefix: {k.key_prefix}, Scope: {getattr(k, 'scope', 'chat')}, Active: {k.is_active}")
+
     apps = await AppRegistration.find_all().to_list()
     print("\n=== App Registrations ===")
     for a in apps:
-        print(f"AppID: {a.app_id}, Name: {a.app_name}, BaseURL: {a.base_url}, Mode: {a.report_mode}, Active: {a.is_active}")
+        print(f"AppID: {a.app_id}, Name: {a.display_name}, BaseURL: {a.base_url}, Mode: {a.report_mode}, Active: {a.is_active}")
 
     kbs = await KnowledgeBase.find_all().to_list()
     print("\n=== Knowledge Bases ===")
