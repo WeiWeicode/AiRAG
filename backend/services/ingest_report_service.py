@@ -30,25 +30,29 @@ class IngestReportService:
         callback_url: Optional[str] = None,
         progress: Optional[int] = None,
         error_message: Optional[str] = None,
-        synced_version: Optional[int] = None
+        synced_version: Optional[int] = None,
+        caption_failed_count: Optional[int] = None
     ) -> None:
         if app_reg.report_mode == "direct_db":
             await cls._report_direct_db(
                 app_reg, source_type=source_type, source_id=source_id, target_version=target_version,
-                status=status, progress=progress, error_message=error_message, synced_version=synced_version
+                status=status, progress=progress, error_message=error_message, synced_version=synced_version,
+                caption_failed_count=caption_failed_count
             )
         else:
             await cls._report_webhook(
                 app_reg, callback_url=callback_url, source_type=source_type, source_id=source_id,
                 target_version=target_version, title=title, status=status, progress=progress,
-                error_message=error_message, synced_version=synced_version
+                error_message=error_message, synced_version=synced_version,
+                caption_failed_count=caption_failed_count
             )
 
     @classmethod
     async def _report_webhook(
         cls, app_reg: AppRegistration, *, callback_url: Optional[str], source_type: str, source_id: Any,
         target_version: int, title: Optional[str], status: str, progress: Optional[int],
-        error_message: Optional[str], synced_version: Optional[int]
+        error_message: Optional[str], synced_version: Optional[int],
+        caption_failed_count: Optional[int] = None
     ) -> None:
         """
         HTTP Webhook 回調（見 2.3 節），POST 至 trigger 請求帶入的 callback_url。
@@ -70,6 +74,8 @@ class IngestReportService:
             "progress": progress,
             "errorMessage": error_message,
             "syncedVersion": synced_version,
+            # 切分完成但部分內嵌圖片描述失敗時 > 0，來源應用可據此顯示警示或安排重新切分
+            "captionFailedCount": caption_failed_count,
             "syncedAt": datetime.utcnow().isoformat()
         }
         headers = {"X-RAG-Sync-Key": sync_key} if sync_key else {}
@@ -83,7 +89,8 @@ class IngestReportService:
     @classmethod
     async def _report_direct_db(
         cls, app_reg: AppRegistration, *, source_type: str, source_id: Any, target_version: int,
-        status: str, progress: Optional[int], error_message: Optional[str], synced_version: Optional[int]
+        status: str, progress: Optional[int], error_message: Optional[str], synced_version: Optional[int],
+        caption_failed_count: Optional[int] = None
     ) -> None:
         """
         直連目標 App 的 SQL Server 寫入進度（僅 report_mode="direct_db" 使用，目前僅 "kb" 適用），
@@ -103,10 +110,13 @@ class IngestReportService:
             try:
                 cur = conn.cursor()
                 if status == "completed":
+                    # caption_failed_count 一併寫回，讓 KB 端能區分「完全成功」與「切分完成但有圖片描述失敗」
                     cur.execute(
                         "UPDATE rag_sync_status SET status=?, progress=?, last_synced_at=GETDATE(), "
-                        "last_synced_version=? WHERE source_type=? AND source_id=? AND target_version=?",
+                        "last_synced_version=?, caption_failed_count=? "
+                        "WHERE source_type=? AND source_id=? AND target_version=?",
                         status, progress if progress is not None else 100, synced_version,
+                        caption_failed_count if caption_failed_count is not None else 0,
                         source_type, source_id, target_version
                     )
                 elif status == "processing":

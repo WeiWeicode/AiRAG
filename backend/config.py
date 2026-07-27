@@ -16,6 +16,13 @@ class Settings:
     # vLLM
     VLLM_BASE_URL: str = os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1")
     VLLM_MODEL: str = os.getenv("VLLM_MODEL", "Qwen3.6-35B-A3B-FP8")
+    # vLLM 部署時的 --max-model-len。設 > 0 時，chat_completion 會在送出前自動裁切 max_tokens，
+    # 避免「prompt tokens + max_tokens」超過模型上限被回 400（呼叫端可能帶入很大的 max_tokens）。
+    # 設 0 代表停用自動裁切，維持原本行為。
+    VLLM_MAX_MODEL_LEN: int = int(os.getenv("VLLM_MAX_MODEL_LEN", "0"))
+    # 自動裁切時預留的安全邊際。以 tiktoken (cl100k_base) 估算 prompt token 與模型實際 tokenizer
+    # 存在落差，且 chat template 本身也會佔用 token，需留邊際避免剛好卡在上限
+    VLLM_CONTEXT_SAFETY_MARGIN: int = int(os.getenv("VLLM_CONTEXT_SAFETY_MARGIN", "1024"))
 
     # llama.cpp
     LLAMACPP_BASE_URL: str = os.getenv("LLAMACPP_BASE_URL", "http://localhost:8081")

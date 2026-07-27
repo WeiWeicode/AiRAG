@@ -182,10 +182,15 @@ Content-Type: application/json
     "status": "completed",
     "progress": 100,
     "syncedVersion": 3,
+    "captionFailedCount": 2,
     "title": "EFGP-ReleaseNote.pdf",
     "updatedAt": "2026-07-23T10:05:00Z"
   }
   ```
+* **`captionFailedCount`**：本次切分中「內嵌圖片 AI 描述產生失敗」的段落數（PDF / DOCX 才可能 > 0）。
+  這類文件的 `status` 仍為 `completed`（文字段落都已正確寫入向量庫，只有該圖片留下
+  `[圖片描述產生失敗：...]` 佔位段落），因此外部應用**只靠 `status` 無法察覺**，需檢查此欄位。
+  建議顯示警示並提供重新切分的操作入口；`direct_db` 模式則會一併寫入 `rag_sync_status.caption_failed_count`。
 
 ---
 

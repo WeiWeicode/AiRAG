@@ -1,5 +1,40 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-27 回報圖片描述失敗數給來源應用（captionFailedCount）
+
+### 背景
+承同日「圖片描述失敗自動重試與重新產生描述」功能。使用者詢問 KB（GigaSolarKnowledgeBase）端的
+「全量校驗」與「同步排程」是否能發現圖片描述失敗，實查結論為**兩者都查不到**：
+
+- 圖片描述失敗時 `_process_upsert()` 正常回傳，`IngestReportService` 回報的是 `status="completed"`，
+  KB 端狀態為「AI 已就緒」，排程只撈 `not_synced` / `outdated` / `failed`，永遠不會回頭處理。
+- KB 的 `runFullAudit()` 僅比對 `meta.version`，而 `findPointMeta()` 只 scroll 一個 point 取
+  `version` / `updated_date`，不看 chunk 內容；描述失敗不影響版本號，因此永遠判定無漂移。
+
+### 變更內容
+- `backend/services/ingest_service.py`：
+  - `_process_upsert()` 回傳值由 `(filename, version)` 改為 `(filename, version, caption_failed_count)`，
+    數量取自 `extracted_images` 中 `caption_failed` 為 True 的張數。
+  - `process()` 解包後傳給回報服務，且在 `caption_failed_count > 0` 時輸出 warning log。
+- `backend/services/ingest_report_service.py`：
+  - `report()` / `_report_webhook()` / `_report_direct_db()` 新增 `caption_failed_count` 參數。
+  - Webhook body 新增 `captionFailedCount` 欄位。
+  - `direct_db` 模式（目前僅 `app_id == "kb"`）在 `status == "completed"` 的 UPDATE 中一併寫入
+    `caption_failed_count`（`None` 時寫 0）。
+- `docs/08_EXTERNAL_INGEST_API_GUIDE.md`：5.3 節 Webhook 回調契約補上 `captionFailedCount`
+  與說明（強調 `status` 仍為 `completed`，外部應用只靠 status 無法察覺）。
+
+### 驗證
+- `main.py` import 成功；`IngestReportService.report` / `_report_webhook` / `_report_direct_db`
+  三個簽章皆確認含 `caption_failed_count` 參數。
+- `delete` 路徑的回報未帶此參數（預設 `None`），行為不變。
+- KB 端對應施作（資料表欄位、全量校驗查 Qdrant、管理端警示標籤）見 GigaSolarKnowledgeBase 的
+  `docs/DevelopmentProcess/RAG_CAPTION_FAILED_TRACKING.md`。
+- ⚠️ 部署順序：**KB 需先執行 `node src/scripts/addRagSyncCaptionFailedColumn.js` 建立欄位**，
+  否則 direct_db 回報的 UPDATE 會因缺少欄位而失敗，同步狀態會卡在 `processing`。
+
+---
+
 ## 2026-07-27 圖片描述失敗自動重試與「重新產生圖片描述」修復功能
 
 ### 背景

@@ -4,10 +4,14 @@ import json
 import logging
 from typing import List, Dict, Any, AsyncGenerator
 from config import settings
+from utils.token_counter import count_tokens
 
 logger = logging.getLogger("airag.llm")
 
 class LLMService:
+    # 上下文額度不足時仍保留給模型的最小輸出 token 數
+    _MIN_OUTPUT_TOKENS = 2048
+
     @staticmethod
     def _is_repeating_tail(accumulated: str, ngram_size: int = 25, trigger_count: int = 4) -> bool:
         """
@@ -42,6 +46,70 @@ class LLMService:
                 
         return False
 
+    @staticmethod
+    def _estimate_prompt_tokens(text: str) -> int:
+        """
+        估算 prompt 的 token 數，供 _clamp_max_tokens() 判斷上下文額度使用。
+
+        刻意不用 utils.token_counter.count_tokens（tiktoken cl100k_base）：cl100k 的中文編碼效率
+        與 Qwen tokenizer 差距極大，實測同一段 75,778 字元的中文脈絡，vLLM 回報實際為 32,161
+        tokens，cl100k 卻估成 124,002（高估約 3.85 倍），會把 max_tokens 裁到不合理的低值。
+
+        改以字元類型估算：CJK 一律以 1 token/字計（Qwen 實測約 0.42，故約有 2.4 倍餘裕），
+        其餘字元以 0.3 token/字計。方向上刻意保守（寧可高估、少給輸出額度），
+        因為低估會直接造成 400，高估只是答案上限變短。
+        """
+        if not text:
+            return 0
+        cjk_chars = sum(1 for ch in text if "　" <= ch <= "鿿" or "＀" <= ch <= "￯")
+        other_chars = len(text) - cjk_chars
+        return int(cjk_chars + other_chars * 0.3)
+
+    @classmethod
+    def _clamp_max_tokens(cls, messages: List[Dict[str, Any]], max_tokens: int) -> int:
+        """
+        依 VLLM_MAX_MODEL_LEN 自動裁切 max_tokens，避免「prompt + max_tokens」超過模型上下文上限
+        被 vLLM 回 400（錯誤訊息形如 "This model's maximum context length is N tokens. However,
+        you requested X output tokens and your prompt contains at least Y input tokens"）。
+
+        呼叫端（含外部應用前端）可能帶入遠大於實際需要的 max_tokens，此時只要脈絡稍長就會踩到上限，
+        且前端只會看到「[系統連線錯誤]」。在這裡統一裁切，比要求每個呼叫端自行計算可靠。
+
+        多模態訊息只計文字部分：圖片的 base64 字串本身不是以字元數計 token，納入估算會嚴重高估。
+        """
+        if settings.VLLM_MAX_MODEL_LEN <= 0:
+            return max_tokens
+
+        prompt_tokens = 0
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, str):
+                prompt_tokens += cls._estimate_prompt_tokens(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        prompt_tokens += cls._estimate_prompt_tokens(part.get("text") or "")
+
+        available = settings.VLLM_MAX_MODEL_LEN - prompt_tokens - settings.VLLM_CONTEXT_SAFETY_MARGIN
+        if available < cls._MIN_OUTPUT_TOKENS:
+            # 估算的 prompt 已吃掉幾乎整個上下文。此時仍保留一個最小輸出額度：
+            # 估算刻意保守，實際 prompt 多半仍放得下；若真的放不下，vLLM 會回傳明確的
+            # 「prompt 過長」錯誤，比在這裡把 max_tokens 壓成 0 或負數（參數格式錯誤）好判讀
+            logger.error(
+                f"Prompt 估算約 {prompt_tokens} tokens，已接近或超過 VLLM_MAX_MODEL_LEN="
+                f"{settings.VLLM_MAX_MODEL_LEN}，max_tokens 僅能給到 {cls._MIN_OUTPUT_TOKENS}。"
+                f"請降低檢索脈絡量或調低 DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS 讓分批摘要提早觸發"
+            )
+            return cls._MIN_OUTPUT_TOKENS
+
+        if max_tokens > available:
+            logger.warning(
+                f"max_tokens={max_tokens} 加上估算的 prompt {prompt_tokens} tokens 會超過 "
+                f"VLLM_MAX_MODEL_LEN={settings.VLLM_MAX_MODEL_LEN}，自動裁切為 {available}"
+            )
+            return available
+        return max_tokens
+
     @classmethod
     async def chat_completion(
         cls, 
@@ -61,6 +129,7 @@ class LLMService:
         """
         url = f"{settings.VLLM_BASE_URL.rstrip('/')}/chat/completions"
         headers = {"Content-Type": "application/json"}
+        max_tokens = cls._clamp_max_tokens(messages, max_tokens)
         payload = {
             "model": settings.VLLM_MODEL,
             "messages": messages,
@@ -81,6 +150,17 @@ class LLMService:
                 async def stream_generator() -> AsyncGenerator[str, None]:
                     try:
                         async with client.stream("POST", url, headers=headers, json=payload) as response:
+                            if response.status_code >= 400:
+                                # 串流模式下 raise_for_status() 只會給出「Client error '400 Bad Request'」，
+                                # 不含 vLLM 回傳的真正原因（例如超出 context length 或參數不支援）。
+                                # 需先 aread() 把 body 讀出來寫進 log，否則現場完全無從判斷。
+                                error_body = (await response.aread()).decode("utf-8", errors="ignore")
+                                logger.error(
+                                    f"vLLM chat_completion 回應 HTTP {response.status_code}，"
+                                    f"model={settings.VLLM_MODEL} max_tokens={max_tokens} "
+                                    f"messages_chars={sum(len(str(m.get('content', ''))) for m in messages)}，"
+                                    f"回應內容: {error_body[:1000]}"
+                                )
                             response.raise_for_status()
                             async for line in response.aiter_lines():
                                 if not line.strip():
@@ -97,6 +177,12 @@ class LLMService:
                 # 非串流模式直接返回結果
                 async with client:
                     response = await client.post(url, headers=headers, json=payload)
+                    if response.status_code >= 400:
+                        logger.error(
+                            f"vLLM chat_completion 回應 HTTP {response.status_code}，"
+                            f"model={settings.VLLM_MODEL} max_tokens={max_tokens}，"
+                            f"回應內容: {response.text[:1000]}"
+                        )
                     response.raise_for_status()
                     data = response.json()
                     choice = data["choices"][0]

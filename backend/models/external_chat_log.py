@@ -1,12 +1,15 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 from beanie import Document, PydanticObjectId
 from pydantic import BaseModel, Field
 
 class SourceSummaryItem(BaseModel):
     filename: Optional[str] = None
     chunk_id: Optional[str] = None
-    chunk_index: Optional[int] = None
+    # 啟用 Parent-Child 合併時，QdrantService 會刻意把 metadata.chunk_index 覆寫為父區塊範圍字串
+    # （例如 "0~2"），因此不能限定為 int，否則稽核紀錄會驗證失敗。
+    # 型別與 schemas/retrieval.py 的 RetrievalMetadata.chunk_index 一致。
+    chunk_index: Optional[Any] = None
     score: Optional[float] = None
     semantic_score: Optional[float] = None
 

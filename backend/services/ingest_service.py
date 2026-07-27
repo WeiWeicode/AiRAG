@@ -69,14 +69,19 @@ class IngestService:
                 )
                 return
 
-            filename, synced_version = await cls._process_upsert(
+            filename, synced_version, caption_failed_count = await cls._process_upsert(
                 app_reg, kb, app_id=app_id, doc_type=doc_type, source_id=source_id,
                 title=title, target_version=target_version
             )
+            if caption_failed_count:
+                logger.warning(
+                    f"[IngestService] doc_type='{doc_type}' source_id='{source_id}' 切分完成，"
+                    f"但有 {caption_failed_count} 張圖片的描述產生失敗，已回報給來源應用"
+                )
             await IngestReportService.report(
                 app_reg, callback_url=callback_url, source_type=doc_type, source_id=source_id,
                 target_version=target_version, title=filename, status="completed", progress=100,
-                synced_version=synced_version
+                synced_version=synced_version, caption_failed_count=caption_failed_count
             )
         except Exception as e:
             logger.error(f"[IngestService] 處理 app_id='{app_id}' doc_type='{doc_type}' source_id='{source_id}' 失敗: {e}")
@@ -99,7 +104,9 @@ class IngestService:
         source_id: Any, title: str, target_version: int
     ):
         """
-        拉取內容、切分、embedding 後寫入 Qdrant，回傳 (filename, version) 供回報使用。
+        拉取內容、切分、embedding 後寫入 Qdrant，回傳 (filename, version, caption_failed_count) 供回報使用。
+        caption_failed_count 讓來源應用（如 KB 的 rag_sync_status）能看出「切分完成但部分圖片描述失敗」，
+        否則此情況與完全成功一樣都回報 completed，來源端無從得知。
         內容端點路由規則：doc_type == "attachment_file" 走附件二進位端點，其餘走文字/文章端點
         （兩份範例文件皆以此值區分，見 MULTI_APP_RAG_SYNC_PLAN.md 2.1、2.2 節）。
         預設套用 Parent-Child 大小雙層切分與 PDF/Word 內嵌圖片自動擷取與描述生成。
@@ -433,4 +440,5 @@ class IngestService:
         await kb.save()
         QdrantService.invalidate_metadata_cache(kb.qdrant_collection_name)
 
-        return filename, version
+        caption_failed_count = sum(1 for img in extracted_images if img.caption_failed)
+        return filename, version, caption_failed_count

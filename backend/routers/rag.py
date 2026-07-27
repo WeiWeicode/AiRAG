@@ -851,7 +851,7 @@ async def rag_chat_stream(request: ChatRequest):
             except Exception as parse_e:
                 logger.error(f"Error parsing SSE chunk: {raw_chunk}, error: {parse_e}")
     except Exception as llm_e:
-        logger.error(f"Failed to stream from vLLM: {llm_e}")
+        logger.error(f"Failed to stream from vLLM: {type(llm_e).__name__}: {llm_e!r}")
         error_msg = f"[系統連線錯誤] 無法從 vLLM 服務取得回覆：{str(llm_e)}"
         yield f"event: chunk\ndata: {json.dumps({'type': 'content', 'content': error_msg}, ensure_ascii=False)}\n\n"
 

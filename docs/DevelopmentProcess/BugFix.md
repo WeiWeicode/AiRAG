@@ -1,5 +1,74 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-07-27 vLLM 400（max_tokens 超出上下文）與外部對話稽核紀錄驗證失敗修正
+
+### 背景
+外部 API 對話出現兩個互不相關的錯誤：
+
+```text
+[ERROR] airag.rag_router: Failed to stream from vLLM: Client error '400 Bad Request' ...
+[WARNING] airag.external_router: [ExternalChatLog] 稽核紀錄寫入失敗: 1 validation error for SourceSummaryItem
+chunk_index
+  Input should be a valid integer, unable to parse string as an integer [input_value='0~2']
+```
+
+**問題 1（稽核紀錄）**：啟用 Parent-Child 合併時，`qdrant_service.py` 會刻意把
+`item["metadata"]["chunk_index"]` 覆寫為父區塊範圍字串（例如 `"0~2"`），但
+`SourceSummaryItem.chunk_index` 宣告為 `Optional[int]`，導致每次命中合併後的父區塊，
+稽核紀錄就寫入失敗（有 try/except 保護，不影響對話本身）。
+
+**問題 2（vLLM 400）**：原本的錯誤處理拿不到 vLLM 回應內容——串流模式下 `raise_for_status()`
+只會產生「Client error '400 Bad Request'」，body 從未被讀取，現場無從判斷原因。補上 body
+記錄後取得真正原因：
+
+```text
+This model's maximum context length is 92160 tokens. However, you requested 60000 output
+tokens and your prompt contains at least 32161 input tokens, for a total of at least 92161 tokens.
+```
+
+超出上限僅 1 個 token。prompt 只有 32k，遠低於分批摘要門檻（50000），摘要未觸發是正確的；
+真正原因是呼叫端帶入的 `max_tokens=60000`（來源為 KB 前端
+`frontend/src/services/AiRAGApi.js` 的 `params.max_tokens || 60000`）。
+
+### 變更內容
+1. `backend/models/external_chat_log.py`：`SourceSummaryItem.chunk_index` 由 `Optional[int]`
+   改為 `Optional[Any]`，與 `schemas/retrieval.py` 的 `RetrievalMetadata.chunk_index` 型別一致
+   （該處早已因相同原因使用 `Any`）。
+2. `backend/services/llm_service.py`：
+   - `chat_completion()` 串流與非串流路徑在 `status_code >= 400` 時先讀取並記錄回應 body，
+     連同 `model` / `max_tokens` / `messages_chars` 一起寫入 log。
+   - 新增 `_clamp_max_tokens()`：送出前依 `VLLM_MAX_MODEL_LEN` 自動裁切 `max_tokens`，
+     避免任何呼叫端帶入過大的值造成 400。多模態訊息只計文字部分（base64 圖片不納入估算）。
+   - 新增 `_estimate_prompt_tokens()`：**刻意不使用 `utils.token_counter.count_tokens`
+     （tiktoken cl100k_base）**。實測同一段 75,778 字元中文脈絡，vLLM 回報實際 32,161 tokens，
+     cl100k 卻估成 124,002（高估 3.85 倍），會把 `max_tokens` 裁到 256 造成答案被截斷。
+     改以字元類型估算：CJK 1 token/字（Qwen 實測約 0.42，保留約 2.4 倍餘裕）、其餘 0.3 token/字，
+     方向上刻意保守（高估只會縮短輸出上限，低估會直接 400）。
+   - 上下文額度不足時保留 `_MIN_OUTPUT_TOKENS = 2048` 的最小輸出額度，而非壓成 0/負數。
+3. `backend/routers/rag.py`：`Failed to stream from vLLM` 的 log 補上例外類別名稱與 `repr`。
+4. `backend/config.py`、`.env.example`、`.env`：新增 `VLLM_MAX_MODEL_LEN`（程式預設 0 = 停用裁切，
+   本部署 `.env` 依 vLLM 回報值設為 **92160**）與 `VLLM_CONTEXT_SAFETY_MARGIN`（預設 1024）。
+
+### 驗證
+- `SourceSummaryItem` 以 `'0~2'` / `5` / `None` 三種輸入實測皆通過。
+- `_clamp_max_tokens()` 以本次 400 的實際數值回歸驗證：
+  - 75,779 字元中文 prompt + `max_tokens=60000` → 裁切為 **15,348**；
+    以 vLLM 回報的實際 32,161 input tokens 計算，總量 47,509 < 92,160 ✅
+    （輸出額度 15,348 tokens 對一般問答仍充足）
+  - 短 prompt 的 `max_tokens` 1024 / 60000 皆不被裁切（不影響既有行為）
+  - 多模態訊息（含 200KB base64 圖片）`max_tokens=20480` 不被裁切，確認 base64 未納入估算
+- `main.py` import 成功。
+
+### 已知限制與後續建議
+- `_estimate_prompt_tokens()` 是以單一實測資料點（75,778 字元 ↔ 32,161 tokens）校準的啟發式估算，
+  非精確計算。若日後更換模型（tokenizer 不同）需重新檢視比例，或改為呼叫 vLLM 的 `/tokenize` 取得精確值。
+- KB 前端 `AiRAGApi.js` 的 `max_tokens || 60000` 未更動：有了後端裁切後已不會造成 400，
+  但該預設值本身偏大，建議日後調整為 8192 之類的合理值。
+- `DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS`（預設 50000）是以 tiktoken 為單位計算的，
+  同樣存在中文高估問題，實際觸發時機會比預期早，本次未更動。
+
+---
+
 ## 2026-07-27 附件 `.doc` 解析亂碼與含大量內嵌圖片 `.docx` 同步逾時修正
 
 ### 背景
