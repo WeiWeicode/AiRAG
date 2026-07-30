@@ -1,5 +1,39 @@
 <!-- 前端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-30 新增集團知識庫混合查詢法 (`KB_hybrid`) 前端介面支援
+
+### 背景
+配合 [NewFeaturesPlan_KBHybridPlan.md](NewFeaturesPlan_KBHybridPlan.md) 規劃，在對話參數設定、
+檢索測試、API 預覽與測試集管理介面加入 `KB_hybrid` 檢索模式。
+
+### 變更內容
+- `frontend/src/components/params/RagParamsPanel.vue`：
+  - 檢索模式下拉選單新增 `<option value="KB_hybrid">集團知識庫混合查詢 (KB Hybrid)</option>`，
+    位置緊接 `KB_semantic_hybrid` 之後。
+  - 「多輪對話指代消解／手動鎖定檔案」面板的 `v-if` 清單加入 `KB_hybrid`，但面板內的
+    **「自動指代消解」與「指代消解歷史則數」兩個欄位各自加上 `v-if="searchMode !== 'KB_hybrid'"`**：
+    自動指代消解是把對話歷史帶進語義 JSON 轉換步驟，`KB_hybrid` 已無該步驟故勾了不會有作用，
+    隱藏以免誤解；而「手動鎖定檔案」對應的 `filter_filename` 在後端是不分模式的通用邏輯，
+    對 `KB_hybrid` 仍然有效，因此保留顯示（依使用者確認之決策）。
+- `frontend/src/views/RetrievalTestView.vue`：
+  - 下拉選單新增 `KB_hybrid` 選項。
+  - 分數標籤與 Distance 顯示判斷清單加入 `KB_hybrid`（該模式確實走 RRF 融合，應顯示 RRF Score）。
+  - **未**加入 `isSemanticHybridFamily`／`semanticSteps` 清單：`KB_hybrid` 維持呼叫
+    `retrievalService.search()`（對應 `/api/retrieval/search`），不顯示語義分析步驟卡片。
+- `frontend/src/components/params/ApiJsonPreviewPanel.vue`：
+  - `fieldDocs` 的 `params.search_type` 說明文字加入 `KB_hybrid`。
+- `frontend/src/components/eval/TestSetManager.vue`：
+  - 下拉選單新增 `KB_hybrid` 選項（僅供測試集標記，批次評估邏輯未串接）。
+
+### 未修改
+- `frontend/src/stores/chatStore.js`：`search_type`／`pinned_filename` 本來就無條件依
+  `paramsStore` 送出，不需為新模式增加分支。
+
+### 驗證
+- ⚠️ 介面顯示與 JSON Payload 待使用者手動測試確認。
+
+---
+
 ## 2026-07-24 新增集團知識庫專用語義混合查詢法 (`KB_semantic_hybrid`) 前端介面支援
 
 ### 背景

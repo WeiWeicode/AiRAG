@@ -1,5 +1,43 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-07-30 新增集團知識庫混合查詢法 (`KB_hybrid`) 後端支援
+
+### 背景
+配合 [NewFeaturesPlan_KBHybridPlan.md](NewFeaturesPlan_KBHybridPlan.md) 規劃，新增檢索模式
+`KB_hybrid`：等同 `KB_semantic_hybrid` 移除語義查詢（Instruct LLM JSON 轉換）步驟。
+
+### 變更內容
+- `backend/routers/rag.py`（`rag_chat_stream()`）：
+  - 雙階段檢索分支判斷加入 `"KB_hybrid"`：
+    `if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment", "KB_semantic_hybrid", "KB_hybrid")`。
+  - 上方語義解析分支的判斷 tuple **刻意不加**，讓 `KB_hybrid` 落入 else 分支執行
+    `EmbeddingService.get_embedding(question)`、`search_query_text = question`。
+  - else 分支新增 `sparse_keywords = None` 初始化（原本未定義，`KB_hybrid` 會第一個踩到）。
+  - 權限過濾：`if search_type in ("KB_semantic_hybrid", "KB_hybrid")` 走
+    `filter_results_kb_semantic_hybrid()`，否則走 `filter_results()`。
+  - `semantic_hybrid_feedback` 的回饋加權與 `semantic_hybrid_attachment` 的附件查詢皆用 `==`
+    精確比對，`KB_hybrid` 不會誤觸發，未修改。
+- `backend/routers/retrieval.py`（`POST /api/retrieval/search`）：
+  - `is_semantic_hybrid_family` tuple 加入 `"KB_hybrid"`。
+  - 權限過濾分流改為 `in ("KB_semantic_hybrid", "KB_hybrid")`。
+- `backend/services/permission_service.py`：
+  - `filter_results_kb_semantic_hybrid()` docstring 補述同時服務 `KB_semantic_hybrid` 與
+    `KB_hybrid`，**判斷邏輯完全未改**（方法名沿用，不重新命名以免波及既有呼叫點）。
+
+### 未修改（刻意保留現況）
+- `backend/services/qdrant_service.py`：`search_similar_two_step()` 內部仍依傳入的字面值
+  `search_type="semantic_hybrid"` 決定要不要做 RRF 融合，與外層模式名稱無關，無須改動。
+- `backend/routers/evaluation.py`：批次評估未特別串接 `KB_hybrid`，與 `KB_semantic_hybrid`
+  現況一致（既有落差，本次不擴大範圍修正）。
+- `rag.py` 內 `score_label` 的 RRF Score 清單未含 `KB_semantic_hybrid`（既有小瑕疵），
+  本次維持一致行為未一併修正，避免範圍外變更。
+
+### 驗證
+- `python -m compileall backend/routers/rag.py backend/routers/retrieval.py backend/services/permission_service.py` 通過。
+- ⚠️ 實際 API 行為待使用者手動測試。
+
+---
+
 ## 2026-07-24 子部門權限比對（部門代號前三碼相符歸類）實作
 
 ### 背景

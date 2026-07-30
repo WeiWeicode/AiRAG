@@ -517,9 +517,9 @@ const handleBatchDelete = async () => {
               </span>
               <div class="flex gap-2 items-center flex-shrink-0">
                 <span class="bg-[#10b981]/15 text-[#10b981] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
-                  {{ ['hybrid', 'semantic_hybrid', 'KB_semantic_hybrid'].includes(searchType) ? 'RRF Score' : 'Score' }}: {{ (res.score || 0).toFixed(4) }}
+                  {{ ['hybrid', 'semantic_hybrid', 'KB_semantic_hybrid', 'KB_hybrid'].includes(searchType) ? 'RRF Score' : 'Score' }}: {{ (res.score || 0).toFixed(4) }}
                 </span>
-                <span v-if="!['hybrid', 'semantic_hybrid', 'KB_semantic_hybrid'].includes(searchType) && res.distance" class="bg-[#3b82f6]/15 text-[#3b82f6] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
+                <span v-if="!['hybrid', 'semantic_hybrid', 'KB_semantic_hybrid', 'KB_hybrid'].includes(searchType) && res.distance" class="bg-[#3b82f6]/15 text-[#3b82f6] font-semibold font-display px-2 py-0.5 rounded text-[10px]">
                   Distance: {{ (res.distance || 0).toFixed(4) }}
                 </span>
               </div>
@@ -615,6 +615,7 @@ const handleBatchDelete = async () => {
             <option value="semantic_hybrid" class="bg-[#111827] text-white">語義混合搜尋 (Semantic Hybrid Search)</option>
             <option value="semantic_hybrid_feedback" class="bg-[#111827] text-white">語義混合回饋查詢法 (Semantic Hybrid + Feedback)</option>
             <option value="KB_semantic_hybrid" class="bg-[#111827] text-white">集團知識庫語義混合查詢 (KB Semantic Hybrid)</option>
+            <option value="KB_hybrid" class="bg-[#111827] text-white">集團知識庫混合查詢 (KB Hybrid)</option>
             <option value="semantic_db_query" class="bg-[#111827] text-white">語義資料庫查詢法 (Semantic DB Query)</option>
           </select>
         </div>

@@ -48,7 +48,7 @@
     "score_threshold": 0.65,
     "ai_summary_score_threshold": 0.60,
     "filter_tags": ["string"],
-    "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_hybrid_attachment | KB_semantic_hybrid | semantic_db_query",
+    "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_hybrid_attachment | KB_semantic_hybrid | KB_hybrid | semantic_db_query",
     "context_summarize_trigger_tokens": 50000,
     "read_attachment_content": false,
     "history_context_turns": 3,
@@ -163,7 +163,7 @@
   "params": {
     "top_k": 8,
     "score_threshold": 0.4,
-    "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_hybrid_attachment | semantic_db_query",
+    "search_type": "vector | hybrid | semantic_hybrid | semantic_hybrid_feedback | semantic_hybrid_attachment | KB_semantic_hybrid | KB_hybrid | semantic_db_query",
     "hnsw_ef_search": 128,
     "filter_tags": ["string"],
     "filter_filename": "string",

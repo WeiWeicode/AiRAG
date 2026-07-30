@@ -1,5 +1,40 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-07-30 新增集團知識庫混合查詢法 (`KB_hybrid`)
+
+### 背景
+既有的集團知識庫語義混合查詢法 (`KB_semantic_hybrid`) 每次查詢都要多呼叫一次地端 Instruct LLM
+做問題語義理解與結構化 JSON 轉換，拖慢使用者取得資料的速度。新增 `KB_hybrid`：
+**保留 `KB_semantic_hybrid` 的所有既有能力**（雙階段關聯檢索、RRF 融合、Rerank、`is_public` 專屬
+權限過濾、Top-K／相似度閾值／AI 總結門檻），**只移除語義查詢這一步**，改用提問原文直接產生
+密集向量與稀疏查詢文字（做法同既有 `hybrid`）。規劃文件見
+[NewFeaturesPlan_KBHybridPlan.md](NewFeaturesPlan_KBHybridPlan.md)。
+
+### 變更內容
+- `backend/routers/rag.py`：
+  - 雙階段檢索 + Rerank 的 `search_type` 判斷 tuple 加入 `"KB_hybrid"`；**未**加入上方語義解析
+    分支的 tuple，使其自然落入「直接對提問原文取嵌入」的 else 分支（即移除語義查詢步驟）。
+  - 權限過濾分流改為 `if search_type in ("KB_semantic_hybrid", "KB_hybrid")`。
+  - else 分支補上 `sparse_keywords = None` 初始化：該分支原本從未定義此變數，`KB_hybrid` 是第一個
+    「不走語義解析卻要呼叫 `search_similar_two_step(sparse_keywords=...)`」的模式，不補會
+    `UnboundLocalError`（既有 vector/hybrid 走 `search_similar()` 未帶此參數故未觸發）。
+- `backend/routers/retrieval.py`：`is_semantic_hybrid_family` 加入 `"KB_hybrid"`；權限過濾分流
+  同步改為 tuple 判斷。`/semantic-hybrid-search` 端點不變（`KB_hybrid` 不經過語義專用端點）。
+- `backend/services/permission_service.py`：`filter_results_kb_semantic_hybrid()` docstring 補述
+  同時服務兩種集團知識庫查詢法，邏輯未改（該方法判斷的是集團權限矩陣，與是否語義解析無關）。
+- 前端：`RagParamsPanel.vue`／`RetrievalTestView.vue`／`TestSetManager.vue` 新增下拉選項，
+  `ApiJsonPreviewPanel.vue` 更新列舉說明，`RetrievalTestView.vue` 的 RRF Score 標籤清單加入
+  `KB_hybrid`（詳見 FrontendCorrection.md）。
+- `docs/03_API_CONTRACT.md`：`/api/rag/chat` 與 `/api/retrieval/search` 兩處 `search_type` 列舉值
+  補上 `KB_hybrid`（`/search` 一併補上先前遺漏的 `KB_semantic_hybrid`）。
+
+### 驗證
+- `python -m compileall` 檢查 `rag.py`／`retrieval.py`／`permission_service.py` 語法正確。
+- 未修改 `qdrant_service.py`、`evaluation.py`，其餘 7 種既有 `search_type` 的程式碼路徑不變。
+- ⚠️ 實際檢索行為與速度差異、以及不同部門/職級的權限排除結果，待使用者手動測試確認。
+
+---
+
 ## 2026-07-27 回報圖片描述失敗數給來源應用（captionFailedCount）
 
 ### 背景

@@ -405,6 +405,9 @@ async def rag_chat_stream(request: ChatRequest):
                         # 設定用來做稀疏查詢的文本
                         search_query_text = " ".join(sparse_keywords) if sparse_keywords else question
                     else:
+                        # 未經語義解析的查詢法（vector/hybrid/KB_hybrid）：直接對提問原文取嵌入向量，
+                        # 沒有語義層抽取的關鍵字，交由 Qdrant 端的 _extract_exact_keywords() 對原文做正則抽取
+                        sparse_keywords = None
                         query_vector = await EmbeddingService.get_embedding(question)
                         vector_preview = str(query_vector[:10]) + "..."
                         step_data = {
@@ -431,7 +434,7 @@ async def rag_chat_stream(request: ChatRequest):
 
                     # Qdrant 相似度與雙路融合檢索
                     feedback_boost_applied = False
-                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment", "KB_semantic_hybrid"):
+                    if search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment", "KB_semantic_hybrid", "KB_hybrid"):
                         raw_results = await QdrantService.search_similar_two_step(
                             collection_name=kb.qdrant_collection_name,
                             query_vector=query_vector,
@@ -453,8 +456,8 @@ async def rag_chat_stream(request: ChatRequest):
                             )
                             feedback_boost_applied = True
 
-                        # 執行機密權限過濾 (KB_semantic_hybrid 套用專屬 is_public 篩選機制)
-                        if search_type == "KB_semantic_hybrid":
+                        # 執行機密權限過濾 (集團知識庫查詢法 KB_semantic_hybrid/KB_hybrid 套用專屬 is_public 篩選機制)
+                        if search_type in ("KB_semantic_hybrid", "KB_hybrid"):
                             raw_results, excluded_items = PermissionService.filter_results_kb_semantic_hybrid(raw_results, simulated_user)
                         else:
                             raw_results, excluded_items = PermissionService.filter_results(raw_results, simulated_user)

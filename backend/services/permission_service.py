@@ -212,7 +212,8 @@ class PermissionService:
         user: Optional[UserProfile]
     ) -> Tuple[List[dict], List[dict]]:
         """
-        針對 KB_semantic_hybrid 檢索結果執行專屬機密權限過濾。
+        針對集團知識庫查詢法 (KB_semantic_hybrid / KB_hybrid) 檢索結果執行專屬機密權限過濾。
+        判斷的是集團知識庫的權限矩陣，與該查詢法是否經過語義解析無關，故兩種模式共用此方法。
         - is_public == True: 公開文件（不限制部門），但必須符合職級門檻 (user.level <= access_level)
         - is_public == False: 非公開文件，必須符合部門限制 (access_dept) 且符合職級門檻 (access_level)
         - access_members: 白名單成員直接放行。

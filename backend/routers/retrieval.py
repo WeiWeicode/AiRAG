@@ -52,7 +52,7 @@ async def search(request: RetrievalRequest):
             query_vector = await EmbeddingService.get_embedding(request.query)
         
         # 2. 向 Qdrant 進行雙路融合檢索、純向量檢索或直接 Scroll
-        is_semantic_hybrid_family = request.params.search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment", "KB_semantic_hybrid")
+        is_semantic_hybrid_family = request.params.search_type in ("semantic_hybrid", "semantic_hybrid_feedback", "semantic_hybrid_attachment", "KB_semantic_hybrid", "KB_hybrid")
         if is_semantic_hybrid_family:
             raw_results = await QdrantService.search_similar_two_step(
                 collection_name=kb.qdrant_collection_name,
@@ -84,7 +84,7 @@ async def search(request: RetrievalRequest):
         
         # 2.5 執行機密權限過濾
         simulated_user = await PermissionService.get_user(request.params.simulated_user_id)
-        if request.params.search_type == "KB_semantic_hybrid":
+        if request.params.search_type in ("KB_semantic_hybrid", "KB_hybrid"):
             raw_results, excluded = PermissionService.filter_results_kb_semantic_hybrid(raw_results, simulated_user)
         else:
             raw_results, excluded = PermissionService.filter_results(raw_results, simulated_user)
