@@ -67,8 +67,15 @@ class Settings:
     # 語義混合附件查詢法附件存放目錄
     FILE_ATTACHMENTS_DIR: str = os.getenv("FILE_ATTACHMENTS_DIR", "FileAttachments")
     FILE_ATTACHMENTS_IMAGE_SUBDIR: str = os.getenv("FILE_ATTACHMENTS_IMAGE_SUBDIR", "image")
-    # 圖片描述並行處理的併發數量上限（同時最多幾張圖片一起送給 vLLM 做多模態描述）
-    IMAGE_CAPTION_CONCURRENCY: int = int(os.getenv("IMAGE_CAPTION_CONCURRENCY", "3"))
+    # 圖片描述並行處理的併發數量上限（同時最多幾張圖片一起送給 vLLM 做多模態描述）。
+    # 地端單台 vLLM 的吞吐本來就固定，調高不會變快；在統一記憶體機器（DGX GB10，CPU/GPU
+    # 共用同一塊記憶體）上還會同時放大多模態前處理的記憶體峰值，曾造成主機假死，故預設為 1
+    IMAGE_CAPTION_CONCURRENCY: int = int(os.getenv("IMAGE_CAPTION_CONCURRENCY", "1"))
+    # 送多模態模型前的圖片長邊上限（像素），超過就等比例縮小。圖片的解碼與 patch embedding
+    # 是 vLLM 行程內的一般 host 配置，不受 --gpu-memory-utilization 約束，高解析度掃描圖的
+    # 前處理會直接吃掉作業系統的餘裕。1536px 足以辨識圖表結構與大部分表格文字；
+    # 設為 0 或負值可停用縮圖
+    IMAGE_CAPTION_MAX_DIMENSION: int = int(os.getenv("IMAGE_CAPTION_MAX_DIMENSION", "1536"))
     # 單張圖片描述的牆鐘時間上限（秒）。串流模式下 httpx timeout 只約束單次讀取，
     # 需要這道上限才能讓整份文件的圖片處理時間可預估，避免拖垮整個 ingest 任務。
     # 【約束】此值必須小於 LLMService.describe_image() 內 chat_completion 的 httpx timeout（300），

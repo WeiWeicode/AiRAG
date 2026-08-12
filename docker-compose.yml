@@ -11,6 +11,11 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: airag-backend
+    # 記憶體上限與重啟策略必須成套：只設上限而不會自動重啟，等於把「主機假死」
+    # 換成「容器被 OOM-kill 後靜默不起」。backend 掛掉是全體使用者的 API 中斷，
+    # 比 worker 的單一任務失敗嚴重，因此值不低於 worker
+    mem_limit: 8g
+    restart: unless-stopped
     ports:
       - "53020:53020"
     volumes:
@@ -36,6 +41,10 @@ services:
       dockerfile: Dockerfile
     container_name: airag-worker
     command: ["arq", "worker.WorkerSettings"]
+    # 圖片描述階段會同時持有整份 PDF 的圖片 bytes 與 base64 副本，撐爆時要讓核心
+    # OOM-kill 容器內的行程（單一 ingest 任務失敗），而不是拖垮整台主機
+    mem_limit: 8g
+    restart: unless-stopped
     volumes:
       - ./backend:/app
     environment:

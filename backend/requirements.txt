@@ -11,6 +11,9 @@ bcrypt>=4.1.0
 httpx>=0.27.0
 sse-starlette>=2.0.0
 pymupdf>=1.23.0
+# 圖片描述前的縮圖（llm_service._downscale_image_for_caption）。
+# 環境中原本已有 Pillow 作為傳遞相依，但核心管線用到它就必須明確宣告
+pillow>=10.0.0
 python-docx>=1.1.0
 olefile>=0.47
 markdown>=3.6

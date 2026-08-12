@@ -243,6 +243,77 @@ class LLMService:
         except Exception:
             return query
 
+    @staticmethod
+    def _downscale_image_for_caption(image_bytes: bytes, mime_type: str) -> bytes:
+        """
+        送多模態模型前把過大的圖片等比例縮到 IMAGE_CAPTION_MAX_DIMENSION。
+
+        圖片的解碼、resize 與 patch embedding 都是 vLLM 行程內的一般 host 配置，
+        **不受 --gpu-memory-utilization 約束**；在統一記憶體機器（DGX GB10，CPU 與 GPU
+        共用同一塊記憶體）上，一張高解析度掃描圖的前處理就足以吃光作業系統的餘裕而導致
+        主機假死（見 NewFeaturesPlan_ImagePipelineMemoryPlan.md）。
+
+        處理順序不可調換：
+        1. 長邊未超過上限 → 原樣回傳，完全不重新編碼（免去無謂 CPU 與重壓縮的畫質損失）。
+        2. 先正規化色彩模式**再** resize：P/PA 等調色盤模式若直接用 LANCZOS 縮放，
+           插值會作用在調色盤索引值上，不會報錯但輸出是亂色。
+        3. 輸出格式與輸入相同，否則會與呼叫端傳入、寫進 data URI 的 mime_type 不一致。
+        4. PNG 保留 alpha；JPEG 不支援 alpha，需合成白底而**不可**直接 convert("RGB")
+           —— 直接轉換會把透明像素變成純黑，透明底的流程圖會變成黑底黑字，
+           送出去等於送一張全黑圖。
+
+        任何失敗都只記 warning 並沿用原圖，不可讓縮圖問題升級成圖片描述失敗。
+        """
+        max_dim = settings.IMAGE_CAPTION_MAX_DIMENSION
+        if max_dim <= 0:
+            return image_bytes
+
+        try:
+            import io
+            from PIL import Image
+
+            with Image.open(io.BytesIO(image_bytes)) as src:
+                original_size = src.size
+                if max(original_size) <= max_dim:
+                    return image_bytes
+
+                # format 只在原始開啟的物件上有值，convert/resize 後會變成 None，需先取出
+                img_format = src.format or ("JPEG" if "jpeg" in mime_type.lower() else "PNG")
+
+                img = src
+                if img.mode in ("P", "PA"):
+                    img = img.convert("RGBA" if img.mode == "PA" or "transparency" in img.info else "RGB")
+                elif img.mode == "LA":
+                    img = img.convert("RGBA")
+                elif img.mode == "CMYK":
+                    img = img.convert("RGB")
+
+                ratio = max_dim / max(original_size)
+                new_size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+                if img_format == "JPEG" and img.mode in ("RGBA", "LA"):
+                    background = Image.new("RGB", img.size, (255, 255, 255))
+                    background.paste(img, mask=img.split()[-1])
+                    img = background
+
+                buffer = io.BytesIO()
+                img.save(buffer, format=img_format)
+                resized_bytes = buffer.getvalue()
+
+            logger.info(
+                f"Downscaled image for captioning: {original_size[0]}x{original_size[1]} "
+                f"({len(image_bytes) / 1024:.0f}KB) -> {new_size[0]}x{new_size[1]} "
+                f"({len(resized_bytes) / 1024:.0f}KB), format={img_format}"
+            )
+            return resized_bytes
+        except Exception as e:
+            logger.warning(
+                f"Failed to downscale image before captioning, sending original: "
+                f"{type(e).__name__}: {e!r}"
+            )
+            return image_bytes
+
     @classmethod
     async def describe_image(cls, image_bytes: bytes, mime_type: str, context_hint: str = "") -> tuple:
         """
@@ -256,6 +327,9 @@ class LLMService:
         （常見於表格/BOM 等內容複雜的圖片）或偵測到重複而提前中斷，呼叫端不可當作完整描述處理。
         """
         import base64
+        # 縮圖必須在 base64 之前：編碼會再放大 1.33 倍，且原圖大小直接決定 vLLM 端
+        # 多模態前處理的記憶體峰值
+        image_bytes = cls._downscale_image_for_caption(image_bytes, mime_type)
         b64_str = base64.b64encode(image_bytes).decode("utf-8")
 
         messages = [

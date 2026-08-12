@@ -1,6 +1,8 @@
 # 圖片描述管線記憶體壓力改善規劃文件（GB10 統一記憶體）
 
-> 狀態：**規劃中 / 待實作**
+> 狀態：**程式端四項已實作完成 / 待使用者以實際 PDF 驗收主機面行為**（2026-08-12，
+> 變更明細見 [BackendCorrection.md](BackendCorrection.md)）
+> ⚠️ **第 5 節的 vLLM 啟動參數調整不在程式改動範圍，仍需主機端配合，那才是記憶體超賣的主因。**
 > 觸發事件：2026-08-12 執行圖片解析期間，DGX 主機進入「ping 得到但 SSH 連不進、未重開機」的假死狀態。
 > 影響範圍：**中** —— 改動 [llm_service.py](../../backend/services/llm_service.py)（送模型前縮圖）、
 > [config.py](../../backend/config.py)（新增縮圖上限、調整併發預設）、[docker-compose.yml](../../docker-compose.yml)（worker 記憶體上限）、
@@ -359,8 +361,13 @@ worker 可以一路吃到把 host 拖垮。
    DGX 上是否為同一份取決於部署方式。套用後建議實地確認：
 
    ```bash
-   docker exec airag-worker env | grep IMAGE_CAPTION
+   docker exec airag-worker python -c "from config import settings; print(settings.IMAGE_CAPTION_CONCURRENCY, settings.IMAGE_CAPTION_MAX_DIMENSION)"
    ```
+
+   > ⚠️ **不可用 `docker exec airag-worker env | grep IMAGE_CAPTION` 驗證。**
+   > `.env` 是由 `config.py` 的 `load_dotenv()` 在 **Python 行程內**載入 `os.environ`，
+   > 不是容器層級的環境變數；`docker exec ... env` 另開一個行程，看不到這些值，
+   > 會誤判成「設定沒生效」。必須實際 import `settings` 才是應用真正讀到的值。
 
 ---
 

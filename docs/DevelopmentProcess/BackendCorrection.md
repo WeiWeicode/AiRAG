@@ -1,5 +1,78 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-08-12 圖片描述管線記憶體壓力改善（DGX GB10 統一記憶體）
+
+### 背景
+DGX 主機在圖片解析期間進入「ping 得到但 SSH 連不進、未重開機」的假死狀態，
+核心 log 出現 `NVRM: ... Out of memory [NV_ERR_NO_MEMORY]`，且**全程無 `oom-kill` 紀錄**。
+
+硬體為 **DGX Spark（GB10，aarch64）**，CPU 與 GPU 共用同一塊約 121GiB 統一記憶體，
+`nvidia-smi` 回報 `memory.total [N/A]` 即為此架構特徵。vLLM 的
+`--gpu-memory-utilization 0.60` 直接從作業系統的記憶體扣掉 72.6GB，且**多模態前處理
+（解碼／resize／patch embedding）是 vLLM 行程內的一般 host 配置，不在該預算之內**。
+餘裕耗盡後核心 thrash page cache，ping 走 softirq 照常回應、sshd 卻 fork 不出來。
+
+完整分析見 [NewFeaturesPlan_ImagePipelineMemoryPlan.md](NewFeaturesPlan_ImagePipelineMemoryPlan.md)。
+與 [NewFeaturesPlan_IngestImageCaptionTimeoutPlan.md](NewFeaturesPlan_IngestImageCaptionTimeoutPlan.md)
+是同一條管線的不同瓶頸：後者處理時間（已砍圖片數量與輸出長度），本次處理**輸入端的像素量**。
+
+### 變更內容
+- `backend/requirements.txt`：補列 `pillow>=10.0.0`。環境中原本已有 Pillow 12.3.0，
+  但屬**未宣告的傳遞相依**，核心管線用到就必須明確宣告。
+- `backend/services/llm_service.py`：新增 `_downscale_image_for_caption()`，於
+  `describe_image()` 的 base64 編碼**之前**把長邊超過上限的圖片等比例縮小。
+  放在此處而非 PDF 抽取階段，是為了讓磁碟保留原始解析度，且 ingest 與
+  `ImageCaptionRepairService` 兩條路徑自動共用同一套邏輯。
+- `backend/config.py`：新增 `IMAGE_CAPTION_MAX_DIMENSION`(1536，設 0 可停用)；
+  `IMAGE_CAPTION_CONCURRENCY` 預設由 3 改為 **1**。
+- `docker-compose.yml`：`backend` 與 `worker` 各加 `mem_limit: 8g` 與
+  `restart: unless-stopped`。
+
+### 設計要點（後續修改請勿破壞）
+縮圖函式的**處理順序本身就是規格**，三個陷阱皆已實測確認：
+
+1. **先判斷尺寸**：長邊未超標直接回傳原始 bytes，不重新編碼。
+2. **先正規化色彩模式，再 resize**：`P`/`PA` 調色盤模式若直接用 LANCZOS 縮放，
+   插值會作用在**調色盤索引值**上——不會報錯，但輸出是亂色。
+3. **PNG 保留 alpha，不可 `convert("RGB")`**：實測 `RGBA(0,0,0,0).convert("RGB")` → `(0,0,0)`
+   純黑。PDF/Word 大量圖片是「透明底 + 黑色線條」的流程圖，轉了就變**黑底黑字**，
+   送給模型等於送一張全黑圖，且不會有任何錯誤訊息。JPEG 因不支援 alpha，
+   須用白底 `paste(img, mask=img.split()[-1])` 合成。
+4. **輸出格式必須與輸入相同**，否則與呼叫端寫進 data URI 的 `mime_type` 不一致。
+5. **任何失敗只記 warning 並沿用原圖**，不可讓縮圖問題升級成 `caption_failed`。
+
+`mem_limit` 與 `restart` **必須成套**：compose 檔原本所有服務都沒有 restart policy，
+單獨加上限只會把「主機假死」換成「容器 OOM-kill 後靜默不起」。
+
+### 驗證
+- `py_compile` 通過；`docker compose config` 語法通過。
+- 縮圖規格與陷阱（7 項全過）：
+
+  | # | 案例 | 結果 |
+  |:---|:---|:---|
+  | 1 | 4000×3000 PNG | → 1536×1152，比例與格式維持 |
+  | 2 | 800×600 小圖 | 回傳 bytes **與輸入完全相同**（未重新編碼） |
+  | 3 | 透明底 + 黑線 PNG | 背景仍為 `(0,0,0,0)` 透明、線條完好，**未變黑底** |
+  | 4 | `P` 模式 2400×2400 | 中心像素 `(255,0,0)` 正確，未插值到索引值 |
+  | 5 | CMYK JPEG | → RGB 並維持 JPEG |
+  | 6 | 損壞圖片 bytes | 只記 warning，原樣回傳未拋例外 |
+  | 7 | `MAX_DIMENSION=0` | 停用生效，大圖原樣回傳 |
+
+- 記憶體削減實測（4000×3000 高頻雜訊 JPEG，接近真實掃描件最壞情況）：
+
+  | | 像素量 | 檔案 | base64 | raw RGB |
+  |:---|:---|:---|:---|:---|
+  | 原圖 | 12.0M px | 8.7MB | 11.5MB | 34MB |
+  | 縮圖後 | 1.77M px | 0.5MB | 0.7MB | 5.1MB |
+
+  **像素量降為 1/6.8**，vLLM 端前處理的記憶體峰值同比例下降。
+
+- ⚠️ 主機面行為（`free -h` 峰值、SSH 存活、不再出現 NVRM OOM）待使用者以實際 PDF 驗收，
+  見規劃文件第 7 節。**vLLM 啟動參數的調整（第 5 節）不在本次程式改動範圍，仍需主機端配合。**
+
+---
+
+
 ## 2026-08-12 大量內嵌圖片 PDF 同步逾時改善（批次一、批次二）
 
 ### 背景
