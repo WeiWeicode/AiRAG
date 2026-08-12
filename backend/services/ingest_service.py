@@ -14,6 +14,7 @@ from services.app_content_client import AppContentClient
 from services.chunking_service import ChunkingService
 from services.document_parser import DocumentParser
 from services.embedding_service import EmbeddingService
+from services.image_caption_repair_service import ImageCaptionRepairService
 from services.qdrant_service import QdrantService
 from services.ingest_report_service import IngestReportService
 
@@ -106,6 +107,73 @@ class IngestService:
                 app_reg, callback_url=callback_url, source_type=doc_type, source_id=source_id,
                 target_version=target_version, title=title, status="failed", error_message=str(e)
             )
+
+    @classmethod
+    async def process_caption_repair(cls, payload: Dict[str, Any]) -> None:
+        """
+        圖片描述修復任務（worker.py 的 process_caption_repair_task）：只針對描述失敗的
+        內嵌圖片段落重新呼叫多模態模型並以相同 point id 覆蓋，不重新解析、不重新切分、
+        不動任何文字段落。完成後回寫剩餘失敗數給來源應用。
+        """
+        app_id = payload["app_id"]
+        doc_type = payload["doc_type"]
+        source_id = payload["source_id"]
+        knowledge_base_id = payload["knowledge_base_id"]
+        callback_url = payload.get("callback_url")
+        filename = payload.get("filename")
+
+        app_reg = await AppRegistration.find_one(AppRegistration.app_id == app_id)
+        if not app_reg:
+            logger.error(f"[CaptionRepair] app_id='{app_id}' 未登錄（app_registrations 查無此筆），任務中止")
+            return
+        if not app_reg.is_active:
+            logger.error(f"[CaptionRepair] app_id='{app_id}' 已登錄但為停用狀態（is_active=false），任務中止")
+            return
+
+        kb = await KnowledgeBase.get(PydanticObjectId(knowledge_base_id))
+        if not kb:
+            logger.error(f"[CaptionRepair] knowledgeBaseId='{knowledge_base_id}' 不存在，任務中止")
+            return
+
+        collection_name = kb.qdrant_collection_name
+        locator = f"app_id='{app_id}' doc_type='{doc_type}' source_id='{source_id}' filename='{filename}'"
+
+        # 例外不吞：讓 arq 記錄任務失敗，來源應用的 caption_failed_count 維持原值（不會誤報成已修好）
+        result = await ImageCaptionRepairService.repair(
+            collection_name,
+            app_id=app_id,
+            doc_type=doc_type,
+            source_id=source_id,
+            only_failed=True
+        )
+
+        if result["repaired_count"] > 0:
+            QdrantService.invalidate_metadata_cache(collection_name)
+            kb.updated_at = datetime.utcnow()
+            await kb.save()
+
+        # 剩餘失敗數重新掃描計算，而非用 result["failed_count"] 推算：重掃才涵蓋得到
+        # 舊資料只有失敗佔位文字、沒有 caption_failed 欄位的情況
+        remaining_points = await QdrantService.get_image_points(
+            collection_name, app_id=app_id, doc_type=doc_type, source_id=source_id
+        )
+        remaining_failed = sum(
+            1 for p in remaining_points if ImageCaptionRepairService.is_caption_failed(p["payload"])
+        )
+        logger.info(
+            f"[CaptionRepair] {locator} 修復完成："
+            f"成功 {result['repaired_count']} 筆、本次失敗 {result['failed_count']} 筆、"
+            f"略過 {result['skipped_count']} 筆，該文件仍有 {remaining_failed} 張圖片描述失敗"
+        )
+
+        await IngestReportService.report_caption_repair(
+            app_reg,
+            source_type=doc_type,
+            source_id=source_id,
+            repaired_count=result["repaired_count"],
+            caption_failed_count=remaining_failed,
+            callback_url=callback_url
+        )
 
     @classmethod
     async def _process_delete(cls, app_reg: AppRegistration, kb: KnowledgeBase, doc_type: str, source_id: Any) -> None:

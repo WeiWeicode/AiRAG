@@ -16,6 +16,15 @@ async def process_ingest_task(ctx, payload: dict):
     await IngestService.process(payload)
 
 
+async def process_caption_repair_task(ctx, payload: dict):
+    """
+    arq 背景任務進入點：處理 POST /api/external/ingest/repair-captions 排入的圖片描述修復任務
+    （只重試描述失敗的內嵌圖片，不做全量重新切分）。
+    """
+    from services.ingest_service import IngestService
+    await IngestService.process_caption_repair(payload)
+
+
 async def startup(ctx):
     """
     worker 行程獨立於 API 行程啟動，需自行初始化 MongoDB/Beanie 連線
@@ -31,7 +40,7 @@ async def shutdown(ctx):
 
 
 class WorkerSettings:
-    functions = [process_ingest_task]
+    functions = [process_ingest_task, process_caption_repair_task]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings(host=settings.REDIS_HOST, port=settings.REDIS_PORT)

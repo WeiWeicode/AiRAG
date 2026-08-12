@@ -703,6 +703,65 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
 ```
 前端可偵測 `chunk_type == "image"` 並顯示圖片縮圖，且可提供圖片下載功能。
 
+### 15.5 POST `/api/retrieval/knowledge-bases/{knowledge_base_id}/images/regenerate-captions` — 重新產生圖片描述（內部，JWT）
+
+**描述**：以磁碟留存的原圖重新呼叫多模態模型，成功後用**相同 point id** 覆蓋該圖片段落（等同刪除失敗段落再寫入新描述），失敗則保留原段落。文字段落完全不受影響。**同步處理**，耗時隨圖片數線性增加。
+
+**Request Body**：
+```json
+{
+  "point_ids": ["uuid", "..."],
+  "filename": "string (選填，與 point_ids 擇一)",
+  "only_failed": true
+}
+```
+`point_ids` 與 `filename` 至少擇一，皆未提供回 400。`only_failed` 為 `false` 時重算該範圍內所有圖片描述。
+
+**Response 200**（欄位為 snake_case）：
+```json
+{
+  "message": "重新產生完成：成功 2 筆、失敗 0 筆、略過 1 筆",
+  "total": 3,
+  "repaired_count": 2,
+  "failed_count": 0,
+  "skipped_count": 1,
+  "details": [
+    {"point_id": "uuid", "status": "repaired | failed | skipped", "image_filename": "img_uuid.png",
+     "caption_truncated": false, "description_preview": "..."}
+  ]
+}
+```
+
+### 15.6 POST `/api/external/ingest/repair-captions` — 僅重試失敗圖片描述（外部，API Key）【新增，2026-08-12】
+
+**描述**：15.5 的外部應用版本，供 `/api/external/ingest/trigger` 同步進來的文件在 `captionFailedCount > 0` 時，只重試描述失敗的圖片，**免全量重新切分**。掛 `Depends(verify_ingest_api_key)`（`X-API-Key`，`scope="ingest"`）。與 15.5 的差異：
+
+* 以 `(appId, docType, sourceId)` 定位段落（非 `filename`），跨應用同名檔案不會互相影響。
+* 固定 `only_failed=true`，不開放全量重算。
+* **非同步**：回 `202` 後交由 arq 背景任務 `process_caption_repair_task` 處理；完成後回寫來源應用的
+  `caption_failed_count`（`direct_db`）或發 `event: "caption_repair"` 回調（`webhook`）。
+
+**Request Body**：
+```json
+{
+  "appId": "kb",
+  "docType": "attachment_file",
+  "sourceId": 2048,
+  "knowledgeBaseId": "6a389dc83578b9d3d7172440",
+  "callbackUrl": "http://... (report_mode=webhook 時必填)",
+  "filename": "EFGP-ReleaseNote.pdf (選填，僅供 log 顯示)"
+}
+```
+
+**Response 202**：
+```json
+{ "success": true, "message": "圖片描述修復任務已排入佇列", "taskId": "repair-captions:kb:attachment_file:2048:5528374" }
+```
+
+**錯誤**：`400`（appId 未登錄／停用、knowledgeBaseId 無效、webhook 模式缺 callbackUrl）、`409`（同文件 5 分鐘內重複觸發）、`422`（`sourceId` 非整數）。
+
+完整串接說明見 [08_EXTERNAL_INGEST_API_GUIDE.md](08_EXTERNAL_INGEST_API_GUIDE.md) §4A。
+
 ---
 
 ## 16. 檢索命中分析儀表板 API (Retrieval Stats Dashboard)【新增，2026-07-09】

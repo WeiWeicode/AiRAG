@@ -28,3 +28,19 @@ class IngestTriggerRequest(BaseModel):
     knowledge_base_id: str = Field(..., alias="knowledgeBaseId")
     callback_url: Optional[str] = Field(None, alias="callbackUrl")
     permissions: Optional[IngestPermissions] = None
+
+class RepairImageCaptionsTriggerRequest(BaseModel):
+    """
+    POST /api/external/ingest/repair-captions 的 Request Body（僅重試描述失敗的內嵌圖片，
+    不做全量重新切分）。以 (app_id, doc_type, source_id) 定位要修復的圖片段落，與
+    QdrantService.delete_by_app_source 的定位鍵一致；filename 僅供 log／訊息顯示，
+    不參與 Qdrant 過濾。source_id 型別必須與寫入時一致（int），字串不會匹配到 payload 中的整數。
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    app_id: str = Field(..., alias="appId")
+    doc_type: str = Field(..., alias="docType")
+    source_id: int = Field(..., alias="sourceId")
+    knowledge_base_id: str = Field(..., alias="knowledgeBaseId")
+    callback_url: Optional[str] = Field(None, alias="callbackUrl")
+    filename: Optional[str] = None

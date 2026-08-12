@@ -70,7 +70,7 @@ http://<AiRAG 後端主機>:53020/api
 | `title` | String | 否 | 檔案名稱或文章標題 | `"EFGP-ReleaseNote.pdf"` |
 | `targetVersion` | Integer | **是** | 本次異動的目標版本號（防止競態覆蓋） | `3` |
 | `action` | String | 否 | 動作類型：`"upsert"`（新增/更新）或 `"delete"`（刪除） | 預設 `"upsert"` |
-| `knowledgeBaseId` | String | **是** | 欲寫入的 AiRAG 知識庫/Qdrant Collection ID | `"kb_6a389dc83578b9d3d717244d"` |
+| `knowledgeBaseId` | String | **是** | 欲寫入的 AiRAG 知識庫 ID（MongoDB ObjectId，**純 24 位 hex、無前綴**） | `"6a389dc83578b9d3d7172440"` |
 | `callbackUrl` | String | 條件必填 | 當 App 的 `report_mode` 為 `webhook` 時**必填**；AiRAG 處理完畢後的回調 Webhook | `"http://bpm-backend.company.internal/api/v1/rag-sync/callback"` |
 | `permissions` | Object | 否 | 檢索權限控制物件（詳見 4.3 節） | |
 
@@ -99,7 +99,7 @@ Body:
   "title": "EFGP-ReleaseNote.pdf",
   "targetVersion": 3,
   "action": "upsert",
-  "knowledgeBaseId": "kb_6a389dc83578b9d3d717244d",
+  "knowledgeBaseId": "6a389dc83578b9d3d7172440",
   "callbackUrl": "http://bpm-backend.company.internal/api/v1/rag-sync/callback",
   "permissions": {
     "isPublic": false,
@@ -122,6 +122,75 @@ Content-Type: application/json
   "taskId": "7f8b9a2c-3d4e-5f6a-8b9c-0d1e2f3a4b5c"
 }
 ```
+
+---
+
+## 4A. 僅重試失敗圖片描述 (`POST /api/external/ingest/repair-captions`)
+
+當 4.5 節回報的 `captionFailedCount > 0`，**不需要**用 `action: "upsert"` 全量重新切分。此端點只針對
+「AI 描述產生失敗」的內嵌圖片段落，以 AiRAG 磁碟留存的原圖重新呼叫多模態模型，成功後用**相同的
+point id** 覆蓋該段落——文字段落與已成功的圖片段落完全不動，也不會重新解析檔案或重算其他 Embedding。
+
+### 4A.1 Request Headers
+
+與 4.1 節相同（`X-API-Key` 使用同一把 Ingest 金鑰）。
+
+### 4A.2 Request Body 欄位 (camelCase)
+
+| 欄位名稱 | 型態 | 必填 | 說明 | 範例 |
+|---|---|---|---|---|
+| `appId` | String | **是** | 已登錄的應用識別碼，同時作為定位條件 | `"kb"` |
+| `docType` | String | **是** | 文件類型，同時作為定位條件 | `"attachment_file"` |
+| `sourceId` | **Integer** | **是** | 來源系統主鍵 ID，同時作為定位條件。**必須是整數**，傳字串會回 422 | `2048` |
+| `knowledgeBaseId` | String | **是** | 文件所在的 AiRAG 知識庫 ID（純 24 位 hex） | `"6a389dc83578b9d3d7172440"` |
+| `callbackUrl` | String | 條件必填 | `report_mode` 為 `webhook` 時必填 | `"http://bpm-backend.company.internal/api/v1/rag-sync/callback"` |
+| `filename` | String | 否 | **僅供 log 與訊息顯示，不參與定位**，可省略 | `"EFGP-ReleaseNote.pdf"` |
+
+目標段落以 `(appId, docType, sourceId)` 定位（與 `action: "delete"` 的定位鍵一致），因此
+**同名檔案跨應用不會互相影響**。本端點固定只修描述失敗的段落，不提供「全部重算」選項。
+
+### 4A.3 Response
+
+* **`202 Accepted`**：
+  ```json
+  {
+    "success": true,
+    "message": "圖片描述修復任務已排入佇列",
+    "taskId": "repair-captions:kb:attachment_file:2048:5528374"
+  }
+  ```
+* **`400`**：`appId` 未登錄／已停用、`knowledgeBaseId` 格式錯誤或不存在、webhook 模式未帶 `callbackUrl`。
+* **`409`**：同一份文件的修復任務已在處理中（5 分鐘內的重複觸發會被擋下，避免地端多模態模型承受雙倍負載）。
+* **`422`**：欄位型別錯誤（最常見是 `sourceId` 傳成字串）。
+
+### 4A.4 結果如何得知
+
+端點是**非同步**的：單張圖片描述最壞需要 `IMAGE_CAPTION_TIMEOUT`（預設 180）秒，因此比照
+`/ingest/trigger` 立即回 202，實際修復由背景佇列執行。完成後 AiRAG 會回寫「該文件目前**仍然**
+描述失敗的圖片數」：
+
+* **`direct_db` 模式**：`UPDATE rag_sync_status SET caption_failed_count=? WHERE source_type=? AND source_id=?`
+  （只更新這一個欄位，不動 `status` / `progress` / `last_synced_version`）。全部修好時寫入 `0`，
+  來源應用重新載入清單即可讓「圖片描述失敗」警示消失。
+* **`webhook` 模式**：POST 至 `callbackUrl`，body 帶 `"event": "caption_repair"` 以與 5.3 節的同步進度
+  回調區分：
+  ```json
+  {
+    "event": "caption_repair",
+    "appId": "bpm",
+    "docType": "attachment_file",
+    "sourceId": 2048,
+    "repairedCount": 2,
+    "captionFailedCount": 0,
+    "repairedAt": "2026-08-12T06:31:22.114Z"
+  }
+  ```
+
+### 4A.5 注意事項
+
+* 若原圖檔案已不在 AiRAG 磁碟上（極舊的資料），該張圖無法修復，會持續計入 `captionFailedCount`，
+  此情況才需要改用 `action: "upsert"` 全量重新切分。
+* 若多模態模型當下仍不可用，修復同樣會失敗，`captionFailedCount` 維持原值，可稍後再觸發一次。
 
 ---
 

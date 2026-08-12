@@ -1546,13 +1546,18 @@ class QdrantService:
         cls,
         collection_name: str,
         filename: Optional[str] = None,
-        point_ids: Optional[List[str]] = None
+        point_ids: Optional[List[str]] = None,
+        app_id: Optional[str] = None,
+        doc_type: Optional[str] = None,
+        source_id: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """
         取回圖片段落的原始 payload，供「重新產生圖片描述」修復功能使用，回傳
         [{"point_id": str, "payload": dict}, ...]。
         傳入 point_ids 時直接依 ID 取回（不過濾 chunk_type，由呼叫端驗證）；
-        否則取回該 filename 底下所有 chunk_type == "image" 的段落。
+        否則以 filename 或 (app_id, doc_type, source_id) 取回 chunk_type == "image" 的段落。
+        外部 ingest 進來的文件請用 (app_id, doc_type, source_id) 定位：filename 在多應用
+        共用的 Collection 中可能撞名，且來源端改過標題後就對不上（見 delete_by_app_source）。
         """
         client = cls.get_client()
         try:
@@ -1565,20 +1570,27 @@ class QdrantService:
                 )
                 return [{"point_id": str(r.id), "payload": r.payload or {}} for r in records]
 
+            must = [
+                models.FieldCondition(key="chunk_type", match=models.MatchValue(value="image"))
+            ]
+            if filename:
+                must.append(models.FieldCondition(key="filename", match=models.MatchValue(value=filename)))
+            if app_id:
+                must.append(models.FieldCondition(key="app_id", match=models.MatchValue(value=app_id)))
+            if doc_type:
+                must.append(models.FieldCondition(key="doc_type", match=models.MatchValue(value=doc_type)))
+            if source_id is not None:
+                must.append(models.FieldCondition(key="source_id", match=models.MatchValue(value=source_id)))
+            if len(must) == 1:
+                # 只剩 chunk_type 條件等於掃全庫圖片段落，必定是呼叫端漏帶條件，
+                # 這裡直接失敗，避免誤把整個 Collection 的圖片都當成修復目標
+                raise ValueError(
+                    "get_image_points() 需要 point_ids、filename 或 (app_id, doc_type, source_id) 其中一組定位條件"
+                )
+
             scroll_result = await client.scroll(
                 collection_name=collection_name,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="filename",
-                            match=models.MatchValue(value=filename)
-                        ),
-                        models.FieldCondition(
-                            key="chunk_type",
-                            match=models.MatchValue(value="image")
-                        )
-                    ]
-                ),
+                scroll_filter=models.Filter(must=must),
                 limit=10000,
                 with_payload=True,
                 with_vectors=False

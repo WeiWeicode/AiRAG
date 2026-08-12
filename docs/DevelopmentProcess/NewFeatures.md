@@ -1,5 +1,65 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-08-12 外部應用「僅重試失敗圖片 AI 描述」API (`/api/external/ingest/repair-captions`)
+
+### 背景
+外部應用（KB / BPM）同步進來的 PDF/DOCX 若有內嵌圖片描述失敗（`captionFailedCount > 0`），
+目前只能用 `action: "upsert"` 全量重新切分——整份文件的文字段落與已成功的圖片都會被重新解析、
+重新 Embedding，耗時且更容易再次逾時。AiRAG 內部本來就有 `ImageCaptionRepairService`
+（以磁碟原圖重描述、相同 point id 覆蓋），本次把這個能力開給外部應用。
+規劃文件見 [NewFeaturesPlan_ImageCaptionRepairExternalApiPlan.md](NewFeaturesPlan_ImageCaptionRepairExternalApiPlan.md)。
+
+### 變更內容
+- `backend/services/qdrant_service.py`：`get_image_points()` 新增 `app_id` / `doc_type` / `source_id`
+  三個選填參數，`scroll_filter.must` 改為動態組裝（`chunk_type == "image"` 恆存在）。
+  **不用 `filename` 定位外部文件**的理由：多應用共用同一 Collection 時 filename 會撞名，且
+  filename 是 `title or f"{app_id}_{source_id}"`，來源端改過標題就對不上。無任何定位條件時
+  拋 `ValueError`，避免誤把整個 Collection 的圖片當成修復目標。既有兩個呼叫端行為不變。
+- `backend/services/image_caption_repair_service.py`：`repair()` 同步新增該三個參數並往下傳，
+  其餘邏輯（併發、覆蓋 point、統計）未動。
+- `backend/schemas/ingest.py`：新增 `RepairImageCaptionsTriggerRequest`。`source_id` 型別為 `int`
+  （與 `IngestTriggerRequest` 一致）——payload 存的是整數，`MatchValue("2048")` 不會匹配到 `2048`，
+  必須在 schema 層擋下才不會出現「回 202 但一筆都沒修」。
+- `backend/routers/external.py`：新增 `POST /ingest/repair-captions`（`verify_ingest_api_key`），
+  驗證順序比照 `trigger_ingest()`，回 `202` + arq。job id 併入 5 分鐘時間桶去重（`repair-captions:{app}:{doc_type}:{source_id}:{bucket}`），
+  `enqueue_job` 回 `None` 時回 409。用時間桶而非固定 id 是因為 arq 的 `keep_result`（預設 3600 秒）
+  會保留已完成的 job id，固定 id 會害使用者一小時內無法對同一份文件再試一次。
+- `backend/worker.py`：新增 `process_caption_repair_task` 並註冊進 `WorkerSettings.functions`。
+- `backend/services/ingest_service.py`：新增 `IngestService.process_caption_repair()`——解析
+  App/KB → `repair(only_failed=True)` → `repaired_count > 0` 時 invalidate metadata cache 並更新
+  `kb.updated_at` → **重新掃描計算剩餘失敗數**（用 `is_caption_failed()`，而非 `result["failed_count"]`
+  推算，才涵蓋得到舊資料只有失敗佔位文字、沒有 `caption_failed` 欄位的情況）→ 回寫來源應用。
+  例外不吞，往外拋讓 arq 記錄任務失敗（也確保失敗時不會誤把 `caption_failed_count` 寫成已修好）。
+- `backend/services/ingest_report_service.py`：新增 `report_caption_repair()` 與兩個私有實作。
+  `direct_db` 只 `UPDATE rag_sync_status SET caption_failed_count=? WHERE source_type=? AND source_id=?`
+  ——不動 `status` / `progress` / `last_synced_version`，也**刻意不帶 `target_version` 條件**
+  （修復針對的是目前已索引的內容，帶版本條件會在對不上時靜默不更新，警示標籤永遠清不掉）。
+  `webhook` 模式的 body 帶 `"event": "caption_repair"` 以與同步進度回調區分。
+- 文件：`docs/08_EXTERNAL_INGEST_API_GUIDE.md` 新增 §4A；`docs/03_API_CONTRACT.md` 新增 §15.5（內部
+  端點，先前未收錄）與 §15.6（本次新端點）。順手修正 08 文件既有的 `knowledgeBaseId` 錯誤範例
+  （`"kb_6a389dc8..."` → 純 24 位 hex，程式是 `PydanticObjectId(...)`，帶前綴會直接 400）。
+
+### 驗證
+- `backend/tests/test_caption_repair_external_api.py`（21 個測試全數通過，不連任何外部服務）：
+  - schema：camelCase 解析、`sourceId` 傳字串必須被擋、缺必填欄位。
+  - 定位條件：app/doc/source 三條件正確組進 filter、`source_id=0` 不被 falsy 判斷吃掉、
+    既有 filename 路徑不受影響、無定位條件拋 `ValueError`。
+  - 任務主體：剩餘失敗數以重新掃描為準（含「無 `caption_failed` 欄位的舊資料」案例）、
+    全部修好時回寫 0、沒修到東西時不動 cache 與 `kb.updated_at`、App 停用時不碰 Qdrant、
+    `repair()` 失敗時往外拋且不回寫。
+  - 回寫：`direct_db` 的 SQL 只更新 `caption_failed_count` 且不含 `target_version`／`status`；
+    webhook body 帶 `event: "caption_repair"`；webhook 模式缺 `callbackUrl` 不會炸。
+  - 端點：202 排入的是 `process_caption_repair_task`（非全量切分任務）與 job id 格式、
+    409 重複觸發、400（停用／無效 kbId／webhook 缺 callbackUrl）、422（`sourceId` 非整數）。
+- `main.py` import 成功，OpenAPI 確認 `/api/external/ingest/repair-captions` 已註冊，
+  `WorkerSettings.functions` 確認含兩個任務。
+- ⚠️ 實際 Qdrant 覆蓋結果、多模態模型重描述品質、KB 端警示標籤是否消失，待手動測試確認。
+- ⚠️ 部署注意：**worker 容器需一併重啟**，否則舊 worker 不認得 `process_caption_repair_task`，
+  端點照常回 202 但任務不會執行（症狀是「按了沒反應也沒錯誤」）。
+- KB 端對應施作見 GigaSolarKnowledgeBase 的 `docs/DevelopmentProcess/RAG_IMAGE_CAPTION_REPAIR.md`。
+
+---
+
 ## 2026-07-30 新增集團知識庫混合查詢法 (`KB_hybrid`)
 
 ### 背景

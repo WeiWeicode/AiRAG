@@ -73,15 +73,25 @@ class ImageCaptionRepairService:
         collection_name: str,
         filename: Optional[str] = None,
         point_ids: Optional[List[str]] = None,
-        only_failed: bool = True
+        only_failed: bool = True,
+        app_id: Optional[str] = None,
+        doc_type: Optional[str] = None,
+        source_id: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        重新產生圖片描述。`point_ids` 指定要修復的段落；未指定時以 `filename`
-        掃出該檔案的所有圖片段落。`only_failed` 為 True 時只處理描述失敗的段落。
+        重新產生圖片描述。`point_ids` 指定要修復的段落；未指定時以 `filename` 或
+        (`app_id`, `doc_type`, `source_id`) 掃出該文件的所有圖片段落（外部 ingest 進來的
+        文件請用後者，理由見 QdrantService.get_image_points）。
+        `only_failed` 為 True 時只處理描述失敗的段落。
         回傳處理統計與逐筆結果，呼叫端負責 invalidate metadata cache。
         """
         targets = await QdrantService.get_image_points(
-            collection_name, filename=filename, point_ids=point_ids
+            collection_name,
+            filename=filename,
+            point_ids=point_ids,
+            app_id=app_id,
+            doc_type=doc_type,
+            source_id=source_id
         )
 
         details: List[Dict[str, Any]] = []

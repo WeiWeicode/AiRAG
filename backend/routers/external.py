@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -12,7 +13,7 @@ from models.external_api_key import ExternalApiKey
 from models.external_chat_log import ExternalChatLog, SourceSummaryItem
 from models.app_registration import AppRegistration
 from models.knowledge_base import KnowledgeBase
-from schemas.ingest import IngestTriggerRequest
+from schemas.ingest import IngestTriggerRequest, RepairImageCaptionsTriggerRequest
 from services.arq_pool import ArqPool
 from utils.security import verify_external_api_key, verify_ingest_api_key
 
@@ -173,5 +174,73 @@ async def trigger_ingest(
     return {
         "success": True,
         "message": "Task queued successfully",
+        "taskId": job.job_id
+    }
+
+
+@router.post("/ingest/repair-captions", status_code=202)
+async def repair_image_captions(
+    request: RepairImageCaptionsTriggerRequest,
+    api_key: ExternalApiKey = Depends(verify_ingest_api_key)
+):
+    """
+    僅重試「AI 描述產生失敗」的內嵌圖片段落：以磁碟留存的原圖重新呼叫多模態模型，
+    成功後用相同 point id 覆蓋該段落，文字段落與已成功的圖片段落完全不動。
+    比照 /ingest/trigger 立即回 202 並交給 arq 背景處理——單張圖描述最壞要
+    IMAGE_CAPTION_TIMEOUT 秒，同步等待會讓呼叫端連線逾時。
+    """
+    app_reg = await AppRegistration.find_one(AppRegistration.app_id == request.app_id)
+    if not app_reg:
+        raise HTTPException(
+            status_code=400,
+            detail=f"appId '{request.app_id}' 未登錄，請先以 POST /api/app-registrations 建立登錄資料"
+        )
+    if not app_reg.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail=f"appId '{request.app_id}' 已登錄但目前為停用狀態，請以 PUT /api/app-registrations/{request.app_id} 設定 is_active=true"
+        )
+
+    if app_reg.report_mode == "webhook" and not request.callback_url:
+        raise HTTPException(status_code=400, detail="report_mode='webhook' 的 App 呼叫修復端點時必須帶 callbackUrl")
+
+    try:
+        kb_object_id = PydanticObjectId(request.knowledge_base_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="無效的 knowledgeBaseId 格式")
+
+    kb = await KnowledgeBase.get(kb_object_id)
+    if not kb:
+        raise HTTPException(status_code=400, detail=f"knowledgeBaseId '{request.knowledge_base_id}' 對應的知識庫不存在")
+
+    job_payload = {
+        "app_id": request.app_id,
+        "doc_type": request.doc_type,
+        "source_id": request.source_id,
+        "knowledge_base_id": request.knowledge_base_id,
+        "callback_url": request.callback_url,
+        "filename": request.filename
+    }
+
+    # 同一份文件短時間內重複觸發（誤觸連點／兩位管理者同時操作）會讓地端多模態模型承受雙倍負載。
+    # job id 併入 5 分鐘時間桶去重：擋得住連點，又不會因 arq 的 keep_result（預設 3600 秒）
+    # 保留已完成的 job id，害使用者一小時內無法對同一份文件再試一次
+    bucket = int(time.time() // 300)
+    job_id = f"repair-captions:{request.app_id}:{request.doc_type}:{request.source_id}:{bucket}"
+
+    pool = await ArqPool.get_pool()
+    job = await pool.enqueue_job("process_caption_repair_task", job_payload, _job_id=job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"appId='{request.app_id}' docType='{request.doc_type}' "
+                f"sourceId={request.source_id} 的圖片描述修復任務已在處理中，請稍候"
+            )
+        )
+
+    return {
+        "success": True,
+        "message": "圖片描述修復任務已排入佇列",
         "taskId": job.job_id
     }

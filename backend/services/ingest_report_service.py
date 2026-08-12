@@ -48,6 +48,107 @@ class IngestReportService:
             )
 
     @classmethod
+    async def report_caption_repair(
+        cls,
+        app_reg: AppRegistration,
+        *,
+        source_type: str,
+        source_id: Any,
+        repaired_count: int,
+        caption_failed_count: int,
+        callback_url: Optional[str] = None
+    ) -> None:
+        """
+        圖片描述修復（POST /api/external/ingest/repair-captions）完成後回寫剩餘失敗數。
+        與 report() 分開是因為本流程不改變同步狀態：不動 status / progress /
+        last_synced_version / last_synced_at，只更新 caption_failed_count——沒有這一步，
+        來源應用（如 KB 的 rag_sync_status）上的「圖片描述失敗 N」警示永遠不會消失。
+        """
+        if app_reg.report_mode == "direct_db":
+            await cls._report_caption_repair_direct_db(
+                app_reg, source_type=source_type, source_id=source_id,
+                caption_failed_count=caption_failed_count
+            )
+        else:
+            await cls._report_caption_repair_webhook(
+                app_reg, callback_url=callback_url, source_type=source_type, source_id=source_id,
+                repaired_count=repaired_count, caption_failed_count=caption_failed_count
+            )
+
+    @classmethod
+    async def _report_caption_repair_webhook(
+        cls, app_reg: AppRegistration, *, callback_url: Optional[str], source_type: str,
+        source_id: Any, repaired_count: int, caption_failed_count: int
+    ) -> None:
+        if not callback_url:
+            logger.error(
+                f"[IngestReportService] app_id='{app_reg.app_id}' 為 webhook 模式但缺少 callback_url，"
+                f"無法回報圖片描述修復結果"
+            )
+            return
+
+        sync_key = os.getenv(f"{app_reg.app_id.upper()}_RAG_SYNC_KEY")
+        body = {
+            # 明確標示事件型別，讓來源應用能與 _report_webhook 的同步進度回調區分處理
+            "event": "caption_repair",
+            "appId": app_reg.app_id,
+            "docType": source_type,
+            "sourceId": source_id,
+            "repairedCount": repaired_count,
+            "captionFailedCount": caption_failed_count,
+            "repairedAt": datetime.utcnow().isoformat()
+        }
+        headers = {"X-RAG-Sync-Key": sync_key} if sync_key else {}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(callback_url, json=body, headers=headers)
+                resp.raise_for_status()
+        except Exception as e:
+            logger.error(
+                f"[IngestReportService] 圖片描述修復 Webhook 回報失敗 "
+                f"(app_id='{app_reg.app_id}', url='{callback_url}'): {e}"
+            )
+
+    @classmethod
+    async def _report_caption_repair_direct_db(
+        cls, app_reg: AppRegistration, *, source_type: str, source_id: Any, caption_failed_count: int
+    ) -> None:
+        """
+        刻意不帶 target_version 條件：修復針對的是「目前已索引的內容」而非特定版本，
+        帶版本條件會在版本欄位對不上時靜默不更新，導致警示標籤永遠清不掉。
+        """
+        conn_str = os.getenv(f"{app_reg.app_id.upper()}_DB_CONNECTION_STRING")
+        if not conn_str:
+            logger.error(
+                f"[IngestReportService] app_id='{app_reg.app_id}' 為 direct_db 模式但缺少 "
+                f"{app_reg.app_id.upper()}_DB_CONNECTION_STRING 環境變數，無法回報圖片描述修復結果"
+            )
+            return
+
+        def _write():
+            import pyodbc
+            conn = pyodbc.connect(conn_str, timeout=10)
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE rag_sync_status SET caption_failed_count=? "
+                    "WHERE source_type=? AND source_id=?",
+                    caption_failed_count, source_type, source_id
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        try:
+            await asyncio.to_thread(_write)
+            logger.info(
+                f"[IngestReportService] 已回寫 caption_failed_count={caption_failed_count} "
+                f"(app_id='{app_reg.app_id}', source_type='{source_type}', source_id='{source_id}')"
+            )
+        except Exception as e:
+            logger.error(f"[IngestReportService] 圖片描述修復 direct_db 回報失敗 (app_id='{app_reg.app_id}'): {e}")
+
+    @classmethod
     async def _report_webhook(
         cls, app_reg: AppRegistration, *, callback_url: Optional[str], source_type: str, source_id: Any,
         target_version: int, title: Optional[str], status: str, progress: Optional[int],
