@@ -1,5 +1,73 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-08-12 大量內嵌圖片 PDF 同步逾時改善（批次一、批次二）
+
+### 背景
+`airag-worker` 處理一份含 100+ 張內嵌圖片的 PDF 時，在 3600s 被 arq 判定 `TimeoutError`，
+整份文件同步失敗且知識庫內一個 chunk 都沒有。完整根因分析與決策依據見
+[NewFeaturesPlan_IngestImageCaptionTimeoutPlan.md](NewFeaturesPlan_IngestImageCaptionTimeoutPlan.md)。
+
+核心問題不是單一 bug，而是「圖片數量 × 單張成本」超出時間預算，且流程為全有全無：
+`ceil(100/3) × 3 × 180 ≈ 5.2 小時`，`INGEST_JOB_TIMEOUT` 調到 7200 也擋不住。
+
+### 變更內容
+
+**批次一：數量與成本控制**
+- `backend/config.py`：新增 `IMAGE_CAPTION_MAX_TOKENS`(4096)、`IMAGE_MIN_WIDTH`(100)、
+  `IMAGE_MIN_HEIGHT`(100)、`IMAGE_MIN_BYTES`(8192)。並於 `IMAGE_CAPTION_TIMEOUT` 補上約束註解：
+  此值必須小於 `describe_image()` 內 `chat_completion` 的 httpx timeout(300)，否則逾時會改以
+  `httpx.ReadTimeout` 拋出，使「逾時不重試」分流靜默失效。
+- `backend/services/document_parser.py`：`extract_images_from_pdf()` 新增四道過濾
+  （xref 去重 → 尺寸門檻 → 大小門檻 → sha256 內容去重），跨頁重複的 logo/圖章與裝飾小圖直接捨棄。
+  另加單張獨立 `try/except`（單張損壞不再中斷其後所有頁面）、`doc.close()` 移入 `finally`、
+  輸出過濾統計 info log。**DOCX 路徑未動**（已有自己的 OLE 物件過濾）。
+- `backend/services/llm_service.py`：`describe_image()` 的 `max_tokens` 由寫死 20480 改為
+  `settings.IMAGE_CAPTION_MAX_TOKENS`；`describe_image_with_retry()` 新增
+  `timeout: Optional[float] = None` 參數（預設 None 沿用 `IMAGE_CAPTION_TIMEOUT`，
+  既有呼叫端不受影響），並加入例外分流：`asyncio.TimeoutError` 不重試直接拋出，
+  其餘例外維持重試 `IMAGE_CAPTION_MAX_ATTEMPTS` 次。單張最壞成本 555s → 約 180s。
+
+**批次二：預算與可靠性**
+- `backend/config.py`：新增 `IMAGE_CAPTION_PHASE_BUDGET_RATIO`(0.6)、
+  `INGEST_SOFT_DEADLINE_MARGIN`(120)、`ARQ_MAX_JOBS`(2)。
+- `backend/services/ingest_service.py`：
+  - 新增模組常數 `MIN_CAPTION_ATTEMPT_SECONDS = 10`（剩餘預算不足時不發必定逾時的請求）。
+  - 圖片描述階段加入時間預算 `INGEST_JOB_TIMEOUT × RATIO`；預算內傳入
+    `timeout=min(IMAGE_CAPTION_TIMEOUT, remaining)`，預算用盡則剩餘圖片降級為
+    `caption_failed=True` 佔位描述，讓切分／embedding／upsert 照常完成。
+  - 每完成 10% 輸出進度 info log，預算用盡時輸出 warning（已描述/降級張數）。
+  - `import asyncio` 提到模組層（原本在圖片區塊內區域匯入）。
+- `backend/worker.py`：`WorkerSettings` 新增 `max_jobs = settings.ARQ_MAX_JOBS`。
+
+### 設計要點（後續修改請勿破壞）
+- **圖片檔一律落地**：`open(target_path, "wb")` 必須在 caption 的 try/except **之外**。
+  降級的圖片若沒存檔，`ImageCaptionRepairService._resolve_image_path()` 會拋
+  `FileNotFoundError`，那些段落就永遠補不回描述。
+- **降級而非失敗**：本次刻意複用既有的 `caption_failed` + `ImageCaptionRepairService` 管線，
+  不新建 checkpoint 或任務拆分機制。
+- **尺寸取值方向**：`base_image.get("width")` 取不到時視為「通過」尺寸關卡，
+  不可預設 0，否則尺寸未知的圖片會被靜默丟棄。
+
+### 驗證
+- `py_compile` 全數通過；`config.py` 新參數在**未修改 `.env`** 的情況下皆取得預期預設值。
+- 合成 PDF（4 頁，每頁重複 logo + 1 張大圖 + 內容重複圖 + 純色小圖）：抽出 7 張 →
+  `xref 重複 -4、內容重複 -0、尺寸門檻 -1、大小門檻 -1`，實際送描述 **1 張**。
+- 例外分流：模擬 hang → 只嘗試 1 次即拋 `TimeoutError`（0.31s，非 3 輪）；
+  模擬前兩次 `RuntimeError` → 第 3 次成功回傳，重試行為維持不變。
+- 圖片階段預算（stub 外部相依，實跑 `_process_upsert()`）：
+  | 情境 | LLM 呼叫 | caption_failed_count | 文字/圖片 chunk | 圖檔落地 |
+  |:---|:---|:---|:---|:---|
+  | 預算 1s（耗盡） | 0 | 12 | 2 / 12 | 12 |
+  | 預算 3600s（充足） | 12 | 0 | 2 / 12 | 12 |
+  | 預算 12s（中途用盡） | 6 | 6 | 2 / 12 | 12 |
+- 軟性 deadline：`_process_upsert` hang 時於 1.01s（軟性上限）主動放棄，回報
+  `status='failed'`、`error_message='處理逾時：超過內部軟性上限 1 秒'`（非空字串）。
+- ⚠️ 實際 PDF 端到端行為待使用者手動測試（見規劃文件第 6 節）。**部署時需重啟 worker**，
+  arq 在行程啟動時才讀取 `WorkerSettings`。
+
+---
+
+
 ## 2026-07-30 新增集團知識庫混合查詢法 (`KB_hybrid`) 後端支援
 
 ### 背景

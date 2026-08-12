@@ -1,5 +1,83 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-08-12 ingest 任務逾時後不回報 failed，來源應用同步狀態永久卡在 processing
+
+### 背景
+`airag-worker` 處理含 100+ 張圖片的 PDF 時被 arq 判定 `TimeoutError`，但 KB 端的
+`rag_sync_status` 既沒有變成 `failed`，也沒有任何錯誤訊息，永遠停在 `processing`。
+
+原因：arq 逾時是對整個 job task 呼叫 cancel，`IngestService.process()` 內收到的是
+`asyncio.CancelledError`。該例外**繼承 `BaseException` 而非 `Exception`**，
+`except Exception as e` 攔不到，因此 `IngestReportService.report(status="failed")` 從未被執行。
+
+同時核對 arq 原始碼（`arq/worker.py:610-634`）確認：`asyncio.TimeoutError` 會落入 `else` 分支
+`finish=True / jobs_failed+=1`，**不會**進入 line 625 的重試分支。也就是 `INGEST_JOB_MAX_TRIES=2`
+在逾時情境下不生效，arq 不會自動重跑——任務直接死亡，且來源端毫不知情。
+
+### 變更內容
+- `backend/services/ingest_service.py`（`process()`）：以 `asyncio.wait_for()` 包住
+  `_process_upsert()`，逾時上限為 `INGEST_JOB_TIMEOUT - INGEST_SOFT_DEADLINE_MARGIN`（預設 120s 餘裕）。
+  比 arq 更早主動放棄，讓逾時以一般 `Exception` 形式落入既有的 `except Exception` 而能正常回報 `failed`，
+  並保留餘裕給回報本身完成（webhook timeout 15s / pyodbc timeout 10s）。
+- 攔到 `asyncio.TimeoutError` 後改拋帶訊息的 `TimeoutError`：**`asyncio.TimeoutError` 的 `str()`
+  是空字串**，直接沿用會讓來源應用收到空的 `errorMessage`，等於知道失敗卻不知道原因。
+
+### 未採用的作法
+直接加 `except asyncio.CancelledError: 回報 failed; raise`。在已被 cancel 的 task 內再 await
+（webhook httpx 或 `asyncio.to_thread` 寫 SQL Server）會被二次取消，必須用 `asyncio.shield` 包裹才安全，
+易寫錯且難測試。改用「我們自己先逾時」則完全走既有正常路徑，零特殊處理。
+
+### 驗證
+- 將 `INGEST_JOB_TIMEOUT=121`、`INGEST_SOFT_DEADLINE_MARGIN=120`（軟性上限 1s），
+  `_process_upsert` 替換為 hang 30s：
+  - 於 **1.01s** 主動放棄（未等到 arq 的 121s）
+  - 回報序列 `processing` → `failed`
+  - `error_message='處理逾時：超過內部軟性上限 1 秒'`（確認非空字串）
+
+---
+
+## 2026-08-12 PDF 內嵌圖片無任何過濾，重複 logo 與裝飾小圖灌爆圖片描述階段
+
+### 背景
+`DocumentParser.extract_images_from_pdf()` 對每頁 `page.get_images(full=True)` 的每個 xref
+無條件抽出，**沒有任何過濾或去重**：頁首/頁尾 logo、圖章、分隔裝飾線每頁各算一張，
+跨頁重複引用的同一個 xref 也被重複抽出，內容完全相同卻各送一次 vLLM。
+一份 40 頁的 PDF 光 logo 就貢獻 40 張，是「100 多張圖」的直接來源。
+
+對照組：DOCX 路徑早在 2026-07-27 就已加入 OLE 物件圖示過濾，PDF 路徑始終沒有對應處理。
+
+此外原本只有一層外包 `try/except`，`doc.extract_image(xref)` 遇到損壞圖層時，
+**該頁之後的所有頁面完全不再處理**（靜默少圖，現場只看得到一行 error log），
+且 `doc.close()` 被跳過造成資源未釋放。
+
+### 變更內容
+- `backend/services/document_parser.py`（`extract_images_from_pdf()`）：
+  - 依序套用四道過濾：`xref` 去重 → 尺寸門檻(`IMAGE_MIN_WIDTH/HEIGHT`) →
+    大小門檻(`IMAGE_MIN_BYTES`) → `sha256` 內容去重。
+  - **重複者直接捨棄**，不採「共用描述但每頁各留 chunk」——後者會讓同一段描述文字在知識庫中
+    出現數十次，在向量檢索時洗版擠掉真正相關的內容。
+  - 單張圖片獨立 `try/except`，失敗只記 log 並 `continue`；`doc.close()` 移入 `finally`。
+  - 取寬高改用 `.get()`，**取不到時視為「通過」尺寸關卡**交由大小門檻判斷，
+    不可預設 0 而讓尺寸未知的圖片被靜默丟棄。
+  - 輸出過濾統計 info log（調整 `IMAGE_MIN_*` 前務必先看它）。
+
+### 已知取捨
+重複圖片只保留第一次出現的頁碼，針對「第 30 頁那張圖」的提問可能引用到第 3 頁的來源。
+判定為可接受，過濾統計 log 留有調整依據。
+
+### 驗證
+合成 PDF（4 頁：每頁重複同一 logo 40x40、第 1 頁一張 300x300 噪點大圖、第 2 頁重複嵌入同圖、
+第 1 頁一張 200x200 純色小圖）：
+
+```
+[DocumentParser] PDF 共抽出 7 張圖片：xref 重複 -4、內容重複 -0、尺寸門檻 -1、大小門檻 -1、抽取失敗 -0，實際送描述 1 張
+```
+
+僅保留該張有效大圖（270KB），符合預期。
+
+---
+
+
 ## 2026-07-27 Word 內嵌附件（PDF/Excel 等）的檔案圖示被誤判為文件圖片修正
 
 ### 背景

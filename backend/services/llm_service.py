@@ -2,7 +2,7 @@ import asyncio
 import httpx
 import json
 import logging
-from typing import List, Dict, Any, AsyncGenerator
+from typing import List, Dict, Any, AsyncGenerator, Optional
 from config import settings
 from utils.token_counter import count_tokens
 
@@ -281,9 +281,11 @@ class LLMService:
         finish_reason = None
         try:
             # 圖片內容複雜（文字/表格多）時，模型生成長度較大的描述可能需要遠超過一般文字對話的時間，
-            # 這裡用較長的 timeout（5 分鐘），避免自架 vLLM 在生成大量 token 時被中途判定逾時失敗
+            # 這裡用較長的 timeout（5 分鐘），避免自架 vLLM 在生成大量 token 時被中途判定逾時失敗。
+            # 實際的單張上限由 describe_image_with_retry() 的 asyncio.wait_for 控制，必定先於此 timeout 觸發
             stream = await cls.chat_completion(
-                messages, temperature=0.3, max_tokens=20480, timeout=300.0, stream=True,
+                messages, temperature=0.3, max_tokens=settings.IMAGE_CAPTION_MAX_TOKENS,
+                timeout=300.0, stream=True,
                 repetition_penalty=settings.DEFAULT_REPETITION_PENALTY,
                 frequency_penalty=settings.DEFAULT_FREQUENCY_PENALTY
             )
@@ -335,15 +337,26 @@ class LLMService:
 
     @classmethod
     async def describe_image_with_retry(
-        cls, image_bytes: bytes, mime_type: str, context_hint: str = ""
+        cls, image_bytes: bytes, mime_type: str, context_hint: str = "",
+        timeout: Optional[float] = None
     ) -> tuple:
         """
         describe_image() 的重試包裝，回傳格式與 describe_image() 相同的 (description, truncated)。
-        每次嘗試套用 IMAGE_CAPTION_TIMEOUT 牆鐘上限（describe_image() 內的 httpx timeout 在串流
-        模式下只約束單次讀取，無法限制總生成時間）；失敗則遞增等待後重試，最多
-        IMAGE_CAPTION_MAX_ATTEMPTS 次，全部失敗才拋出最後一次的例外交由呼叫端處理。
+        每次嘗試套用牆鐘上限（describe_image() 內的 httpx timeout 在串流模式下只約束單次讀取，
+        無法限制總生成時間）；`timeout` 未指定時沿用 IMAGE_CAPTION_TIMEOUT，呼叫端（ingest 的
+        圖片描述階段預算）可傳入更短的剩餘時間，避免最後一張圖超支整個階段的預算。
         描述被 max_tokens 截斷（truncated=True）仍有可用內容，不視為失敗、不重試。
+
+        例外分流：
+        - 逾時（asyncio.TimeoutError）代表這張圖的生成量遠超預期，原封不動重試幾乎必然再逾時，
+          每次都是完整的一輪純浪費，因此**不重試**直接拋出，交由呼叫端寫入失敗佔位段落，
+          事後再用 ImageCaptionRepairService 補描述。
+        - 其餘例外（無限思考迴圈、連線／HTTP 錯誤）屬偶發性，重試確實有效，維持遞增等待後
+          重試至多 IMAGE_CAPTION_MAX_ATTEMPTS 次。
+        注意此分流的前提：單次上限必須小於 describe_image() 內 chat_completion 的 httpx
+        timeout（300），否則逾時會改以 httpx.ReadTimeout 型態拋出而落入下方的重試分支。
         """
+        attempt_timeout = timeout if timeout is not None else settings.IMAGE_CAPTION_TIMEOUT
         last_error = None
         for attempt in range(1, settings.IMAGE_CAPTION_MAX_ATTEMPTS + 1):
             try:
@@ -353,8 +366,15 @@ class LLMService:
                         mime_type=mime_type,
                         context_hint=context_hint
                     ),
-                    timeout=settings.IMAGE_CAPTION_TIMEOUT
+                    timeout=attempt_timeout
                 )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Image captioning timed out after {attempt_timeout}s on attempt "
+                    f"{attempt}/{settings.IMAGE_CAPTION_MAX_ATTEMPTS}, not retrying "
+                    f"(context_hint={context_hint!r})"
+                )
+                raise
             except Exception as e:
                 last_error = e
                 logger.warning(

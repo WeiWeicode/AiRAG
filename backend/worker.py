@@ -39,3 +39,6 @@ class WorkerSettings:
     # 判定 TimeoutError 而整份文件同步失敗，這裡改為可由環境變數調整
     job_timeout = settings.INGEST_JOB_TIMEOUT
     max_tries = settings.INGEST_JOB_MAX_TRIES
+    # arq 預設可同時跑 10 個任務，而圖片描述併發是每個任務各自計算的，
+    # 不設限時多份文件同步會讓地端 vLLM 被 10 × IMAGE_CAPTION_CONCURRENCY 個請求塞爆
+    max_jobs = settings.ARQ_MAX_JOBS

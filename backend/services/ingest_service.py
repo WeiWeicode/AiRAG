@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -17,6 +18,10 @@ from services.qdrant_service import QdrantService
 from services.ingest_report_service import IngestReportService
 
 logger = logging.getLogger("airag.services.ingest_service")
+
+# 圖片描述階段預算剩餘不足此秒數時，直接降級為描述失敗。剩餘 2 秒還發請求必定在 2 秒後
+# 被中斷，白白浪費一次連線與一個 caption_semaphore 名額
+MIN_CAPTION_ATTEMPT_SECONDS = 10
 
 
 class IngestService:
@@ -69,10 +74,22 @@ class IngestService:
                 )
                 return
 
-            filename, synced_version, caption_failed_count = await cls._process_upsert(
-                app_reg, kb, app_id=app_id, doc_type=doc_type, source_id=source_id,
-                title=title, target_version=target_version
-            )
+            # 內部軟性 deadline：比 arq 的 job_timeout 早 INGEST_SOFT_DEADLINE_MARGIN 秒主動放棄，
+            # 讓逾時以一般 Exception 落入下方 except 而能正常回報 failed。若等到 arq 逾時才被強制
+            # 中止，拋出的是繼承 BaseException 的 CancelledError，這裡攔不到，來源應用的
+            # rag_sync_status 會永遠停在 processing
+            soft_deadline = max(1, settings.INGEST_JOB_TIMEOUT - settings.INGEST_SOFT_DEADLINE_MARGIN)
+            try:
+                filename, synced_version, caption_failed_count = await asyncio.wait_for(
+                    cls._process_upsert(
+                        app_reg, kb, app_id=app_id, doc_type=doc_type, source_id=source_id,
+                        title=title, target_version=target_version
+                    ),
+                    timeout=soft_deadline
+                )
+            except asyncio.TimeoutError:
+                # asyncio.TimeoutError 的 str() 是空字串，直接往下傳會讓來源應用收到空的 errorMessage
+                raise TimeoutError(f"處理逾時：超過內部軟性上限 {soft_deadline} 秒") from None
             if caption_failed_count:
                 logger.warning(
                     f"[IngestService] doc_type='{doc_type}' source_id='{source_id}' 切分完成，"
@@ -172,7 +189,6 @@ class IngestService:
             if raw_images:
                 import os
                 import uuid
-                import asyncio
                 from schemas.embedding import ExtractedImageItem
                 from services.llm_service import LLMService
                 from services.markdown_parent_child_chunker import generate_parent_id
@@ -181,7 +197,20 @@ class IngestService:
                 os.makedirs(image_dir, exist_ok=True)
                 caption_semaphore = asyncio.Semaphore(settings.IMAGE_CAPTION_CONCURRENCY)
 
+                # 圖片描述階段的時間預算。用完之後剩下的圖片一律降級為「描述失敗」，讓後續的
+                # 切分／embedding／Qdrant upsert 仍能完成——文件至少整份可被檢索到，失敗的圖片
+                # 段落帶 caption_failed=True，事後可用 ImageCaptionRepairService 分批補描述。
+                # 沒有這道預算時，圖片一多就會整份 job 逾時、連純文字段落都寫不進知識庫
+                loop = asyncio.get_running_loop()
+                caption_budget = settings.INGEST_JOB_TIMEOUT * settings.IMAGE_CAPTION_PHASE_BUDGET_RATIO
+                caption_deadline = loop.time() + caption_budget
+                total_images = len(raw_images)
+                completed_images = 0
+                degraded_images = 0
+                progress_log_step = max(1, total_images // 10)
+
                 async def process_one_image(raw_img: dict) -> ExtractedImageItem:
+                    nonlocal completed_images, degraded_images
                     img_bytes = raw_img["image_bytes"]
                     img_ext = raw_img["ext"]
                     stored_filename = f"{uuid.uuid4().hex}.{img_ext}"
@@ -205,23 +234,43 @@ class IngestService:
                     caption_failed = False
                     caption_truncated = False
                     description = ""
-                    try:
-                        async with caption_semaphore:
-                            # 內含單張圖片的牆鐘時間上限與自動重試，避免偶發逾時就留下佔位描述
-                            description, caption_truncated = await LLMService.describe_image_with_retry(
-                                image_bytes=img_bytes,
-                                mime_type=mime_type,
-                                context_hint=context_hint
-                            )
-                    except Exception as ex:
-                        logger.error(
-                            f"[IngestService] Image captioning failed for {stored_filename}: {type(ex).__name__}: {ex!r}"
-                        )
-                        caption_failed = True
-                        description = f"[圖片描述產生失敗：{filename}_img{raw_img.get('image_index', 1)}]"
+                    placeholder = f"[圖片描述產生失敗：{filename}_img{raw_img.get('image_index', 1)}]"
 
+                    async with caption_semaphore:
+                        remaining = caption_deadline - loop.time()
+                        if remaining < MIN_CAPTION_ATTEMPT_SECONDS:
+                            # 預算已用盡，發出去也必定被中斷，直接降級不浪費連線與號誌名額
+                            caption_failed = True
+                            degraded_images += 1
+                            description = placeholder
+                        else:
+                            try:
+                                # 內含單張圖片的牆鐘時間上限與自動重試，避免偶發逾時就留下佔位描述。
+                                # 傳入剩餘預算，避免最後幾張圖各自超支 IMAGE_CAPTION_TIMEOUT 而拖過整段預算
+                                description, caption_truncated = await LLMService.describe_image_with_retry(
+                                    image_bytes=img_bytes,
+                                    mime_type=mime_type,
+                                    context_hint=context_hint,
+                                    timeout=min(settings.IMAGE_CAPTION_TIMEOUT, remaining)
+                                )
+                            except Exception as ex:
+                                logger.error(
+                                    f"[IngestService] Image captioning failed for {stored_filename}: {type(ex).__name__}: {ex!r}"
+                                )
+                                caption_failed = True
+                                description = placeholder
+
+                    # 描述成功與否都必須把原圖存檔，否則 ImageCaptionRepairService 事後找不到
+                    # 原始圖片（_resolve_image_path 會拋 FileNotFoundError），失敗的段落就永遠補不回來
                     with open(target_path, "wb") as f_out:
                         f_out.write(img_bytes)
+
+                    completed_images += 1
+                    if completed_images % progress_log_step == 0 or completed_images == total_images:
+                        logger.info(
+                            f"[IngestService] filename='{filename}' 圖片描述進度 "
+                            f"{completed_images}/{total_images}（其中預算不足降級 {degraded_images} 張）"
+                        )
 
                     return ExtractedImageItem(
                         image_filename=stored_filename,
@@ -233,6 +282,13 @@ class IngestService:
                     )
 
                 extracted_images = list(await asyncio.gather(*[process_one_image(img) for img in raw_images]))
+
+                if degraded_images:
+                    logger.warning(
+                        f"[IngestService] filename='{filename}' 圖片描述階段預算 {caption_budget:.0f} 秒用盡："
+                        f"已描述 {total_images - degraded_images} 張、降級 {degraded_images} 張。"
+                        f"降級段落已標記 caption_failed，可事後呼叫「重新產生圖片描述」補上"
+                    )
 
         # 2. 進行 Parent-Child 大小雙層切分
         all_chunks_info = []

@@ -70,20 +70,46 @@ class Settings:
     # 圖片描述並行處理的併發數量上限（同時最多幾張圖片一起送給 vLLM 做多模態描述）
     IMAGE_CAPTION_CONCURRENCY: int = int(os.getenv("IMAGE_CAPTION_CONCURRENCY", "3"))
     # 單張圖片描述的牆鐘時間上限（秒）。串流模式下 httpx timeout 只約束單次讀取，
-    # 需要這道上限才能讓整份文件的圖片處理時間可預估，避免拖垮整個 ingest 任務
+    # 需要這道上限才能讓整份文件的圖片處理時間可預估，避免拖垮整個 ingest 任務。
+    # 【約束】此值必須小於 LLMService.describe_image() 內 chat_completion 的 httpx timeout（300），
+    # 否則逾時會改以 httpx.ReadTimeout 型態拋出，使 describe_image_with_retry() 的
+    # 「逾時不重試」分流靜默失效、退回重試 IMAGE_CAPTION_MAX_ATTEMPTS 次的舊行為
     IMAGE_CAPTION_TIMEOUT: int = int(os.getenv("IMAGE_CAPTION_TIMEOUT", "180"))
     # 單張圖片描述的最大嘗試次數（含第一次）與每次重試前的等待秒數（等待時間隨次數遞增）。
-    # 地端 vLLM 偶發逾時或無限重複迴圈時自動重試，減少寫入「[圖片描述產生失敗]」佔位段落
+    # 地端 vLLM 偶發逾時或無限重複迴圈時自動重試，減少寫入「[圖片描述產生失敗]」佔位段落。
+    # 注意：逾時（asyncio.TimeoutError）不適用重試，見 describe_image_with_retry()
     IMAGE_CAPTION_MAX_ATTEMPTS: int = int(os.getenv("IMAGE_CAPTION_MAX_ATTEMPTS", "3"))
     IMAGE_CAPTION_RETRY_DELAY: int = int(os.getenv("IMAGE_CAPTION_RETRY_DELAY", "5"))
+    # 單張圖片描述的生成長度上限。描述僅供語意檢索使用，且最終仍會被切碎成多個 chunk，
+    # 過大的上限只會讓單張圖片的生成時間不可預期（含大量圖片的 PDF 因此整份同步逾時）
+    IMAGE_CAPTION_MAX_TOKENS: int = int(os.getenv("IMAGE_CAPTION_MAX_TOKENS", "4096"))
+    # PDF 內嵌圖片的過濾門檻：小於此尺寸（像素）或位元組數者視為 logo／裝飾線／圖示，
+    # 不送多模態模型描述，避免一份文件的圖片數量被版面元素灌爆
+    IMAGE_MIN_WIDTH: int = int(os.getenv("IMAGE_MIN_WIDTH", "100"))
+    IMAGE_MIN_HEIGHT: int = int(os.getenv("IMAGE_MIN_HEIGHT", "100"))
+    IMAGE_MIN_BYTES: int = int(os.getenv("IMAGE_MIN_BYTES", "8192"))
 
     # arq ingest 任務的執行時間上限（秒）。arq 預設僅 300 秒，含大量內嵌圖片的
     # Word/PDF 光是圖片描述就會超過而被判定 TimeoutError，需放寬。
     # 最壞情況約 = ceil(圖片數 / IMAGE_CAPTION_CONCURRENCY)
     #              × IMAGE_CAPTION_MAX_ATTEMPTS × IMAGE_CAPTION_TIMEOUT
     INGEST_JOB_TIMEOUT: int = int(os.getenv("INGEST_JOB_TIMEOUT", "7200"))
-    # ingest 任務失敗後的最大嘗試次數（含第一次），避免逾時任務反覆重跑消耗 vLLM 資源
+    # ingest 任務失敗後的最大嘗試次數（含第一次），避免逾時任務反覆重跑消耗 vLLM 資源。
+    # 注意：arq 對 TimeoutError 直接判定失敗、不會重試，此值僅對 worker 重啟等
+    # CancelledError 情境生效
     INGEST_JOB_MAX_TRIES: int = int(os.getenv("INGEST_JOB_MAX_TRIES", "2"))
+    # 圖片描述階段可佔用 INGEST_JOB_TIMEOUT 的比例，超支後剩餘圖片直接降級為描述失敗，
+    # 保留餘裕給切分／embedding／Qdrant upsert，確保文件一定寫得進知識庫。
+    # 用比例而非絕對秒數，避免有人調整 INGEST_JOB_TIMEOUT 後忘了同步調整預算
+    IMAGE_CAPTION_PHASE_BUDGET_RATIO: float = float(os.getenv("IMAGE_CAPTION_PHASE_BUDGET_RATIO", "0.6"))
+    # 內部軟性 deadline 的保留秒數：比 arq 的 job_timeout 早這麼多秒主動放棄，
+    # 讓逾時以一般 Exception 形式拋出而能回報 failed（arq 強制中止拋的 CancelledError
+    # 繼承 BaseException，攔不到，來源應用會永遠停在 processing）
+    INGEST_SOFT_DEADLINE_MARGIN: int = int(os.getenv("INGEST_SOFT_DEADLINE_MARGIN", "120"))
+    # arq worker 同時執行的任務數上限（arq 預設 10）。圖片描述併發是「每個任務各自」計算的，
+    # 不設限時多份文件同步會有 max_jobs × IMAGE_CAPTION_CONCURRENCY 個請求同時打地端 vLLM，
+    # 每張都變慢而觸發逾時。設 2 可讓純文字的小文件穿插消化，不被大圖文件完全阻塞
+    ARQ_MAX_JOBS: int = int(os.getenv("ARQ_MAX_JOBS", "2"))
 
     # 語義資料庫查詢法 (Semantic DB Query)
     AI_DB_QUERY_MAX_ROWS: int = int(os.getenv("AI_DB_QUERY_MAX_ROWS", "50"))

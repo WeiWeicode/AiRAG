@@ -1,8 +1,11 @@
 import fitz  # PyMuPDF
 import docx
+import hashlib
 import io
 import logging
 from typing import Tuple
+
+from config import settings
 
 logger = logging.getLogger("airag.parser")
 
@@ -10,28 +13,89 @@ class DocumentParser:
     @staticmethod
     def extract_images_from_pdf(file_bytes: bytes) -> list:
         """
-        抽取 PDF 中的圖片。
+        抽取 PDF 中的圖片，並依序套用四道過濾：
+        xref 去重 → 尺寸門檻 → 大小門檻 → 內容雜湊去重。
+
+        跨頁重複出現的 logo／圖章與裝飾性小圖若全數送去多模態模型描述，不但會把圖片
+        數量放大數倍（含大量圖片的 PDF 因此整份同步逾時），重複的描述文字還會在向量
+        檢索時洗版擠掉真正相關的內容，因此重複者直接捨棄、只保留第一次出現的那張。
+
+        單張圖片抽取失敗只記錄後跳過，不中斷其後頁面的處理。
         """
         import fitz
         images = []
+        seen_xrefs = set()
+        seen_hashes = set()
+        total = 0
+        skipped_xref = 0
+        skipped_hash = 0
+        skipped_size = 0
+        skipped_bytes = 0
+        failed = 0
+
+        doc = None
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             for page_idx, page in enumerate(doc):
                 image_list = page.get_images(full=True)
                 for img_idx, img in enumerate(image_list):
+                    total += 1
                     xref = img[0]
-                    base_image = doc.extract_image(xref)
-                    image_bytes = base_image["image"]
-                    image_ext = base_image["ext"]
+                    if xref in seen_xrefs:
+                        skipped_xref += 1
+                        continue
+                    seen_xrefs.add(xref)
+
+                    try:
+                        base_image = doc.extract_image(xref)
+                        image_bytes = base_image["image"]
+                        image_ext = base_image["ext"]
+                    except Exception as img_err:
+                        failed += 1
+                        logger.error(
+                            f"[DocumentParser] 第 {page_idx + 1} 頁第 {img_idx + 1} 張圖片抽取失敗 "
+                            f"(xref={xref})，已跳過: {type(img_err).__name__}: {img_err}"
+                        )
+                        continue
+
+                    # 取不到寬高時視為「通過」尺寸關卡，交由大小門檻判斷；
+                    # 不可預設為 0，那會讓尺寸未知的圖片被門檻靜默丟棄
+                    width = base_image.get("width")
+                    height = base_image.get("height")
+                    if (width is not None and width < settings.IMAGE_MIN_WIDTH) or \
+                       (height is not None and height < settings.IMAGE_MIN_HEIGHT):
+                        skipped_size += 1
+                        continue
+
+                    if len(image_bytes) < settings.IMAGE_MIN_BYTES:
+                        skipped_bytes += 1
+                        continue
+
+                    # 同一張圖以不同 xref 重複嵌入時，xref 去重擋不掉，需再比對內容雜湊
+                    content_hash = hashlib.sha256(image_bytes).hexdigest()
+                    if content_hash in seen_hashes:
+                        skipped_hash += 1
+                        continue
+                    seen_hashes.add(content_hash)
+
                     images.append({
                         "image_bytes": image_bytes,
                         "ext": image_ext,
                         "page_number": page_idx + 1,
                         "image_index": img_idx + 1
                     })
-            doc.close()
         except Exception as e:
             logger.error(f"Error extracting images from PDF: {e}")
+        finally:
+            if doc is not None:
+                doc.close()
+
+        # 沒有這行統計就無法判斷門檻是否設得恰當，調整 IMAGE_MIN_* 前務必先看它
+        logger.info(
+            f"[DocumentParser] PDF 共抽出 {total} 張圖片：xref 重複 -{skipped_xref}、"
+            f"內容重複 -{skipped_hash}、尺寸門檻 -{skipped_size}、大小門檻 -{skipped_bytes}、"
+            f"抽取失敗 -{failed}，實際送描述 {len(images)} 張"
+        )
         return images
 
     @staticmethod
