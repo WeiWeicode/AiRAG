@@ -21,7 +21,7 @@ services:
     volumes:
       - ./backend:/app
     environment:
-      - MONGODB_URL=mongodb://mongodb:27017
+      - MONGODB_URL=mongodb://airag_admin:${MONGO_ADMIN_PASSWORD}@mongodb:27017/?authSource=admin
       - QDRANT_HOST=qdrant
       - QDRANT_API_KEY=${QDRANT_API_KEY}
       - REDIS_HOST=redis
@@ -48,7 +48,7 @@ services:
     volumes:
       - ./backend:/app
     environment:
-      - MONGODB_URL=mongodb://mongodb:27017
+      - MONGODB_URL=mongodb://airag_admin:${MONGO_ADMIN_PASSWORD}@mongodb:27017/?authSource=admin
       - QDRANT_HOST=qdrant
       - QDRANT_API_KEY=${QDRANT_API_KEY}
       - REDIS_HOST=redis
@@ -73,6 +73,11 @@ services:
   mongodb:
     image: mongo:7
     container_name: airag-mongodb
+    # 27017 有 publish 到宿主機（KB 在另一台主機需連入），少了 --auth 等於內網任何機器
+    # 都能無憑證讀寫全部資料。注意帳號必須先在無認證狀態下建好再開此旗標，順序顛倒會得到
+    # 「有認證但無任何帳號」的鎖死狀態；重建 mongo_data volume 時同理。
+    # 見 docs/DevelopmentProcess/NewFeaturesPlan_MongoDBAuthPlan.md
+    command: ["--auth"]
     ports:
       - "27017:27017"
     volumes:

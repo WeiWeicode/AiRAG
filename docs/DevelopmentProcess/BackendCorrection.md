@@ -1,5 +1,31 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-08-13 MongoDB 存取認證與權限配置（docker-compose.yml）
+
+### 背景
+配合 [NewFeaturesPlan_MongoDBAuthPlan.md](NewFeaturesPlan_MongoDBAuthPlan.md) 規劃，於部署層啟用 MongoDB `--auth` 認證模式，並為 AiRAG 服務設定帶憑證之連線字串。
+
+### 變更內容
+- `docker-compose.yml`：
+  - `mongodb` 服務：新增 `command: ["--auth"]` 啟用帳密驗證，並加註「帳號須先建、認證後開」的順序約束（重建 `mongo_data` volume 時同樣適用）。
+  - `backend` 與 `worker` 服務：更新 `MONGODB_URL` 為 `mongodb://airag_admin:${MONGO_ADMIN_PASSWORD}@mongodb:27017/?authSource=admin`。
+- `backend/models/mongodb.py`：新增 `mask_mongodb_url()`，`init_mongodb()` 的連線 log 改輸出遮蔽後的字串。
+  原本 `logger.info(f"Connecting to MongoDB at: {settings.MONGODB_URL}")` 會把整串連線字串寫進容器 log，
+  帳密加進去之後等於**把 root 密碼明文留在 `docker logs airag-backend` / `airag-worker`**
+  （`init_mongodb()` 為兩者共用，見 `backend/worker.py:33`），缺口只是從「無認證」換成「密碼躺在 log」。
+  遮蔽後保留 scheme / 帳號 / host / port / query，**只遮密碼**：帳號與 `authSource` 都不是機密（compose 與 `.env.example` 中本就可見），
+  而 `Authentication failed` 最常見的原因正是「帳號打錯」「`authSource` 指錯 db」「compose 變數沒展開導致密碼為空」，
+  三者都得靠這行 log 判讀。密碼為空時顯示 `<empty>` 以與「有值」區分。
+- `backend/.env.example`：`MONGODB_URL` 補上帶憑證與 `authSource` 的範例格式、密碼字元集限制（含 `@ : / ? # [ ] %` 需 percent-encode），
+  並註明 compose 的 `environment:` 會覆蓋此檔（`load_dotenv()` 不覆寫既有環境變數），避免新環境照抄成無認證設定。
+
+### 驗證
+`mask_mongodb_url()` 已以下列輸入實測：帶帳密、無帳密、密碼含 `%40`、`mongodb+srv://`、
+非法 port、非 URL 字串、以及會讓 `urlsplit` 拋 `ValueError` 的畸形 IPv6（`mongodb://[::1:27017`）。
+帳密一律被換成 `***:***`，其餘部分原樣保留。
+
+---
+
 ## 2026-08-12 圖片描述管線記憶體壓力改善（DGX GB10 統一記憶體）
 
 ### 背景

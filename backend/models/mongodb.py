@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import urlsplit, urlunsplit
 from motor.motor_asyncio import AsyncIOMotorClient
 from beanie import init_beanie
 from config import settings
@@ -37,6 +38,36 @@ from models.app_registration import AppRegistration
 
 
 logger = logging.getLogger("airag.mongodb")
+
+
+def mask_mongodb_url(url: str) -> str:
+    """
+    遮蔽 MongoDB 連線字串中的密碼，保留 scheme / 帳號 / host / port / query。
+
+    MongoDB 啟用認證後，MONGODB_URL 會帶著 root 帳密。log 比資料庫更容易被
+    查看、轉貼與外流，原樣輸出等於把密碼留在 docker logs 裡，因此輸出前一律遮蔽。
+    但只遮密碼：帳號與 authSource 都不是機密（compose 與 .env.example 中本就可見），
+    而 `Authentication failed` 最常見的兩個原因正是「帳號打錯」與「authSource 指錯 db」，
+    log 看不到這兩者就等於失去唯一的線索。密碼是否為空也看得出來（顯示 <empty>），
+    這對「compose 變數沒展開」的情境是關鍵判別。
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        # 連線字串本身格式有問題（如 IPv6 括號或 port 不合法）。這裡不拋出，
+        # 讓後續建立連線時以真正的錯誤失敗，但也不能把原字串印出去
+        return "<invalid mongodb url>"
+
+    if "@" not in parts.netloc:
+        return url
+
+    credentials, host_part = parts.netloc.rsplit("@", 1)
+    username, separator, password = credentials.partition(":")
+    if not separator:
+        masked_credentials = username
+    else:
+        masked_credentials = f"{username}:{'<empty>' if password == '' else '***'}"
+    return urlunsplit((parts.scheme, f"{masked_credentials}@{host_part}", parts.path, parts.query, ""))
 
 
 async def seed_default_knowledge_base():
@@ -188,7 +219,7 @@ async def seed_default_prompt_templates():
 
 async def init_mongodb():
     try:
-        logger.info(f"Connecting to MongoDB at: {settings.MONGODB_URL}")
+        logger.info(f"Connecting to MongoDB at: {mask_mongodb_url(settings.MONGODB_URL)}")
         client = AsyncIOMotorClient(settings.MONGODB_URL)
         
         await init_beanie(
