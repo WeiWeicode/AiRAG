@@ -200,6 +200,7 @@ async def chunk_text(request: ChunkRequest):
         is_4gl = request.filename and request.filename.lower().endswith('.4gl')
         is_md = request.filename and (request.filename.lower().endswith('.md') or request.filename.lower().endswith('.markdown'))
         is_word = request.filename and (request.filename.lower().endswith('.docx') or request.filename.lower().endswith('.doc') or request.filename.lower().endswith('.dotx'))
+        is_pdf = request.filename and request.filename.lower().endswith('.pdf')
         if request.params.chunk_mode == "parent_child" or is_4gl or is_4fd or is_md or is_word:
             all_children = []
             idx = 0
@@ -261,6 +262,44 @@ async def chunk_text(request: ChunkRequest):
                     child_metadata["parent_chunk_index_range"] = parent_range
                     child_metadata["file_type"] = fname.split('.')[-1].lower()
                     
+                    all_children.append(ChunkItem(
+                        index=idx,
+                        content=child["child_content"],
+                        token_count=ChunkingService.estimate_tokens(child["child_content"]),
+                        char_count=len(child["child_content"]),
+                        start_char=0,
+                        end_char=len(child["child_content"]),
+                        metadata=child_metadata
+                    ))
+                    idx += 1
+            elif is_pdf:
+                # PDF 既不是 markdown 也不是 4GL：先前落在下面的 4GL 分支，整份文件會變成同一個
+                # parent_id（見 BugFix.md 2026-08-17）。這裡改用 PDF 專用切分器。
+                # 本端點只收得到 /upload 解析後的純文字、拿不到頁面結構，因此退化為純 token 預算切分，
+                # 父段落有界但頁碼一律為 1；ingest 流程（有原始 bytes）才有真實頁碼
+                from services.pdf_parent_child_chunker import chunk_pdf_text
+                fname = request.filename or "unknown.pdf"
+                children = chunk_pdf_text(
+                    text=request.content,
+                    filename=fname,
+                    child_size=request.params.chunk_size,
+                    child_overlap=request.params.chunk_overlap,
+                    use_langchain=True
+                )
+
+                parent_to_indices = {}
+                for child_idx, child in enumerate(children):
+                    pid = child["metadata"]["parent_id"]
+                    parent_to_indices.setdefault(pid, []).append(child_idx)
+
+                for child_idx, child in enumerate(children):
+                    indices = parent_to_indices[child["metadata"]["parent_id"]]
+                    parent_range = f"{indices[0]}~{indices[-1]}" if len(indices) > 1 else str(indices[0])
+
+                    child_metadata = dict(child["metadata"])
+                    child_metadata["parent_chunk_index_range"] = parent_range
+                    child_metadata["file_type"] = "pdf"
+
                     all_children.append(ChunkItem(
                         index=idx,
                         content=child["child_content"],

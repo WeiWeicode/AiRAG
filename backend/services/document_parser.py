@@ -3,7 +3,7 @@ import docx
 import hashlib
 import io
 import logging
-from typing import Tuple
+from typing import Any, Dict, List, Tuple
 
 from config import settings
 
@@ -206,21 +206,71 @@ class DocumentParser:
         return images
 
     @staticmethod
-    def parse_pdf(file_bytes: bytes) -> Tuple[str, int]:
+    def parse_pdf_pages(file_bytes: bytes) -> List[str]:
         """
-        解析 PDF 檔案位元組，提取純文字與頁數。
+        解析 PDF 檔案位元組，回傳「逐頁」純文字（索引 0 為第 1 頁）。
+
+        切分時需要頁面邊界才能算出合理的父段落、payload 也才填得出真實頁碼；
+        parse_pdf() 把所有頁面接成一整串後這些資訊就再也還原不回來了。
         """
-        text = []
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            page_count = doc.page_count
-            for page in doc:
-                text.append(page.get_text())
+            pages = [page.get_text() for page in doc]
             doc.close()
-            return "\n".join(text).strip(), page_count
+            return pages
         except Exception as e:
             logger.error(f"Error parsing PDF: {e}")
             raise ValueError(f"PDF 解析失敗: {str(e)}")
+
+    @staticmethod
+    def parse_pdf_lines(file_bytes: bytes) -> List[List[Dict[str, Any]]]:
+        """
+        解析 PDF 檔案位元組，回傳「逐頁、逐行」的排版資訊：
+        每行為 {"text": 文字, "size": 最大字級, "bold": 是否粗體}。
+
+        PDF 沒有語意標記，唯一能還原標題階層的線索就是排版本身（字級、粗體）。
+        get_text("text") 會把這些線索全部丟掉，只剩純文字。
+        """
+        try:
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            pages_lines: List[List[Dict[str, Any]]] = []
+            for page in doc:
+                lines: List[Dict[str, Any]] = []
+                page_dict = page.get_text("dict")
+                for block in page_dict.get("blocks", []):
+                    # type 1 為圖片區塊，沒有文字
+                    if block.get("type") != 0:
+                        continue
+                    for line in block.get("lines", []):
+                        spans = line.get("spans", [])
+                        text = "".join(span.get("text", "") for span in spans)
+                        if not text.strip():
+                            continue
+                        max_size = max((span.get("size", 0.0) for span in spans), default=0.0)
+                        # PyMuPDF span flags 的 bit 4（值 16）代表粗體
+                        is_bold = any(int(span.get("flags", 0)) & 16 for span in spans)
+                        lines.append({"text": text, "size": max_size, "bold": is_bold})
+                pages_lines.append(lines)
+            doc.close()
+            return pages_lines
+        except Exception as e:
+            logger.error(f"Error parsing PDF layout: {e}")
+            raise ValueError(f"PDF 版面解析失敗: {str(e)}")
+
+    @staticmethod
+    def lines_to_page_texts(pages_lines: List[List[Dict[str, Any]]]) -> List[str]:
+        """
+        把 parse_pdf_lines() 的結果還原成逐頁純文字，避免為了同時取得文字與排版而解析兩次 PDF。
+        """
+        return ["\n".join(line["text"] for line in lines) for lines in pages_lines]
+
+    @classmethod
+    def parse_pdf(cls, file_bytes: bytes) -> Tuple[str, int]:
+        """
+        解析 PDF 檔案位元組，提取純文字與頁數。
+        """
+        pages = cls.parse_pdf_pages(file_bytes)
+        return "\n".join(pages).strip(), len(pages)
 
     @staticmethod
     def parse_docx(file_bytes: bytes) -> Tuple[str, int]:

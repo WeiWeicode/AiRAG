@@ -1,5 +1,232 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-08-17 PDF 走錯切分器，整份文件被歸成單一父段落，每次查詢都把全文丟給 LLM
+
+### 背景
+使用者從 Qdrant 後台發現 `BPM-ReLeaseNote-58.pdf` 的 point 帶著
+`parent_chunk_index_range: "0~555"`、`total_chunks: 559`——**整份 559 段共用同一個 `parent_id`**。
+Parent-Child 還原時會把該 parent 的兄弟節點全部拼回去，等於每命中一段就把整份 PDF 送進 LLM。
+
+根因在 `backend/services/ingest_service.py:408` 的 `else` 分支：除了 `.4fd`/`.4gl` 之外的所有檔案
+（含 PDF）都丟給 `chunk_markdown_content()`，而該切分器的父段落**只由 markdown `#` 標題決定**
+（`markdown_parent_child_chunker.py:166`）。PDF 經 `fitz.page.get_text()` 出來是純文字、一個 `#` 都沒有，
+`MarkdownHeaderTextSplitter` 回傳單一 doc 且 metadata 為空 → `generate_parent_id()` 對全檔算出同一個 ID。
+
+同源缺陷：`document_parser.parse_pdf()` 把所有頁面 `"\n".join()` 成一整串、只回傳 `page_count`，
+頁碼在解析階段就被丟掉，payload 的 `page` 永遠是預設值 `1`，來源引用標不到頁。
+
+同日稍早加入的 `PARENT_MERGE_MAX_TOKENS`（見下一則紀錄）只是事後截斷：
+562 筆 payload 仍然整批傳回、字串仍然整份合併，九成工作白做，且截斷視窗的語意邊界是斷的。
+
+### 變更內容（第一批：檢索端鄰居視窗，不需重跑 ingest 即可對既有資料生效）
+1. `backend/services/qdrant_service.py`：
+   - `get_by_parent_id()` 新增 `center_index` / `window` / `image_only` 參數。傳入 `center_index`
+     且視窗 > 0 時，在 **Qdrant 查詢階段**就以 `chunk_index` 範圍過濾，不再撈回整個父段落。
+   - 圖片型兄弟節點**刻意不受視窗限制**：切分時圖片段落統一附加在文字段落之後
+     （`IngestService._process_upsert`），`chunk_index` 天生遠離命中位置，
+     套用視窗會讓「同段落圖片」永遠撈不到。過濾條件因此是
+     `parent_id = X AND (chunk_index ∈ [lo, hi] OR chunk_type = "image")`（巢狀 Filter）。
+   - `get_siblings_and_merge()` 改帶入命中點的 `chunk_index` 作為視窗中心；
+     取不到（非整數）時退回舊行為撈取整個父段落。
+   - `get_image_siblings()` 改用 `image_only=True` 直接在查詢端過濾，
+     不再撈回全部兄弟節點後於記憶體丟棄九成。
+2. `backend/config.py`、`.env.example`：新增 `PARENT_SIBLING_WINDOW=8`（單側兄弟節點數，0 = 不限制）。
+   以 `DEFAULT_CHUNK_SIZE=512`／`OVERLAP=50` 計，±8 約 7,800 字元，與 `PARENT_MERGE_MAX_TOKENS=6000` 相當。
+
+### 驗證（第一批）
+以假 Qdrant client（實作與 Qdrant 相同的 must／巢狀 should 語義）模擬截圖那份 PDF
+（559 個文字段落 + 3 個圖片段落共用一個 `parent_id`）：
+
+- 命中第 392 段 → 撈回 **20 筆（17 文字 + 3 圖片），原為 562 筆**；文字 `chunk_index` 為 384~400。
+- 命中第 0 段 → `chunk_index` 0~8，視窗下界不會越界。
+- 未帶 `center_index`、或 `window=0` → 撈回 562 筆，**舊行為完全保留**。
+- `image_only=True` → 只撈回 3 筆圖片。
+- 小型父段落（5 個子段落，正常 Word/Markdown 情境）→ 撈回 5 筆，**行為不變**。
+- `get_siblings_and_merge()` 端到端 → `parent_range` 由 `0~555` 變成 `384~400`，
+  合併後內容由整份全文縮為 186 字元，`image_chunks` 仍為 3 筆。
+
+### 變更內容（第二批：PDF 頁面感知切分 + 父段落 token 上限，需重跑 ingest 才生效）
+1. `backend/services/document_parser.py`：新增 `parse_pdf_pages()` 回傳**逐頁**純文字。
+   `parse_pdf()` 改為呼叫它再 `"\n".join()`，對外輸出與修改前逐字相同（`attachment.py`
+   等既有呼叫端不受影響）。
+2. **新檔** `backend/services/pdf_parent_child_chunker.py`：
+   - `build_pdf_parents()`：以「頁」為父段落的自然邊界，連續頁面聚合到
+     `PARENT_MAX_TOKENS` 或 `PDF_PARENT_MAX_PAGES` 先到者為止；單頁本身就超過預算時
+     於行邊界切成多個父段落（同頁多段時 `part_key` 帶序號，避免 `parent_id` 相撞）。
+   - `chunk_pdf_pages()`：回傳格式與 `chunk_markdown_content()` 一致（`child_content` + `metadata`），
+     呼叫端不必為 PDF 另外分支；metadata 帶真實 `page` 與 `section`（如「第 4-6 頁」）。
+   - `chunk_pdf_text()`：只拿得到純文字時的退化入口，仍保證父段落有界，但頁碼一律為 1
+     ——寧可誠實標成第 1 頁，也不要編造頁碼。
+   - `split_by_token_budget()`：以行為邊界打包，單行就超過預算時才退回 `split_text_by_tokens()` 硬切。
+3. `backend/services/ingest_service.py`：PDF 改走 `parse_pdf_pages()` + PDF 專用切分器
+   （**不再重複呼叫 `parse_file()`**，否則整份 PDF 會被解析兩次）。其餘副檔名維持原本的 markdown 切分器。
+4. `backend/services/markdown_parent_child_chunker.py`（方案 2 的通用安全網）：
+   - 新增 `split_oversized_parents()`，父段落超過 `PARENT_MAX_TOKENS` 時於行邊界再切開。
+     「整份只有一個 `#` 標題」的 Word/Markdown 文件是同一類問題，不是 PDF 專屬。
+   - `generate_parent_id()` 新增 `part_index` 參數；**`part_index=0` 的結果與修改前完全相同**，
+     未超過上限的文件其 `parent_id` 不變，既有已建索引資料不受影響
+     （`IngestService` 為 docx 圖片算 `parent_id` 的呼叫端也不必改）。
+5. `backend/routers/embedding.py`：`/api/embedding/chunk` 新增 `is_pdf` 分支。
+   先前 PDF 在 `parent_child` 模式下**落到 4GL 分支**（用 4GL 語法剖析器去剖 PDF 文字），
+   改用 `chunk_pdf_text()`。此端點只收得到 `/upload` 解析後的純文字、拿不到頁面結構，
+   因此頁碼一律為 1；**真實頁碼只有 ingest 流程（持有原始 bytes）才有**。
+6. `backend/config.py`、`.env.example`：新增 `PARENT_MAX_TOKENS=1500`（切分階段的父段落上限，
+   與事後截斷的 `PARENT_MERGE_MAX_TOKENS` 分工不同）、`PDF_PARENT_MAX_PAGES=3`。
+
+### 驗證（第二批）
+以 PyMuPDF 產生一份 120 頁、仿 BPM ReleaseNote 格式（每頁 18 筆 `V00-…` 條目）的 PDF：
+
+| 項目 | 修改前 | 修改後 |
+|:---|---:|---:|
+| 父段落數 | **1** | **40** |
+| 單一父段落最大 tokens | 46,000+（整份） | **1,152**（上限 1,500） |
+| 單一父段落的子段落數 | 362 | 9~10 |
+| `page` 相異值 | 1（永遠是預設值） | 40（範圍 1~118） |
+
+其餘案例：
+
+- 單頁 6,000 字的 PDF → 頁內再切成 8 個父段落，最大 1,500 tokens，`parent_id` 無重複。
+- `chunk_pdf_text()`（無頁面結構）→ 31 個父段落、每個最多 12 個子段落，`page` 一律 1。
+- 只有一個 `#` 標題的長 Markdown → 由 1 個父段落變成 60 個。
+- **未超過上限的一般文件 → `parent_id` 與修改前逐字相同**，且
+  `generate_parent_id(f, h) == generate_parent_id(f, h, 0)`。
+- `parse_pdf()` 輸出與 `"\n".join(parse_pdf_pages())` 完全一致，既有呼叫端行為不變。
+- 既有 `backend/tests/test_word_chunker.py` 仍全數通過。
+
+### 變更內容（第三批：字級啟發式標題偵測，需重跑 ingest 才生效）
+頁面邊界只是機械的切法，一個章節跨頁就會被切斷。PDF 沒有語意標記，唯一能還原標題階層的
+線索是**排版本身**（字級、粗體）——`get_text("text")` 把這些線索全部丟掉了。
+
+1. `backend/services/document_parser.py`：
+   - 新增 `parse_pdf_lines()`，以 `page.get_text("dict")` 取出逐頁逐行的
+     `{text, size, bold}`（粗體判定為 PyMuPDF span flags 的 bit 4）。
+   - 新增 `lines_to_page_texts()`，讓呼叫端能從同一份解析結果還原純文字，
+     **不必為了同時取得文字與排版而解析兩次 PDF**。
+2. `backend/services/pdf_parent_child_chunker.py`：
+   - `detect_body_size()`：以**字元數加權**找出內文字級。用行數加權會被大量短行
+     （頁首頁尾、表格欄位）帶偏。
+   - `detect_heading_levels()`：字級 ≥ 內文 × `PDF_HEADING_SIZE_RATIO`、
+     或「與內文同級但粗體」的短行視為標題；字級由大到小對應 Header 1~6。
+   - `build_pdf_parents_by_heading()`：以標題邊界切父段落並維護標題堆疊，
+     仍套用 `PARENT_MAX_TOKENS`（只有一層標題的長章節不會因此逃過上限）。
+     第一個標題出現前的封面／目次自成一段。
+   - `chunk_pdf_lines()`：PDF 切分的主要入口，標題模式優先、失敗才退回頁面模式。
+   - 有標題階層時，子段落比照 markdown 切分器加上 `[標題路徑] ` 語意前綴。
+   - **三道退回頁面模式的護欄**（刻意不硬湊，寧可用可靠的頁面邊界）：
+     偵測到的標題少於 3 個、標題佔全文行數超過 20%（判準失準，例如整份都是大字）、
+     或完全沒有字級變化（掃描檔）。
+3. `backend/services/ingest_service.py`：PDF 改走 `parse_pdf_lines()` + `chunk_pdf_lines()`。
+4. `backend/config.py`、`.env.example`：新增 `PDF_HEADING_DETECTION=true`、`PDF_HEADING_SIZE_RATIO=1.15`。
+
+### 驗證（第三批）
+以 PyMuPDF 產生四種不同排版的 PDF：
+
+| 情境 | 偵測結果 | 父段落數 |
+|:---|:---|---:|
+| 章(16pt粗)/節(12pt粗)/內文(8pt)，6 章 24 節 | `{16.0: Header 1, 12.0: Header 2}` | **30**（= 6 章 + 24 節） |
+| 單一字級（仿掃描檔），12 頁 | `{}` → 退回頁面模式 | 4 |
+| 整份皆為 14pt 粗體短行（判準失準） | `{}` → 退回頁面模式 | 2 |
+| 只有 1 個標題 | `{}` → 退回頁面模式（少於 3 個不採信） | — |
+
+其他檢查：
+
+- 標題模式下 `section` 為完整標題路徑（如
+  `1. Chapter 1 Release Notes > 1.1 Bug Fix Web`），子段落帶對應的 `[標題路徑] ` 前綴。
+- 父段落最大 211 tokens，`parent_id` 無重複。
+- 退回頁面模式時 `section` 為頁碼範圍（`第 1-3 頁`）且**不加**語意前綴。
+- `PDF_HEADING_DETECTION=false` → 與第二批的頁面模式結果一致（6 個父段落）。
+- 第一批、第二批的測試與 `backend/tests/test_word_chunker.py` 重跑仍全數通過；
+  `main.py` 匯入正常。
+
+### 尚未處理
+- **既有已建索引的 PDF 需重新 ingest** 才會套用第二、三批的新切分結果；
+  在那之前靠第一批的鄰居視窗控制脈絡大小。
+- `/api/embedding/chunk` 手動上傳路徑仍拿不到頁面與排版資訊（`/upload` 只回傳純文字），
+  因此只有 token 預算切分、頁碼一律為 1。若要讓手動路徑也享有頁碼與標題偵測，
+  需要在 `UploadResponse`／`ChunkRequest` 之間傳遞頁面結構，會動到前端契約，本次未做。
+
+## 2026-08-17 分批摘要自己撞上模型上下文上限，導致 RAG 對話一律回「[系統連線錯誤]」
+
+### 背景
+外部 KB 前端提問持續失敗，前端只看到「[系統連線錯誤] 無法從 vLLM 服務取得回覆：400 Bad Request」。
+使用者回報「明明做了分批摘要功能，似乎沒有發揮作用」。實際 log 顯示摘要**有觸發**，
+但每次都以同一個序列失敗：
+
+```text
+[ERROR] airag.llm: Prompt 估算約 152085 tokens，已接近或超過 VLLM_MAX_MODEL_LEN=92160，max_tokens 僅能給到 2048
+[ERROR] airag.rag_router: Context summarization failed, falling back to original unsummarized context: 400 Bad Request
+[ERROR] airag.llm: Prompt 估算約 152205 tokens，已接近或超過 VLLM_MAX_MODEL_LEN=92160，max_tokens 僅能給到 2048
+```
+
+四個獨立的問題疊在一起：
+
+1. **Map 批次大小 = 觸發門檻**：`_bin_pack(blocks, threshold_tokens)` 把「整份脈絡多大才啟動摘要」
+   直接當成「每批送多少進 LLM」。門檻 50,000 代表第一批就是 50,000 tokens，本身就接近模型上限。
+2. **單一區塊永遠不切**：`_bin_pack` 對「第一個區塊」無條件放行（原註解：絕不拆散任何一個區塊）。
+   Parent-Child 還原後的父段落是把該 parent 的**所有兄弟節點**拼回去（`get_siblings_and_merge()`），
+   `top_k=15` 下單一區塊就可能有數萬 token —— 這種區塊獨佔一批且必定超過上限，摘要這條路徹底走不通。
+3. **失敗後 fallback 回原始未摘要脈絡**：摘要之所以失敗正是因為脈絡過長，沿用原文等於保證正式回答再爆一次。
+   且 Map 階段任一批失敗就 `raise`，其餘正常批次的成果全部丟棄。
+4. **裁切估算低估**：另一筆 400 是 `32,161(input) + 60,000(max_tokens) = 92,161`，只超出 **1 個 token**。
+   `_estimate_prompt_tokens()` 對該內容估出 ≤31,136（實際 32,161），低估 1,025 恰好吃光 1,024 的安全邊際。
+
+### 變更內容
+1. `backend/utils/token_counter.py`：新增 `split_text_by_tokens()`。只 encode 一次再對 token 序列
+   切片 decode（避免對超長文字反覆 encode），並去除切點落在中文字中間產生的 U+FFFD。
+2. `backend/services/context_summarizer_service.py`：
+   - 新增 `_batch_limit()`：批次大小改用 `CONTEXT_SUMMARIZE_BATCH_TOKENS`（預設 8,000）與觸發門檻脫鉤；
+     呼叫端把門檻設得比批次小時以門檻為準。
+   - 新增 `_split_oversized_block()`：單一區塊超過批次上限時切分，並為每個子區塊補回
+     `【來源文件：… | 段落編號：…】` 標頭，確保引用格式不斷。
+   - Map 階段單一批次失敗**不再中止全部**，改為記錄 `result["failed_batches"]` 後續跑；
+     只有在所有批次都失敗時才往外拋。
+   - 新增 `truncate_blocks_to_budget()`：摘要全失敗時的保底截斷，預算取模型上下文的一半。
+   - Map/Reduce 呼叫改帶 `timeout=120.0`（預設 60 秒對「長輸入 + 1500 tokens 輸出」偏緊，
+     逾時會被當成該批失敗）。
+3. `backend/routers/rag.py`：摘要失敗改用 `truncate_blocks_to_budget()` 的截斷結果，不再沿用原始全文；
+   有批次失敗或段落被捨棄時，於 context 前面加上【系統提示】要求模型提醒使用者資料可能不完整。
+4. `backend/services/llm_service.py`：
+   - 新增 `_count_prompt_tokens_via_vllm()`：優先呼叫 vLLM `/tokenize` 取精確 prompt token 數
+     （含 chat template 佔用），失敗／逾時才退回字元估算。**該端點掛在服務根路徑**，
+     需從 `VLLM_BASE_URL` 去掉尾端 `/v1`（實測 `/v1/tokenize` 為 404）。
+   - 新增 `effective_max_model_len()`：`VLLM_MAX_MODEL_LEN` 設定值優先，未設定時採用 `/tokenize`
+     回應中的 `max_model_len`。原本只要部署忘了設這個環境變數，整套裁切保護就會靜默失效。
+   - 多模態訊息不送 `/tokenize`（圖片會被展開成大量 patch token），維持只計文字的估算。
+5. `backend/services/qdrant_service.py`：新增 `_limit_merged_parent_length()`，於
+   `get_siblings_and_merge()` 合併後套用 `PARENT_MERGE_MAX_TOKENS`（預設 6,000）。
+   刻意**不做截頭去尾**——命中的子段落可能在文件中段，改以命中內容為中心取窗，找不到時才取開頭。
+6. `backend/config.py`、`.env.example`：新增 `CONTEXT_SUMMARIZE_BATCH_TOKENS=8000`、
+   `PARENT_MERGE_MAX_TOKENS=6000`、`VLLM_USE_TOKENIZE_ENDPOINT=true`；
+   `VLLM_CONTEXT_SAFETY_MARGIN` 預設由 1024 提高為 **4096**（1024 已被實測低估量吃光）。
+
+### 驗證
+以模擬 LLM（`chat_completion` 替換為 fake）與實機 vLLM 兩種方式驗證：
+
+- `split_text_by_tokens`：4,992 tokens 切為 5 段（999/999/999/1000/992），無殘留 U+FFFD。
+- `_bin_pack`：30,000 tokens 的**單一**區塊 → 4 批（8000/8037/8037/6067），且每個子區塊都保留來源標頭；
+  一般區塊（5 × 2,976 tokens）仍照常打包成 3 批，不被切散。
+- `truncate_blocks_to_budget`：10 × 20,000 tokens → 截到預算內並回報捨棄的段落數；
+  單一 200,000 tokens 區塊也能取出開頭一段而非整個放棄。
+- `maybe_summarize`：4 × 9,000 tokens → 8 批 / 2 輪 / 9 次 LLM 呼叫，最終脈絡 < 1,000 tokens；
+  第 2 批失敗時 `failed_batches=1` 且其餘批次仍完成；全部失敗才拋出例外。
+- `_limit_merged_parent_length`：24,023 tokens 的父段落 → 6,056 tokens，且**命中段落仍在窗內**；
+  未超過上限時原樣回傳。
+- `/tokenize` 實機：`POST http://10.10.130.45:8080/tokenize` 回 200
+  `{"count":18,"max_model_len":92160,...}`；`/v1/tokenize` 為 404（確認路徑正確）。
+- 實機端到端：以 72,150 字元中文 prompt + `max_tokens=60000`（即當初 400 的條件）呼叫 vLLM，
+  精確計數 42,578 tokens → 自動裁切後**成功取得回覆**，不再 400；
+  將 `VLLM_MAX_MODEL_LEN` 設為 0 時，能自 `/tokenize` 自動偵測到 92160 並照常裁切。
+
+### 已知限制與後續建議
+- 15 萬 token 的脈絡即使摘要成功，也要跑約 20 次 Map 呼叫（序列執行），延遲會很明顯。
+  真正的解法是別讓檢索端產出這麼大的脈絡（本次已加 `PARENT_MERGE_MAX_TOKENS`），
+  必要時可再考慮 Map 階段並行化。
+- 分批摘要的觸發門檻仍以 tiktoken cl100k 計算，對中文高估、對英數低估；
+  裁切則已改用精確 token。兩者單位不同這點未統一，但門檻方向偏保守（提早觸發）不影響正確性。
+- `PARENT_MERGE_MAX_TOKENS=6000` 是依現行 chunk 設定推估的值，若日後調整 chunk size 需重新檢視。
+
+---
+
 ## 2026-08-12 ingest 任務逾時後不回報 failed，來源應用同步狀態永久卡在 processing
 
 ### 背景

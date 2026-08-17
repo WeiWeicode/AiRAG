@@ -13,7 +13,7 @@ Supports both LangChain-based splitting and a pure-Python fallback.
 import os
 import re
 import hashlib
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 try:
     from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
@@ -22,17 +22,56 @@ except ImportError:
     HAS_LANGCHAIN = False
 
 
-def generate_parent_id(filename: str, header_path: Dict[str, str]) -> str:
+def generate_parent_id(filename: str, header_path: Dict[str, str], part_index: int = 0) -> str:
     """
     Generates a unique parent ID based on the filename and the header path.
+
+    part_index 供「同一個標題底下的內容過長、被拆成多個父段落」時區分（見 split_oversized_parents）。
+    part_index=0 的結果與未帶此參數時完全相同，既有已建索引資料的 parent_id 不受影響。
     """
     header_keys = ["Header 1", "Header 2", "Header 3", "Header 4", "Header 5", "Header 6"]
     path_list = [header_path[k] for k in header_keys if k in header_path]
     path_str = " > ".join(path_list)
     unique_str = f"{filename}_{path_str}"
+    if part_index > 0:
+        unique_str = f"{unique_str}#{part_index}"
     # Use MD5 hash to create a unique suffix of fixed length
     hash_val = hashlib.md5(unique_str.encode("utf-8")).hexdigest()[:12]
     return f"{filename}_{hash_val}"
+
+
+def split_oversized_parents(
+    parent_chunks: List[Dict[str, Any]],
+    filename: str,
+    max_tokens: int
+) -> List[Dict[str, Any]]:
+    """
+    把超過 token 上限的父段落於行邊界再切開，避免單一標題底下的內容大到還原時撐爆脈絡。
+
+    只有一個 `#` 標題（或完全沒有標題）的文件，父段落等同整份文件——這正是
+    BugFix.md 2026-08-17 記錄的問題。未超過上限的父段落原封不動，parent_id 也維持不變。
+    """
+    if max_tokens <= 0:
+        return parent_chunks
+
+    # 延後匯入：本模組亦被不依賴 config 的離線測試直接執行
+    from services.pdf_parent_child_chunker import split_by_token_budget
+    from utils.token_counter import count_tokens
+
+    result: List[Dict[str, Any]] = []
+    for parent in parent_chunks:
+        if count_tokens(parent["content"]) <= max_tokens:
+            result.append(parent)
+            continue
+
+        parts = split_by_token_budget(parent["content"], max_tokens)
+        for part_index, part in enumerate(parts):
+            result.append({
+                "parent_id": generate_parent_id(filename, parent["header_path"], part_index),
+                "header_path": parent["header_path"],
+                "content": part
+            })
+    return result
 
 
 def pure_python_markdown_split(markdown_content: str) -> List[Dict[str, Any]]:
@@ -142,11 +181,14 @@ def chunk_markdown_content(
     filename: str,
     child_size: int = 200,
     child_overlap: int = 40,
-    use_langchain: bool = True
+    use_langchain: bool = True,
+    parent_max_tokens: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """
     Splits a markdown text content into parent chunks based on headers,
     and then splits each parent chunk into child chunks with header path prefixes.
+
+    parent_max_tokens 為單一父段落的 token 上限（None = 取用 settings.PARENT_MAX_TOKENS，0 = 不限制）。
 
     Returns:
         List[Dict[str, Any]]: A list of child chunks ready to be written to a vector database.
@@ -200,6 +242,13 @@ def chunk_markdown_content(
                 "header_path": parent["header_path"],
                 "content": parent["content"]
             })
+
+    # 2.5 父段落套用 token 上限。標題階層稀疏（例如整份只有一個 `#`）時，
+    # 父段落等同整份文件，還原時會把全文拼回去送進 LLM
+    if parent_max_tokens is None:
+        from config import settings
+        parent_max_tokens = settings.PARENT_MAX_TOKENS
+    parent_chunks = split_oversized_parents(parent_chunks, filename, parent_max_tokens)
 
     # 3. Slice into Child Chunks with Semantic Enhancement
     all_child_chunks = []

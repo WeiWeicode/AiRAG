@@ -11,6 +11,8 @@ logger = logging.getLogger("airag.llm")
 class LLMService:
     # 上下文額度不足時仍保留給模型的最小輸出 token 數
     _MIN_OUTPUT_TOKENS = 2048
+    # 自 vLLM /tokenize 回報中取得並快取的 max_model_len，供 VLLM_MAX_MODEL_LEN 未設定時使用
+    _discovered_max_model_len: Optional[int] = None
 
     @staticmethod
     def _is_repeating_tail(accumulated: str, ngram_size: int = 25, trigger_count: int = 4) -> bool:
@@ -49,7 +51,7 @@ class LLMService:
     @staticmethod
     def _estimate_prompt_tokens(text: str) -> int:
         """
-        估算 prompt 的 token 數，供 _clamp_max_tokens() 判斷上下文額度使用。
+        估算 prompt 的 token 數，供 _clamp_max_tokens() 判斷上下文額度使用（/tokenize 取不到時的後備）。
 
         刻意不用 utils.token_counter.count_tokens（tiktoken cl100k_base）：cl100k 的中文編碼效率
         與 Qwen tokenizer 差距極大，實測同一段 75,778 字元的中文脈絡，vLLM 回報實際為 32,161
@@ -65,8 +67,71 @@ class LLMService:
         other_chars = len(text) - cjk_chars
         return int(cjk_chars + other_chars * 0.3)
 
+    @staticmethod
+    def _has_multimodal_content(messages: List[Dict[str, Any]]) -> bool:
+        """判斷 messages 是否含圖片等非純文字內容。"""
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") != "text":
+                        return True
+        return False
+
     @classmethod
-    def _clamp_max_tokens(cls, messages: List[Dict[str, Any]], max_tokens: int) -> int:
+    async def _count_prompt_tokens_via_vllm(cls, messages: List[Dict[str, Any]]) -> Optional[int]:
+        """
+        呼叫 vLLM 的 /tokenize 取得 prompt 的精確 token 數（含 chat template 的佔用）。
+
+        _estimate_prompt_tokens() 只是以字元類型校準的啟發式估算，實測會低估上千 token
+        （曾造成 prompt + max_tokens 恰好超出上限 1 個 token 而被回 400）。改為優先取精確值，
+        取不到（服務不支援該端點、逾時等）時才退回估算，不讓計數失敗升級成對話失敗。
+
+        /tokenize 掛在 vLLM 服務根路徑而非 /v1 底下，需從 VLLM_BASE_URL 去掉尾端的 /v1。
+        """
+        if not settings.VLLM_USE_TOKENIZE_ENDPOINT:
+            return None
+
+        base = settings.VLLM_BASE_URL.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        url = f"{base.rstrip('/')}/tokenize"
+        payload = {"model": settings.VLLM_MODEL, "messages": messages}
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, json=payload)
+                if response.status_code >= 400:
+                    logger.warning(
+                        f"vLLM /tokenize 回應 HTTP {response.status_code}，改用字元估算："
+                        f"{response.text[:200]}"
+                    )
+                    return None
+                data = response.json()
+                # 回應同時帶回服務端實際的 max_model_len，順手記下來供未設定 VLLM_MAX_MODEL_LEN 時使用
+                discovered = data.get("max_model_len")
+                if isinstance(discovered, int) and discovered > 0 and cls._discovered_max_model_len != discovered:
+                    logger.info(f"自 vLLM /tokenize 取得 max_model_len={discovered}")
+                    cls._discovered_max_model_len = discovered
+                count = data.get("count")
+                return int(count) if isinstance(count, int) else None
+        except Exception as e:
+            logger.warning(f"呼叫 vLLM /tokenize 失敗，改用字元估算：{type(e).__name__}: {e!r}")
+            return None
+
+    @classmethod
+    def effective_max_model_len(cls) -> int:
+        """
+        取得實際採用的模型上下文上限，0 代表無從得知（此時不做任何裁切，維持原行為）。
+
+        以 VLLM_MAX_MODEL_LEN 設定值優先（可手動下修以預留餘裕），未設定時採用 /tokenize
+        回報的值——否則只要部署時忘了設這個環境變數，整套裁切保護就會靜默失效（本次事故即為此）。
+        """
+        if settings.VLLM_MAX_MODEL_LEN > 0:
+            return settings.VLLM_MAX_MODEL_LEN
+        return cls._discovered_max_model_len or 0
+
+    @classmethod
+    async def _clamp_max_tokens(cls, messages: List[Dict[str, Any]], max_tokens: int) -> int:
         """
         依 VLLM_MAX_MODEL_LEN 自動裁切 max_tokens，避免「prompt + max_tokens」超過模型上下文上限
         被 vLLM 回 400（錯誤訊息形如 "This model's maximum context length is N tokens. However,
@@ -75,37 +140,47 @@ class LLMService:
         呼叫端（含外部應用前端）可能帶入遠大於實際需要的 max_tokens，此時只要脈絡稍長就會踩到上限，
         且前端只會看到「[系統連線錯誤]」。在這裡統一裁切，比要求每個呼叫端自行計算可靠。
 
-        多模態訊息只計文字部分：圖片的 base64 字串本身不是以字元數計 token，納入估算會嚴重高估。
+        prompt token 數優先取 /tokenize 的精確值；多模態訊息不送 /tokenize（圖片會被實際展開成
+        大量 patch token，且 base64 本身不以字元數計 token），改用只計文字部分的估算。
         """
-        if settings.VLLM_MAX_MODEL_LEN <= 0:
+        prompt_tokens = None
+        if not cls._has_multimodal_content(messages):
+            prompt_tokens = await cls._count_prompt_tokens_via_vllm(messages)
+
+        # 上限需在呼叫過 /tokenize 之後才判斷：VLLM_MAX_MODEL_LEN 未設定時，值是從該回應學到的
+        max_model_len = cls.effective_max_model_len()
+        if max_model_len <= 0:
             return max_tokens
 
-        prompt_tokens = 0
-        for message in messages:
-            content = message.get("content")
-            if isinstance(content, str):
-                prompt_tokens += cls._estimate_prompt_tokens(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        prompt_tokens += cls._estimate_prompt_tokens(part.get("text") or "")
+        if prompt_tokens is None:
+            prompt_tokens = 0
+            for message in messages:
+                content = message.get("content")
+                if isinstance(content, str):
+                    prompt_tokens += cls._estimate_prompt_tokens(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            prompt_tokens += cls._estimate_prompt_tokens(part.get("text") or "")
 
-        available = settings.VLLM_MAX_MODEL_LEN - prompt_tokens - settings.VLLM_CONTEXT_SAFETY_MARGIN
+        available = max_model_len - prompt_tokens - settings.VLLM_CONTEXT_SAFETY_MARGIN
         if available < cls._MIN_OUTPUT_TOKENS:
-            # 估算的 prompt 已吃掉幾乎整個上下文。此時仍保留一個最小輸出額度：
+            # prompt 已吃掉幾乎整個上下文。此時仍保留一個最小輸出額度：
             # 估算刻意保守，實際 prompt 多半仍放得下；若真的放不下，vLLM 會回傳明確的
             # 「prompt 過長」錯誤，比在這裡把 max_tokens 壓成 0 或負數（參數格式錯誤）好判讀
             logger.error(
-                f"Prompt 估算約 {prompt_tokens} tokens，已接近或超過 VLLM_MAX_MODEL_LEN="
-                f"{settings.VLLM_MAX_MODEL_LEN}，max_tokens 僅能給到 {cls._MIN_OUTPUT_TOKENS}。"
-                f"請降低檢索脈絡量或調低 DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS 讓分批摘要提早觸發"
+                f"Prompt 約 {prompt_tokens} tokens，已接近或超過模型上下文上限="
+                f"{max_model_len}，max_tokens 僅能給到 {cls._MIN_OUTPUT_TOKENS}"
+                f"（裁切 max_tokens 無法解決 prompt 本身過長，此請求很可能仍會被回 400）。"
+                f"請降低檢索脈絡量、調低 CONTEXT_SUMMARIZE_BATCH_TOKENS 縮小每批大小，"
+                f"或調低 DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS 讓分批摘要提早觸發"
             )
             return cls._MIN_OUTPUT_TOKENS
 
         if max_tokens > available:
             logger.warning(
-                f"max_tokens={max_tokens} 加上估算的 prompt {prompt_tokens} tokens 會超過 "
-                f"VLLM_MAX_MODEL_LEN={settings.VLLM_MAX_MODEL_LEN}，自動裁切為 {available}"
+                f"max_tokens={max_tokens} 加上 prompt {prompt_tokens} tokens 會超過模型上下文上限 "
+                f"{max_model_len}，自動裁切為 {available}"
             )
             return available
         return max_tokens
@@ -129,7 +204,7 @@ class LLMService:
         """
         url = f"{settings.VLLM_BASE_URL.rstrip('/')}/chat/completions"
         headers = {"Content-Type": "application/json"}
-        max_tokens = cls._clamp_max_tokens(messages, max_tokens)
+        max_tokens = await cls._clamp_max_tokens(messages, max_tokens)
         payload = {
             "model": settings.VLLM_MODEL,
             "messages": messages,

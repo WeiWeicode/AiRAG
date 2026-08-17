@@ -20,9 +20,12 @@ class Settings:
     # 避免「prompt tokens + max_tokens」超過模型上限被回 400（呼叫端可能帶入很大的 max_tokens）。
     # 設 0 代表停用自動裁切，維持原本行為。
     VLLM_MAX_MODEL_LEN: int = int(os.getenv("VLLM_MAX_MODEL_LEN", "0"))
-    # 自動裁切時預留的安全邊際。以 tiktoken (cl100k_base) 估算 prompt token 與模型實際 tokenizer
-    # 存在落差，且 chat template 本身也會佔用 token，需留邊際避免剛好卡在上限
-    VLLM_CONTEXT_SAFETY_MARGIN: int = int(os.getenv("VLLM_CONTEXT_SAFETY_MARGIN", "1024"))
+    # 自動裁切時預留的安全邊際。優先向 vLLM /tokenize 取精確 prompt token 數，取不到時才用字元估算，
+    # 估算與模型實際 tokenizer 存在落差（實測曾低估 1,025 tokens 而剛好超出上限 1 個 token），
+    # 且 chat template 本身也會佔用 token，需留邊際避免卡在上限
+    VLLM_CONTEXT_SAFETY_MARGIN: int = int(os.getenv("VLLM_CONTEXT_SAFETY_MARGIN", "4096"))
+    # 是否呼叫 vLLM /tokenize 取得精確的 prompt token 數（多一次輕量 HTTP）。設 false 時一律用字元估算。
+    VLLM_USE_TOKENIZE_ENDPOINT: bool = os.getenv("VLLM_USE_TOKENIZE_ENDPOINT", "true").lower() == "true"
 
     # llama.cpp
     LLAMACPP_BASE_URL: str = os.getenv("LLAMACPP_BASE_URL", "http://localhost:8081")
@@ -56,6 +59,26 @@ class Settings:
     DEFAULT_CHUNK_SIZE: int = int(os.getenv("DEFAULT_CHUNK_SIZE", "512"))
     DEFAULT_CHUNK_OVERLAP: int = int(os.getenv("DEFAULT_CHUNK_OVERLAP", "50"))
     FEEDBACK_BOOST_WEIGHT: float = float(os.getenv("FEEDBACK_BOOST_WEIGHT", "0.2"))
+    # Parent-Child 還原父段落時，單一父段落的 token 上限（tiktoken 單位，0 = 不限制）。
+    # 一份大文件的所有兄弟節點合併後可達數萬 token，top_k 稍大就會讓脈絡整個爆掉。
+    # 超過上限時以「命中的子段落」為中心取窗，而非直接截頭去尾，避免真正命中的內容被切掉。
+    PARENT_MERGE_MAX_TOKENS: int = int(os.getenv("PARENT_MERGE_MAX_TOKENS", "6000"))
+    # Parent-Child 還原父段落時，以命中的子段落為中心、單側最多取幾個兄弟節點（0 = 不限制，取回整個父段落）。
+    # 切分器把整份文件歸成同一個 parent 時（例如無標題結構的 PDF），撈回的兄弟節點可達數百筆，
+    # 光是傳輸與字串合併就白做了九成——PARENT_MERGE_MAX_TOKENS 只是事後截斷，省不掉這些成本。
+    # 這裡改在 Qdrant 查詢階段就以 chunk_index 範圍過濾，圖片型兄弟節點不受此視窗限制（見 get_by_parent_id）。
+    PARENT_SIBLING_WINDOW: int = int(os.getenv("PARENT_SIBLING_WINDOW", "8"))
+    # 切分階段單一父段落的 token 上限（0 = 不限制）。與 PARENT_MERGE_MAX_TOKENS 的差別：
+    # 這裡是「切分時就不要產生巨大父段落」，後者是「已經切壞的資料在檢索時事後截斷」。
+    # 無標題結構的文件（PDF、只有一個標題的 Word）不設上限就會整份變成一個父段落。
+    PARENT_MAX_TOKENS: int = int(os.getenv("PARENT_MAX_TOKENS", "1500"))
+    # PDF 以頁面為父段落邊界時，單一父段落最多聚合幾頁（0 = 只受 PARENT_MAX_TOKENS 限制）
+    PDF_PARENT_MAX_PAGES: int = int(os.getenv("PDF_PARENT_MAX_PAGES", "3"))
+    # 以字級／粗體偵測 PDF 標題階層，讓父段落切在真正的章節邊界而非機械的頁面邊界。
+    # 偵測不到可用的階層（掃描檔、排版無字級變化）會自動退回頁面邊界。
+    PDF_HEADING_DETECTION: bool = os.getenv("PDF_HEADING_DETECTION", "true").lower() == "true"
+    # 字級要達到內文的幾倍才視為標題（與內文同級但粗體的短行也算）
+    PDF_HEADING_SIZE_RATIO: float = float(os.getenv("PDF_HEADING_SIZE_RATIO", "1.15"))
     # 防止地端 LLM 重複輸出同一句話（無限迴圈）
     DEFAULT_REPETITION_PENALTY: float = float(os.getenv("DEFAULT_REPETITION_PENALTY", "1.1"))
     DEFAULT_FREQUENCY_PENALTY: float = float(os.getenv("DEFAULT_FREQUENCY_PENALTY", "0"))
@@ -63,6 +86,9 @@ class Settings:
     # 檢索內容分批摘要
     DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS: int = int(os.getenv("DEFAULT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS", "50000"))
     CONTEXT_SUMMARIZE_MAX_ROUNDS: int = int(os.getenv("CONTEXT_SUMMARIZE_MAX_ROUNDS", "3"))
+    # Map 階段每一批送進 LLM 的 token 上限（tiktoken 單位）。必須與「觸發門檻」分開設定：
+    # 兩者共用同一個數值時，每批的大小會等於整份脈絡的觸發門檻，一批就可能超過模型上下文而被回 400。
+    CONTEXT_SUMMARIZE_BATCH_TOKENS: int = int(os.getenv("CONTEXT_SUMMARIZE_BATCH_TOKENS", "8000"))
 
     # 語義混合附件查詢法附件存放目錄
     FILE_ATTACHMENTS_DIR: str = os.getenv("FILE_ATTACHMENTS_DIR", "FileAttachments")

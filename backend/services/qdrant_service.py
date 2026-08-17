@@ -5,6 +5,7 @@ import uuid
 from typing import List, Dict, Any, Optional, Set
 from qdrant_client import AsyncQdrantClient, models
 from config import settings
+from utils.token_counter import count_tokens
 
 logger = logging.getLogger("airag.qdrant")
 
@@ -1601,22 +1602,62 @@ class QdrantService:
             raise e
 
     @classmethod
-    async def get_by_parent_id(cls, collection_name: str, parent_id: str) -> List[Dict[str, Any]]:
+    async def get_by_parent_id(
+        cls,
+        collection_name: str,
+        parent_id: str,
+        center_index: Optional[int] = None,
+        window: Optional[int] = None,
+        image_only: bool = False
+    ) -> List[Dict[str, Any]]:
         """
-        透過 parent_id 獲取同一 Parent Block 下的所有 Child Chunks。
+        透過 parent_id 獲取同一 Parent Block 下的 Child Chunks。
+
+        傳入 center_index 且視窗大於 0 時，只取 chunk_index 落在 [center-window, center+window] 的文字兄弟節點，
+        避免「整份文件共用一個 parent_id」的資料（例如無標題結構的 PDF）每次都把數百筆 payload 撈回來。
+        圖片型兄弟節點刻意不受視窗限制：切分時圖片段落統一附加在文字段落之後（見 IngestService._process_upsert），
+        chunk_index 天生遠離命中位置，套用視窗會讓「同段落圖片」永遠撈不到。
+
+        image_only=True 則只取圖片型兄弟節點（供 get_image_siblings 使用），同樣不必把整批文字段落撈回來再丟掉。
         """
         client = cls.get_client()
         try:
+            effective_window = settings.PARENT_SIBLING_WINDOW if window is None else window
+            must_conditions: List[Any] = [
+                models.FieldCondition(
+                    key="parent_id",
+                    match=models.MatchValue(value=parent_id)
+                )
+            ]
+            if image_only:
+                must_conditions.append(
+                    models.FieldCondition(
+                        key="chunk_type",
+                        match=models.MatchValue(value="image")
+                    )
+                )
+            elif center_index is not None and effective_window > 0:
+                must_conditions.append(
+                    models.Filter(
+                        should=[
+                            models.FieldCondition(
+                                key="chunk_index",
+                                range=models.Range(
+                                    gte=center_index - effective_window,
+                                    lte=center_index + effective_window
+                                )
+                            ),
+                            models.FieldCondition(
+                                key="chunk_type",
+                                match=models.MatchValue(value="image")
+                            )
+                        ]
+                    )
+                )
+
             scroll_result = await client.scroll(
                 collection_name=collection_name,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="parent_id",
-                            match=models.MatchValue(value=parent_id)
-                        )
-                    ]
-                ),
+                scroll_filter=models.Filter(must=must_conditions),
                 limit=1000,
                 with_payload=True,
                 with_vectors=False
@@ -1742,16 +1783,65 @@ class QdrantService:
         供已有快取 parent_content、只需要補上 image_chunks 顯示用途的情境使用，
         避免重複跑一次 get_siblings_and_merge() 的完整文字合併計算。
         """
-        siblings = await cls.get_by_parent_id(collection_name, parent_id)
-        image_siblings = [sib for sib in siblings if sib["metadata"].get("chunk_type") == "image"]
+        image_siblings = await cls.get_by_parent_id(collection_name, parent_id, image_only=True)
         return cls._group_and_merge_image_siblings(image_siblings)
+
+    @classmethod
+    def _limit_merged_parent_length(cls, merged_raw: str, orig_content: str, parent_range: str) -> str:
+        """
+        限制還原後的父段落長度，超過 PARENT_MERGE_MAX_TOKENS 時以「命中的子段落」為中心取窗。
+
+        一份大文件的所有兄弟節點合併後可達數萬 token，top_k 稍大就會讓整份脈絡衝到十幾萬 token，
+        後續無論分批摘要或正式回答都會撞上模型上下文上限（見 BugFix.md 2026-08-17）。
+
+        刻意不做單純的截頭去尾：真正被檢索命中的子段落可能落在文件中段，直接取開頭會把命中內容切掉。
+        找不到命中位置時才退回取開頭。
+        """
+        limit = settings.PARENT_MERGE_MAX_TOKENS
+        if limit <= 0:
+            return merged_raw
+
+        merged_tokens = count_tokens(merged_raw)
+        if merged_tokens <= limit:
+            return merged_raw
+
+        # 以本段實際的「字元/token」比例換算窗格字元數，中英文混排都能自我校準
+        chars_per_token = len(merged_raw) / max(1, merged_tokens)
+        window_chars = max(1, int(limit * chars_per_token))
+
+        hit_text = cls._strip_structured_content_prefix(orig_content)
+        hit_pos = merged_raw.find(hit_text[:200]) if hit_text else -1
+        if hit_pos < 0:
+            start = 0
+        else:
+            # 讓命中內容盡量落在窗格中央
+            start = max(0, hit_pos + len(hit_text[:200]) // 2 - window_chars // 2)
+        end = min(len(merged_raw), start + window_chars)
+        start = max(0, end - window_chars)
+
+        windowed = merged_raw[start:end]
+        prefix = "【系統提示】本段落原文過長，以下僅節錄命中內容前後的片段。\n…（前段已省略）\n" if start > 0 else ""
+        suffix = "\n…（後段已省略）" if end < len(merged_raw) else ""
+        logger.warning(
+            f"父段落 {parent_range} 合併後約 {merged_tokens} tokens，超過 PARENT_MERGE_MAX_TOKENS={limit}，"
+            f"已節錄 {len(windowed)} 個字元（原 {len(merged_raw)} 字元）"
+        )
+        return f"{prefix}{windowed}{suffix}"
 
     @classmethod
     async def get_siblings_and_merge(cls, collection_name: str, parent_id: str, orig_content: str, metadata: dict) -> tuple:
         """
-        撈取 parent_id 的所有兄弟節點並去重合併，還原完整的 Parent Content，且分離出圖片段落（不進行文字合併）。
+        撈取 parent_id 的兄弟節點並去重合併，還原 Parent Content，且分離出圖片段落（不進行文字合併）。
+
+        文字兄弟節點以命中的 chunk_index 為中心套用 PARENT_SIBLING_WINDOW 視窗（見 get_by_parent_id），
+        沒有 chunk_index 可定位時才退回撈取整個父段落。
         """
-        siblings = await cls.get_by_parent_id(collection_name, parent_id)
+        center_index = metadata.get("chunk_index")
+        siblings = await cls.get_by_parent_id(
+            collection_name,
+            parent_id,
+            center_index=center_index if isinstance(center_index, int) else None
+        )
         if not siblings:
             return orig_content, str(metadata.get("chunk_index") or ""), []
 
@@ -1790,7 +1880,9 @@ class QdrantService:
         merged_raw = raw_contents[0]
         for next_content in raw_contents[1:]:
             merged_raw = merge_two_strings_with_overlap(merged_raw, next_content)
-            
+
+        merged_raw = cls._limit_merged_parent_length(merged_raw, orig_content, parent_range)
+
         # 若原內容是結構化輸出，則重新拼裝結構化 Header
         if orig_content.startswith("[檔案名稱]"):
             filename = metadata.get("filename") or "unknown"

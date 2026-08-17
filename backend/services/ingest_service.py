@@ -198,11 +198,18 @@ class IngestService:
         """
         content_bytes = None
         extracted_images = []
+        pdf_lines = None
 
         if doc_type == "attachment_file":
             content_bytes, headers = await AppContentClient.fetch_attachment(app_reg, source_id)
             filename = title or f"{app_id}_{source_id}"
-            text, _pages, _chars = DocumentParser.parse_file(filename, content_bytes)
+            if filename.split(".")[-1].lower() == "pdf":
+                # PDF 保留逐頁、逐行的排版資訊：切分要用字級偵測標題階層（偵測不到才退回頁面邊界），
+                # payload 也才填得出真實頁碼。這裡不走 parse_file()，否則整份 PDF 會被解析兩次
+                pdf_lines = DocumentParser.parse_pdf_lines(content_bytes)
+                text = "\n".join(DocumentParser.lines_to_page_texts(pdf_lines)).strip()
+            else:
+                text, _pages, _chars = DocumentParser.parse_file(filename, content_bytes)
             version = int(headers.get("x-doc-version") or target_version)
             updated_date = headers.get("x-doc-updated-at") or datetime.utcnow().isoformat()
             is_public = (headers.get("x-doc-is-public") or "false").lower() == "true"
@@ -406,14 +413,36 @@ class IngestService:
                     })
                     idx += 1
         else:
-            from services.markdown_parent_child_chunker import chunk_markdown_content
-            children = chunk_markdown_content(
-                markdown_content=text,
-                filename=filename,
-                child_size=settings.DEFAULT_CHUNK_SIZE,
-                child_overlap=settings.DEFAULT_CHUNK_OVERLAP,
-                use_langchain=True
-            )
+            if ext == "pdf":
+                # PDF 沒有 markdown 標題，交給 markdown 切分器會讓整份文件變成同一個 parent_id
+                # （見 BugFix.md 2026-08-17）。改以字級偵測出的標題階層為父段落邊界，
+                # 偵測不到才退回頁面邊界
+                from services.pdf_parent_child_chunker import chunk_pdf_lines, chunk_pdf_text
+                if pdf_lines:
+                    children = chunk_pdf_lines(
+                        pages_lines=pdf_lines,
+                        filename=filename,
+                        child_size=settings.DEFAULT_CHUNK_SIZE,
+                        child_overlap=settings.DEFAULT_CHUNK_OVERLAP,
+                        use_langchain=True
+                    )
+                else:
+                    children = chunk_pdf_text(
+                        text=text,
+                        filename=filename,
+                        child_size=settings.DEFAULT_CHUNK_SIZE,
+                        child_overlap=settings.DEFAULT_CHUNK_OVERLAP,
+                        use_langchain=True
+                    )
+            else:
+                from services.markdown_parent_child_chunker import chunk_markdown_content
+                children = chunk_markdown_content(
+                    markdown_content=text,
+                    filename=filename,
+                    child_size=settings.DEFAULT_CHUNK_SIZE,
+                    child_overlap=settings.DEFAULT_CHUNK_OVERLAP,
+                    use_langchain=True
+                )
             parent_to_indices = {}
             for child_idx, child in enumerate(children):
                 pid = child["metadata"]["parent_id"]

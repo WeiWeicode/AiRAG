@@ -2,34 +2,114 @@ import json
 import logging
 from config import settings
 from services.llm_service import LLMService
-from utils.token_counter import count_tokens
+from utils.token_counter import count_tokens, split_text_by_tokens
 
 logger = logging.getLogger("airag.context_summarizer")
 
 class ContextSummarizerService:
     @classmethod
-    def _bin_pack(cls, blocks: list[dict], threshold: int) -> list[list[dict]]:
+    def _batch_limit(cls, threshold_tokens: int) -> int:
         """
-        依序累加分組 (Bin-Packing)，絕不拆散任何一個區塊。
+        取得 Map 階段每一批的 token 上限。
+
+        不可直接沿用觸發門檻：門檻是「整份脈絡多大才需要摘要」，批次大小是「一次送多少進 LLM」。
+        兩者共用同一個值時，第一批就等於整份門檻大小，很容易超過模型上下文而被回 400，
+        導致摘要自己先失敗（見 BugFix.md 2026-08-17）。呼叫端若把門檻設得比批次還小，
+        則以門檻為準，尊重「要切得更細」的意圖。
+        """
+        return max(1, min(settings.CONTEXT_SUMMARIZE_BATCH_TOKENS, threshold_tokens))
+
+    @classmethod
+    def _split_oversized_block(cls, block: dict, limit: int) -> list[dict]:
+        """
+        將單一超過批次上限的區塊切成多個子區塊。
+
+        Parent-Child 還原後的父段落可能單一區塊就有數萬 token，若堅持「絕不拆散區塊」，
+        這種區塊會獨佔一批且必定超過模型上下文，整個摘要流程就再也走不通。
+        切割後為每個子區塊補回原區塊的標頭（【來源文件：… | 段落編號：…】），
+        確保後續摘要仍能標註正確的引用來源。
+        """
+        text = block["text"]
+        if count_tokens(text) <= limit:
+            return [block]
+
+        header = ""
+        first_line, _, _ = text.partition("\n")
+        if first_line.startswith("【") and first_line.endswith("】"):
+            header = first_line
+
+        pieces = split_text_by_tokens(text, limit)
+        total = len(pieces)
+        sub_blocks = []
+        for idx, piece in enumerate(pieces, start=1):
+            if header and idx > 1:
+                piece = f"{header}（承上，第 {idx}/{total} 段）\n{piece}"
+            sub_blocks.append({
+                "text": piece,
+                "label": f"{block.get('label', '')}（切分 {idx}/{total}）"
+            })
+        logger.info(f"區塊 {block.get('label')} 超過批次上限 {limit} tokens，已切為 {total} 段")
+        return sub_blocks
+
+    @classmethod
+    def _bin_pack(cls, blocks: list[dict], limit: int) -> list[list[dict]]:
+        """
+        依序累加分組 (Bin-Packing)，每批不超過 limit；單一區塊超過 limit 時才切分該區塊。
         """
         groups = []
         current_group = []
         current_tokens = 0
-        for block in blocks:
-            block_tokens = count_tokens(block["text"])
-            if not current_group:
-                current_group.append(block)
-                current_tokens = block_tokens
-            elif current_tokens + block_tokens <= threshold:
-                current_group.append(block)
-                current_tokens += block_tokens
-            else:
-                groups.append(current_group)
-                current_group = [block]
-                current_tokens = block_tokens
+        for original in blocks:
+            for block in cls._split_oversized_block(original, limit):
+                block_tokens = count_tokens(block["text"])
+                if not current_group:
+                    current_group.append(block)
+                    current_tokens = block_tokens
+                elif current_tokens + block_tokens <= limit:
+                    current_group.append(block)
+                    current_tokens += block_tokens
+                else:
+                    groups.append(current_group)
+                    current_group = [block]
+                    current_tokens = block_tokens
         if current_group:
             groups.append(current_group)
         return groups
+
+    @classmethod
+    def truncate_blocks_to_budget(cls, blocks: list[dict]) -> tuple[str, int]:
+        """
+        摘要完全失敗時的保底處理：把區塊截斷到安全長度後再送 LLM，回傳 (context_str, 捨棄的區塊數)。
+
+        先前的 fallback 是直接沿用「原始未摘要脈絡」，但摘要之所以失敗多半正是因為脈絡過長，
+        等於保證接下來的正式回答也會被回 400（見 BugFix.md 2026-08-17）。
+
+        預算取模型上下文的一半，並以 tiktoken 計算：cl100k 對中文是高估的，方向上偏保守，
+        截得多一點也比整個請求失敗好。無從得知模型上下文上限時不做截斷，維持原行為。
+        """
+        budget = LLMService.effective_max_model_len() // 2
+        if budget <= 0:
+            return "\n---\n".join(b["text"] for b in blocks), 0
+
+        kept = []
+        used = 0
+        dropped = 0
+        for block in blocks:
+            block_tokens = count_tokens(block["text"])
+            if used + block_tokens <= budget:
+                kept.append(block["text"])
+                used += block_tokens
+            elif not kept:
+                # 第一個區塊就超過預算，取其開頭一段，避免完全沒有脈絡可用
+                pieces = split_text_by_tokens(block["text"], budget)
+                if pieces:
+                    kept.append(pieces[0])
+                    used = budget
+                dropped += 1
+            else:
+                dropped += 1
+
+        return "\n---\n".join(kept), dropped
 
     @classmethod
     def _build_map_prompt(cls, question: str, group: list[dict], is_db: bool) -> list[dict]:
@@ -140,6 +220,7 @@ class ContextSummarizerService:
                         messages=cls._build_reduce_prompt(question, blocks, is_db),
                         temperature=0.2,
                         max_tokens=2048,
+                        timeout=120.0,
                     )
                     result["context_str"] = merged_text
                     result["was_summarized"] = True
@@ -154,10 +235,11 @@ class ContextSummarizerService:
                     return
 
         # Token 數超過 threshold，執行 Map 階段
-        groups = cls._bin_pack(blocks, threshold_tokens)
+        groups = cls._bin_pack(blocks, cls._batch_limit(threshold_tokens))
         result["batch_count"] = result.get("batch_count", 0) + len(groups)
 
         summaries = []
+        last_error = None
         for i, group in enumerate(groups, start=1):
             step_key = f"context_summarize_r{round_no}_batch_{i}"
             group_tokens = sum(count_tokens(b["text"]) for b in group)
@@ -178,6 +260,8 @@ class ContextSummarizerService:
                     messages=cls._build_map_prompt(question, group, is_db),
                     temperature=0.2,
                     max_tokens=1500,
+                    # 預設 60 秒對「長脈絡輸入 + 1500 tokens 輸出」的地端模型偏緊，逾時會被當成該批失敗
+                    timeout=120.0,
                 )
                 summaries.append({"text": summary_text, "label": f"摘要（第 {round_no} 輪批次 {i}）"})
                 event_data = {
@@ -188,15 +272,21 @@ class ContextSummarizerService:
                 }
                 yield f"event: step\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
             except Exception as e:
+                # 單一批次失敗不中止整個摘要：其餘批次多半是好的，全部放棄等於整輪對話都拿不到脈絡。
+                # 只有在所有批次都失敗時才往外拋，交由呼叫端走保底截斷流程。
                 logger.error(f"Error in context summarization at round {round_no} batch {i}: {e}")
+                last_error = e
+                result["failed_batches"] = result.get("failed_batches", 0) + 1
                 event_data = {
                     "step": step_key,
                     "status": "failed",
-                    "content": f"{label}失敗：{str(e)}",
+                    "content": f"{label}失敗（此批內容不納入參考資料，其餘批次繼續處理）：{str(e)}",
                     "label": label
                 }
                 yield f"event: step\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
-                raise e
+
+        if not summaries:
+            raise last_error if last_error else RuntimeError("分批摘要未產生任何結果")
 
         # 檢查是否達到最大遞迴輪數
         if round_no >= settings.CONTEXT_SUMMARIZE_MAX_ROUNDS:

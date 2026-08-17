@@ -744,9 +744,28 @@ async def rag_chat_stream(request: ChatRequest):
                 context_summary["batch_count"] = summarize_result.get("batch_count", 0)
                 context_summary["rounds"] = summarize_result.get("rounds", 0)
                 context_summary["was_summarized"] = summarize_result.get("was_summarized", False)
+                failed_batches = summarize_result.get("failed_batches", 0)
+                context_summary["failed_batches"] = failed_batches
+                if failed_batches:
+                    context_str = (
+                        f"【系統提示】分批整理過程中有 {failed_batches} 個批次失敗，該部分內容未納入以下參考資料，"
+                        f"回答時請以現有內容為準，並提醒使用者資料可能不完整。\n\n{context_str}"
+                    )
             except Exception as summarize_e:
-                logger.error(f"Context summarization failed, falling back to original unsummarized context: {summarize_e}")
-                yield f"event: step\ndata: {json.dumps({'step': 'context_summarize_error', 'status': 'failed', 'content': f'分批摘要失敗，將改用原始未摘要內容繼續回答：{str(summarize_e)}'}, ensure_ascii=False)}\n\n"
+                # 摘要之所以失敗，多半正是因為脈絡過長；此時若沿用原始未摘要內容，正式回答必定再爆一次 400。
+                # 改為截斷到模型上下文可容納的安全長度後再送（見 BugFix.md 2026-08-17）。
+                logger.error(f"Context summarization failed, falling back to truncated context: {summarize_e}")
+                truncated_str, dropped_blocks = ContextSummarizerService.truncate_blocks_to_budget(blocks)
+                context_str = truncated_str
+                context_summary["failed_batches"] = summarize_result.get("failed_batches", 0)
+                context_summary["dropped_blocks"] = dropped_blocks
+                if dropped_blocks:
+                    context_str = (
+                        f"【系統提示】參考資料過長且分批整理失敗，已截斷內容（捨棄 {dropped_blocks} 個段落）。"
+                        f"回答時請以現有內容為準，並提醒使用者資料可能不完整。\n\n{context_str}"
+                    )
+                fallback_note = f"（已截斷過長內容，捨棄 {dropped_blocks} 個段落）" if dropped_blocks else "（內容未超過長度上限，維持原始內容）"
+                yield f"event: step\ndata: {json.dumps({'step': 'context_summarize_error', 'status': 'failed', 'content': f'分批摘要失敗，將改用截斷後的原始內容繼續回答{fallback_note}：{str(summarize_e)}'}, ensure_ascii=False)}\n\n"
 
     # 發送模型推理思考步驟事件
     yield f"event: step\ndata: {json.dumps({'step': 'llm_thinking', 'status': 'running', 'content': '正在整理思緒...'}, ensure_ascii=False)}\n\n"
