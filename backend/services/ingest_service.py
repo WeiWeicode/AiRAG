@@ -24,7 +24,6 @@ logger = logging.getLogger("airag.services.ingest_service")
 # 被中斷，白白浪費一次連線與一個 caption_semaphore 名額
 MIN_CAPTION_ATTEMPT_SECONDS = 10
 
-
 class IngestService:
     """
     多應用 RAG 同步的核心處理邏輯（見 MULTI_APP_RAG_SYNC_PLAN.md），由 arq worker
@@ -286,11 +285,11 @@ class IngestService:
 
                 async def process_one_image(raw_img: dict) -> ExtractedImageItem:
                     nonlocal completed_images, degraded_images
-                    img_bytes = raw_img["image_bytes"]
-                    img_ext = raw_img["ext"]
+                    img_bytes, img_ext, mime_type = DocumentParser.normalize_image_format(
+                        raw_img["image_bytes"], raw_img["ext"], filename
+                    )
                     stored_filename = f"{uuid.uuid4().hex}.{img_ext}"
                     target_path = os.path.join(image_dir, stored_filename)
-                    mime_type = f"image/{img_ext}" if img_ext != "jpg" else "image/jpeg"
 
                     context_hint = ""
                     page_val = None
@@ -470,8 +469,29 @@ class IngestService:
 
         # 3. 處理圖片描述 Chunks
         if extracted_images:
+            # PDF 的圖片段落原本一律掛在 f"{filename}_img_fallback_{i}" 這種沒有任何文字兄弟的
+            # parent_id 上，而 QdrantService.get_siblings_and_merge 是靠 parent_id 相同才撈得到
+            # 同段落圖片，因此 PDF 的圖片描述永遠進不了文字脈絡。頁碼是 PDF 圖與文唯一可靠的
+            # 共同座標，這裡用它把圖片接回涵蓋該頁的文字父段落（Word 走 header_path，不受影響）
+            page_to_parent = {}
+            for chunk_obj in all_chunks_info:
+                chunk_meta = chunk_obj.get("metadata", {})
+                chunk_parent_id = chunk_meta.get("parent_id")
+                start_page = chunk_meta.get("page")
+                if not chunk_parent_id or not isinstance(start_page, int):
+                    continue
+                end_page = chunk_meta.get("end_page")
+                if not isinstance(end_page, int) or end_page < start_page:
+                    end_page = start_page
+                for page_no in range(start_page, end_page + 1):
+                    page_to_parent.setdefault(page_no, chunk_parent_id)
+
             for img_idx, img_item in enumerate(extracted_images):
-                p_id = img_item.parent_id or f"{filename}_img_fallback_{img_idx}"
+                p_id = (
+                    img_item.parent_id
+                    or page_to_parent.get(img_item.page)
+                    or f"{filename}_img_fallback_{img_idx}"
+                )
                 img_pieces = ChunkingService.split_text(
                     text=img_item.description,
                     chunk_size=settings.DEFAULT_CHUNK_SIZE,

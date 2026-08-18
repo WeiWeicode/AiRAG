@@ -112,15 +112,14 @@ async def upload_document(
             caption_semaphore = asyncio.Semaphore(settings.IMAGE_CAPTION_CONCURRENCY)
 
             async def process_one_image(raw_img: dict) -> ExtractedImageItem:
-                img_bytes = raw_img["image_bytes"]
-                img_ext = raw_img["ext"]
+                # 非通用格式（jpx/jb2 等）先轉成 PNG，否則組出的 MIME 多模態模型不接受
+                img_bytes, img_ext, mime_type = DocumentParser.normalize_image_format(
+                    raw_img["image_bytes"], raw_img["ext"], file.filename or "unknown"
+                )
 
                 # Create unique filename
                 stored_filename = f"{uuid.uuid4().hex}.{img_ext}"
                 target_path = os.path.join(image_dir, stored_filename)
-
-                # Determine mime type
-                mime_type = f"image/{img_ext}" if img_ext != "jpg" else "image/jpeg"
 
                 # Context hint
                 context_hint = ""

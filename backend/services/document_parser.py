@@ -9,7 +9,40 @@ from config import settings
 
 logger = logging.getLogger("airag.parser")
 
+# 多模態模型看得懂的點陣格式。PDF 內嵌圖片可能是 jpx / jb2 等格式，直接用 f"image/{ext}"
+# 組出的 MIME 模型並不接受，描述必定失敗；事後的 ImageCaptionRepairService 也是依存檔的
+# 副檔名回推 MIME，不在寫入階段轉檔就永遠補不回來
+SUPPORTED_IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
+
+
 class DocumentParser:
+    @staticmethod
+    def normalize_image_format(image_bytes: bytes, ext: str, filename: str) -> Tuple[bytes, str, str]:
+        """
+        把非通用格式的圖片轉成 PNG，回傳 (bytes, ext, mime_type)。
+
+        轉檔失敗只記錄並保留原始 bytes，讓後續描述階段自己失敗並留下 caption_failed，
+        不要為了一張圖中斷整份文件的處理。
+        """
+        ext = (ext or "").lower()
+        if ext in SUPPORTED_IMAGE_EXTS:
+            return image_bytes, ext, ("image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}")
+
+        try:
+            from PIL import Image
+
+            with Image.open(io.BytesIO(image_bytes)) as im:
+                buffer = io.BytesIO()
+                im.convert("RGB").save(buffer, format="PNG")
+            logger.info(f"[DocumentParser] filename='{filename}' 圖片格式 '{ext}' 已轉為 PNG")
+            return buffer.getvalue(), "png", "image/png"
+        except Exception as ex:
+            logger.error(
+                f"[DocumentParser] filename='{filename}' 圖片格式 '{ext}' 轉 PNG 失敗，"
+                f"沿用原始格式送描述: {type(ex).__name__}: {ex}"
+            )
+            return image_bytes, ext, f"image/{ext}"
+
     @staticmethod
     def extract_images_from_pdf(file_bytes: bytes) -> list:
         """

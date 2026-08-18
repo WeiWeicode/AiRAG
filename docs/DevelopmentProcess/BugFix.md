@@ -1,5 +1,67 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-08-18 PDF 的圖片描述永遠進不了文字脈絡；非通用格式圖片的 MIME 一律無效
+
+### 背景
+兩個缺陷同在 `IngestService._process_upsert` 的圖片處理流程，都只影響 PDF：
+
+**(1) 圖片段落掛在孤兒 `parent_id` 上。**
+`process_one_image()` 的 PDF 分支只取得 `page_val`，`parent_id_val` 始終保持 `None`
+（`ingest_service.py:297`），最後落到 `img_item.parent_id or f"{filename}_img_fallback_{img_idx}"`。
+這個 `parent_id` 底下**只有這張圖自己**，沒有任何文字兄弟。
+而 `QdrantService.get_siblings_and_merge()` 是靠「`parent_id` 相同」才撈得到同段落圖片，
+因此 PDF 的圖片描述永遠不會隨著文字命中被帶進 LLM 脈絡——只有圖片段落自己被向量命中時才看得到。
+Word 走 `header_path` 算 `parent_id`（`ingest_service.py:305`），一直是正常的，只有 PDF 缺這一段。
+
+**(2) 非通用格式圖片的 MIME 是憑空拼出來的。**
+`mime_type = f"image/{img_ext}"` 直接把 `fitz.extract_image()` 回傳的 `ext` 拼進 MIME。
+PDF 內嵌圖片可能是 `jpx`（JPEG 2000）、`jb2`（JBIG2）等格式，組出 `image/jpx` 這種
+多模態模型不接受的型別，描述必定失敗。事後的 `ImageCaptionRepairService` 也是依存檔的副檔名
+回推 MIME（`image_caption_repair_service.py:131`），不在寫入階段轉檔就永遠補不回來。
+
+### 變更內容
+1. `backend/services/pdf_parent_child_chunker.py`：
+   - `_parents_to_children()` 的 child metadata 新增 `end_page`。父段落可能橫跨數頁
+     （`PDF_PARENT_MAX_PAGES` 預設 3），只留 `start_page` 的話，落在中間頁的圖片反查不到父段落。
+   - `chunk_pdf_text()`（無頁面結構的退化路徑）一併把 `end_page` 釘成 1，與既有的 `page = 1` 一致，
+     不讓偽頁碼流進反查表。
+   - payload 組裝是白名單取欄位，多這個 metadata key 不會影響寫入 Qdrant 的內容。
+2. `backend/services/document_parser.py`：新增 `DocumentParser.normalize_image_format(image_bytes, ext, filename)`：
+   副檔名不在 `SUPPORTED_IMAGE_EXTS`（png/jpg/jpeg/gif/webp）時以 Pillow 轉成 PNG，回傳
+   `(bytes, ext, mime_type)`。轉檔失敗**只記錄並沿用原始格式**，讓描述階段自己失敗並留下
+   `caption_failed`，不為了一張圖中斷整份文件的處理。存檔與送描述用的是同一份 bytes，
+   副檔名與實際內容不會對不上。放在 `DocumentParser` 是因為 `(bytes, ext)` 本來就由它產出，
+   兩條圖片流程（ingest worker 與 `/api/embedding/upload`）也才共用得到。
+3. `backend/services/ingest_service.py`：
+   - `process_one_image()` 改由 `DocumentParser.normalize_image_format()` 取得
+     `(img_bytes, img_ext, mime_type)`，移除原本手動拼 MIME 的那一行。
+   - 圖片 chunk 迴圈前，用已切好的文字 chunks 建 `page_to_parent`（展開 `page`~`end_page` 區間，
+     先到先佔），圖片的 `parent_id` 改為
+     `img_item.parent_id or page_to_parent.get(img_item.page) or f"{filename}_img_fallback_{idx}"`。
+     Word 走第一項不受影響；PDF 走頁碼對應；兩者都取不到才退回舊的孤兒 ID。
+4. `backend/routers/embedding.py`：`/api/embedding/upload` 的 `process_one_image()` 有一模一樣的
+   MIME 缺陷，同樣改用 `DocumentParser.normalize_image_format()`。
+
+### 驗證
+- `chunk_pdf_pages()` 對 4 頁輸入切出 2 個父段落（第 1-3 頁、第 4 頁），
+  以 ingest 相同邏輯建出的 `page_to_parent` 為 `{1:A, 2:A, 3:A, 4:B}`
+  ——**跨頁父段落中間的第 2、3 頁確實對應得到 A**，這正是本次要修的關鍵。
+- `normalize_image_format()`：TIFF → 轉出的 bytes 以 `PNG` 開頭、回報 `png` / `image/png`；
+  `png`/`jpg` 直通且 jpg 正確回報 `image/jpeg`；無法解碼的位元組退回原副檔名並記錄錯誤，不拋例外。
+
+### 未一併修改（刻意）
+`/api/embedding/chunk` 的 PDF 分支走 `chunk_pdf_text()`，該端點只收得到解析後的純文字、
+拿不到頁面結構，所有 chunk 的 `page` 一律是 1（見 2026-08-17 紀錄）。
+那裡沒有可靠的頁碼可以拿來做圖文對應，硬做只會把所有圖片都掛到第一個父段落上，
+因此該路徑的圖片仍維持 `_img_fallback_`。真實頁碼只有握有原始 bytes 的 ingest 流程才有。
+
+### 注意事項
+- **需重跑 ingest 才生效**：既有資料的圖片段落仍掛在 `_img_fallback_` 上。
+- 圖片型兄弟節點不受 `PARENT_SIBLING_WINDOW` 限制（見 2026-08-17 紀錄），
+  圖片接回文字父段落後，該父段落底下的圖會全數帶入脈絡。以頁為父時單頁圖數有限，
+  但重切後仍須實測脈絡長度有沒有被圖片描述灌大。
+
+
 ## 2026-08-17 PDF 走錯切分器，整份文件被歸成單一父段落，每次查詢都把全文丟給 LLM
 
 ### 背景

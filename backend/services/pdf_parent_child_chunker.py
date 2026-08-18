@@ -420,6 +420,9 @@ def _parents_to_children(
                     "parent_id": parent["parent_id"],
                     "source_file": filename,
                     "page": parent["start_page"],
+                    # 父段落可能橫跨數頁，只留 start_page 的話，落在中間頁的圖片就反查不到自己
+                    # 屬於哪個父段落（見 IngestService._process_upsert 的 page_to_parent）
+                    "end_page": parent["end_page"],
                     "section": parent["section"],
                     "header_path": header_path
                 }
@@ -454,5 +457,6 @@ def chunk_pdf_text(
     )
     for child in children:
         child["metadata"]["page"] = 1
+        child["metadata"]["end_page"] = 1
         child["metadata"]["section"] = ""
     return children
