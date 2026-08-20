@@ -1,5 +1,92 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-08-20 圖片檔案稽核：一鍵清除全部孤兒檔與自訂每頁筆數
+
+### 背景
+孤兒檔實測達 3593 筆，原本只能「每頁 20 筆、逐頁勾選、逐批刪除」，清空一次要按上百輪。
+原 `cleanup` 的複驗是「每個檔案 × 每個 Collection」各打一次 Qdrant 查詢，數千檔會產生上萬次請求而無法完成，因此一鍵清除必須先改複驗方式。
+
+### 主要變更
+1. **後端**：
+   - `backend/services/image_audit_service.py`：
+     - 抽出 `_collect_image_references()`（掃全部 Collection 的圖片段落，回傳引用表 / 段落數 / 錯誤）供 `scan()` 與 `cleanup_orphans()` 共用，另抽出 `_list_disk_filenames()`。
+     - `cleanup_orphans()` 複驗改為「掃一次全庫建立引用集合、逐檔以集合比對」，請求數由 O(檔案數 × Collection 數) 降為 O(Collection 數)。
+     - 新增參數 `delete_all_orphans`（忽略 `filenames`，以複驗當下仍無引用的全部檔案為對象）與 `include_recent`（是否一併刪除保護期內的近期檔案）。
+     - 新增例外 `ImageAuditVerifyError`：只要有 Collection 掃不動就整批中止不刪，不再逐檔標記 `verify_failed`。
+   - `backend/schemas/image_audit.py`：`ImageAuditCleanupRequest` 新增 `delete_all_orphans`、`include_recent`，`filenames` 預設為空陣列。
+   - `backend/routers/image_audit.py`：改為「`filenames` 為空且未指定 `delete_all_orphans`」才回 `400`；`ImageAuditVerifyError` 對應 `409`。
+2. **前端**：
+   - `frontend/src/services/imageAuditService.js`：`cleanup()` 帶入 `include_recent`，新增 `cleanupAll()`。
+   - `frontend/src/views/ImageAuditView.vue`：新增每頁筆數選單（20/50/100/200）、第一頁/最後一頁按鈕與總筆數顯示；新增「一鍵清除全部 (N)」按鈕，沿用原本輸入 `DELETE` 的二次確認彈窗並改寫說明文字；縮圖載入改為分批並行（每批 6 張）並以 token 中止換頁後的過期載入。
+3. **文件**：`docs/03_API_CONTRACT.md` 20.2 更新 Request Body 欄位表、`skipped` reason 表與錯誤碼。
+
+### 附帶修正
+原本前端「允許勾選近期檔案」勾了也能送出，但後端一律以 `recent_file` 跳過近期檔，實際永遠刪不掉；改為將該勾選狀態以 `include_recent` 傳給後端，勾選才真的會刪。
+
+### 驗證
+- `python -m py_compile backend/services/image_audit_service.py backend/routers/image_audit.py backend/schemas/image_audit.py` 通過。
+- 前端 `npm run build` 編譯成功。
+
+
+## 2026-08-18 圖片檔案稽核頁面 (`/image-audit`、`/api/image-audit/*`)
+
+### 背景
+圖片段落的資料分散在 Qdrant（`chunk_type == "image"` 的 point，payload 帶 `image_filename`）與
+地端 `FileAttachments/image/` 兩處，兩者沒有一致性保證。唯一的自動清理在
+`QdrantService._cleanup_orphaned_image_files()`，只掛在 `delete_points()` / `delete_by_filename()` /
+`delete_by_app_source()` 三個刪點路徑上，因此以下情況都會讓兩邊對不上：
+
+- **孤兒檔（磁碟有、無向量引用）**：刪整個知識庫走 `delete_collection()`，完全沒接圖片清理；
+  ingest 重新向量時圖片先落地、最後才 upsert，中途失敗（切分無 chunk、embedding 失敗、job timeout）
+  會留下沒人引用的新圖且無 rollback；`/api/embedding/upload?extract_images=true` 上傳後未向量化。
+- **遺失檔（有向量引用、磁碟無檔）**：`_cleanup_orphaned_image_files()` 的複驗只查單一 Collection，
+  同一檔名被兩個 Collection 引用時刪 A 會連檔案一起刪掉，B 就變成死引用（縮圖 404、且無法用
+  「重新產生圖片描述」修復，該功能依賴磁碟原圖）。
+
+過去這兩種不一致沒有任何介面看得出來。規劃文件見
+[NewFeaturesPlan_ImageFileAuditPlan.md](NewFeaturesPlan_ImageFileAuditPlan.md)。
+
+### 變更內容
+- `backend/services/qdrant_service.py`：新增三個方法。
+  - `iter_all_image_points()`：分頁 scroll 出單一 Collection 全部圖片段落，逐筆 yield `(point_id, payload)`。
+    **不複用 `get_image_points()`** 的理由：後者在只剩 `chunk_type` 條件時會刻意 `raise ValueError`
+    （防止修復功能誤把整個 Collection 當目標），而稽核要的正是全庫掃描；且它 `limit=10000` 寫死無分頁。
+    本方法用 offset 分頁並只取稽核需要的 payload 欄位，避免把上萬筆完整 payload 拉進記憶體。
+  - `count_points_by_image_filename()`：`limit=1` 的存在性查詢，供清理前複驗。
+  - `list_collection_names()`：列出全部 Collection 名稱。
+- `backend/services/image_audit_service.py`（新增）：`scan()` 比對後分成 `matched` / `orphan_file` /
+  `missing_file`；`cleanup_orphans()` 刪除孤兒檔。掃描結果快取 60 秒（`refresh=true` 可強制重掃），
+  **清理一律走即時複驗，絕不讀快取**。
+- `backend/schemas/image_audit.py`（新增）、`backend/routers/image_audit.py`（新增
+  `GET /api/image-audit/scan`、`POST /api/image-audit/cleanup`，`Depends(get_current_user)`）、
+  `backend/main.py` 掛載。
+- `frontend/`：新增 `services/imageAuditService.js` 與 `views/ImageAuditView.vue`，
+  `router/index.js` 加 `/image-audit`、`AppSidebar.vue` 加選單項。
+- `docs/03_API_CONTRACT.md`：新增 §20。
+
+### 關鍵設計決策
+- **孤兒判定必須掃過所有 Collection**（`get_collections()`，而非只取 MongoDB 的
+  `qdrant_collection_name`——Mongo 記錄已刪、Collection 還在的殘留也要看得見）。只掃單一知識庫
+  會把其他知識庫仍在使用的圖判成孤兒，一鍵清理就是把上述「跨 Collection 誤刪」問題規模化。
+- **近期檔案保護期**：ingest 的順序是「圖片先落地 → 生描述 → 切分 → embedding → 寫入 point」，
+  掃描時若有任務正在跑，那些圖在磁碟上但還沒有 point，外觀與孤兒完全相同。因此 mtime 落在最近
+  `INGEST_JOB_TIMEOUT` 秒內者標記 `is_recent`，前端預設不可勾選，**後端也獨立擋一次**
+  （`reason: "recent_file"`），不倚賴前端。少了這道，這個頁面會砍掉進行中任務的素材。
+- **刪除前逐檔重新複驗**：掃描到按下刪除之間可能已被重新引用（例如期間跑完一次重新向量）。
+  複驗查不動的 Collection 一律視為「無法證明是孤兒」而跳過（`reason: "verify_failed"`），不冒險刪。
+- 規劃書原訂「掃描 `errors[]` 非空時 `cleanup` 回 409」，實作改為**逐檔複驗失敗即跳過**：
+  同樣擋住「某個 Collection 掛掉導致它的圖全被當孤兒」，但判斷依據是清理當下的即時狀態而非
+  可能已過期的掃描結果，粒度也更細（其他檔案照樣清得掉）。前端仍在掃描有錯時停用刪除按鈕。
+
+### 驗證
+`tests/test_image_audit_service.py`（本機，git-ignored）以 stub 掉 Qdrant/Mongo 的方式覆蓋 7 個案例：
+三分類判定、跨 Collection 引用不得列為孤兒、近期檔案標記、單一 Collection 掃描失敗仍繼續且記錄
+`errors`、清理只刪真孤兒（`still_referenced` / `recent_file` / `invalid_filename`（路徑穿越）/
+`file_not_found` 各自跳過）、複驗失敗不刪、快取與 `refresh` 行為。全數通過。
+`python -c "import main"` 確認 openapi 已註冊兩個端點；`npm run build` 通過。
+
+---
+
 ## 2026-08-12 外部應用「僅重試失敗圖片 AI 描述」API (`/api/external/ingest/repair-captions`)
 
 ### 背景

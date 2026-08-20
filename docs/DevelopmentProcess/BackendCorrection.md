@@ -1,5 +1,50 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-08-20 圖片稽核清理複驗改為單次全庫引用集合比對，並支援一鍵清除
+
+### 背景
+`ImageAuditService.cleanup_orphans()` 原本逐檔對每個 Collection 各打一次 `count_points_by_image_filename()` 複驗。
+孤兒檔實測 3593 筆 × 2 個 Collection 會產生約 7000 次 Qdrant 查詢，一鍵清除必定逾時。
+
+### 變更內容
+- `backend/services/image_audit_service.py`：
+  - 新增 `_collect_image_references(collection_names, kb_map)`：掃全部 Collection 的圖片段落，回傳 `(引用表, 圖片段落數, 錯誤清單)`；`scan()` 改呼叫它，移除重複的 scroll 迴圈。
+  - 新增 `_list_disk_filenames(image_dir)`。
+  - `cleanup_orphans()` 改簽名為 `(filenames=None, delete_all_orphans=False, include_recent=False)`：先建立一次最新引用集合再逐檔以 `filename in referenced` 複驗；`delete_all_orphans=True` 時以「磁碟有、引用集合沒有」的全部檔案為刪除對象；`include_recent=True` 才會刪 mtime 落在 `INGEST_JOB_TIMEOUT` 保護期內的檔案。
+  - 新增 `ImageAuditVerifyError`：任一 Collection 掃描失敗即整批中止（無法證明是孤兒就不刪），取代原本逐檔 `verify_failed` 的略過方式；刪除數千檔時也不再逐檔寫 info log，改為單筆彙總。
+- `backend/schemas/image_audit.py`：`ImageAuditCleanupRequest` 的 `filenames` 預設 `[]`，新增 `delete_all_orphans`、`include_recent`。
+- `backend/routers/image_audit.py`：`400` 條件改為「無 `filenames` 且未指定 `delete_all_orphans`」；捕捉 `ImageAuditVerifyError` 回 `409` 並附原因，避免前端誤判為刪除成功。
+
+### 驗證
+- 執行 `python -m py_compile backend/services/image_audit_service.py backend/routers/image_audit.py backend/schemas/image_audit.py` 通過。
+
+
+## 2026-08-18 新增圖片檔案稽核 service 與 router
+
+### 背景
+配合 [NewFeaturesPlan_ImageFileAuditPlan.md](NewFeaturesPlan_ImageFileAuditPlan.md)，
+新增比對 Qdrant 圖片段落與地端 `FileAttachments/image/` 的後端能力。功能全貌與設計決策見
+[NewFeatures.md](NewFeatures.md) 2026-08-18 條目，本條僅記後端檔案異動。
+
+### 變更內容
+- `backend/services/qdrant_service.py`：新增 `iter_all_image_points()`（分頁 scroll 全 Collection
+  圖片段落，只取稽核用的 payload 欄位）、`count_points_by_image_filename()`（`limit=1` 存在性查詢）、
+  `list_collection_names()`。**既有方法一律未動**——特別是 `get_image_points()` 的
+  「無定位條件即 `raise ValueError`」保護必須維持，稽核走的是另一條刻意允許全掃的路徑。
+- `backend/services/image_audit_service.py`（新增）：`scan()` / `cleanup_orphans()`，
+  含路徑穿越防護（`_is_safe_filename()` + `_resolve_safe_path()`，比照 `embedding.py` 既有寫法）、
+  60 秒掃描快取、mtime 保護期、逐檔即時複驗。
+- `backend/schemas/image_audit.py`（新增）：掃描與清理的 Pydantic response/request 模型。
+- `backend/routers/image_audit.py`（新增）：`GET /image-audit/scan`、`POST /image-audit/cleanup`，
+  router 層 `dependencies=[Depends(get_current_user)]`。
+- `backend/main.py`：import 與 `include_router(image_audit.router, prefix="/api")`。
+
+### 驗證
+`tests/test_image_audit_service.py`（本機）7 個案例全過；`python -c "import main"` 後檢查
+`app.openapi()` 確認 `/api/image-audit/scan`、`/api/image-audit/cleanup` 均已註冊。
+
+---
+
 ## 2026-08-13 MongoDB 存取認證與權限配置（docker-compose.yml）
 
 ### 背景

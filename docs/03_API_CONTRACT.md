@@ -1026,3 +1026,95 @@ data: {"index": 0, "type": "reasoning | content | error | done", "content": "str
 
 
 
+
+---
+
+## 20. 圖片檔案稽核 API (Image File Audit)【新增，2026-08-18】
+
+比對 Qdrant 內**所有 Collection** 的圖片段落（`chunk_type == "image"`，payload 帶 `image_filename`）
+與地端 `FileAttachments/image/` 資料夾的實體檔，找出孤兒檔與遺失檔。兩端點皆需 JWT。
+規劃與設計決策見 `docs/DevelopmentProcess/NewFeaturesPlan_ImageFileAuditPlan.md`。
+
+### 20.1 GET `/api/image-audit/scan` — 執行比對
+
+**Query 參數**：`refresh`（bool，預設 `false`）。結果快取 60 秒，傳 `true` 強制重新掃描。
+
+**Response 200**：
+```json
+{
+  "scanned_at": "2026-08-18T09:12:33.412Z",
+  "image_dir": "/app/FileAttachments/image",
+  "recent_protect_seconds": 7200,
+  "summary": {
+    "disk_file_count": 41,
+    "referenced_filename_count": 38,
+    "image_point_count": 52,
+    "matched_count": 37,
+    "orphan_file_count": 4,
+    "orphan_recent_count": 1,
+    "missing_file_count": 1,
+    "collection_count": 3
+  },
+  "orphan_files": [
+    { "image_filename": "0d02...765d.png", "size": 184320,
+      "modified_at": "2026-08-14T02:11:05Z", "is_recent": false }
+  ],
+  "missing_files": [
+    { "image_filename": "9f11...aa02.jpeg",
+      "references": [
+        { "collection": "kb_6a38...440", "kb_id": "6a38...440", "kb_name": "產品文件庫",
+          "point_id": "1f2e...", "filename": "EFGP-ReleaseNote.pdf", "page": 7, "caption_failed": false }
+      ] }
+  ],
+  "matched_files": [
+    { "image_filename": "12f2...da1b1.jpeg", "size": 90112, "modified_at": "2026-08-10T01:00:00Z",
+      "reference_count": 2, "references": [ ] }
+  ],
+  "errors": [ { "collection": "kb_xxxx", "error": "..." } ]
+}
+```
+
+欄位說明：
+
+| 欄位 | 說明 |
+|---|---|
+| `referenced_filename_count` / `image_point_count` | 前者是被引用的**檔名**數、後者是圖片**段落**數；同一張圖可被多個 point 引用，兩者不會相等 |
+| `orphan_files[].is_recent` | mtime 落在最近 `recent_protect_seconds`（= `INGEST_JOB_TIMEOUT`）秒內。ingest 是「圖片先落地、最後才寫 point」，進行中的任務其產物外觀與孤兒相同，故標記出來且預設不可刪 |
+| `missing_files[].references[].kb_name` | Collection 在 MongoDB 沒有對應的 `KnowledgeBase` 紀錄時為 `null`（前端顯示「（無對應知識庫紀錄）」） |
+| `errors` | 個別 Collection 掃描失敗不中斷整體掃描，改記於此。非空代表孤兒判定不完整，前端會停用清理功能 |
+
+錯誤：`401` 未登入、`500` 取得 Collection 清單失敗。
+
+### 20.2 POST `/api/image-audit/cleanup` — 清理孤兒圖檔
+
+**Request Body**：
+```json
+{ "filenames": ["0d02...765d.png", "1ba2...0037.png"], "include_recent": false }
+```
+
+| 欄位 | 型別 | 預設 | 說明 |
+|---|---|---|---|
+| `filenames` | string[] | `[]` | 要刪除的圖片檔名；`delete_all_orphans=true` 時忽略 |
+| `delete_all_orphans` | bool | `false` | 一鍵清除：改以「複驗當下仍無任何引用」的全部孤兒檔為對象 |
+| `include_recent` | bool | `false` | `true` 才會一併刪除 mtime 落在保護期內的近期檔案 |
+
+**Response 200**：
+```json
+{
+  "message": "清理完成：刪除 1 筆、略過 1 筆、失敗 0 筆",
+  "deleted": ["0d02...765d.png"],
+  "skipped": [{ "filename": "1ba2...0037.png", "reason": "still_referenced" }],
+  "failed": []
+}
+```
+
+刪除前一律**重新掃過所有 Collection 的圖片段落建立引用集合**（不讀快取）再逐檔比對，`skipped` 的 `reason` 可能為：
+
+| reason | 意義 |
+|---|---|
+| `still_referenced` | 掃描後到此刻之間又被 point 引用（例如期間跑完一次重新向量） |
+| `recent_file` | mtime 在保護期內，可能是進行中的 ingest 任務產物（未傳 `include_recent=true`） |
+| `invalid_filename` | 檔名含路徑分隔字元或指向 image 目錄外 |
+| `file_not_found` | 磁碟上已不存在 |
+
+錯誤：`400` `filenames` 為空且未指定 `delete_all_orphans`、`401` 未登入、`409` 有 Collection 掃不動無法確認孤兒狀態（整批中止不刪）、`500` 執行失敗。

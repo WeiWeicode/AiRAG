@@ -1,5 +1,57 @@
 <!-- 前端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-08-20 圖片檔案稽核頁面：自訂每頁筆數與一鍵清除全部孤兒檔
+
+### 背景
+孤兒檔多達數千筆，固定每頁 20 筆且只能逐頁勾選刪除，實務上無法清空。
+
+### 變更內容
+- `frontend/src/views/ImageAuditView.vue`：
+  - 以 `pageSize`（可選 20/50/100/200，預設 20）取代固定的 `PAGE_SIZE`；切換筆數時自動回到第 1 頁並補載縮圖。
+  - 分頁列改為只要清單非空就顯示，新增「第一頁 / 最後一頁」按鈕與「共 N 筆」顯示。
+  - 孤兒檔工具列新增「一鍵清除全部 (N)」按鈕（N 為目前允許刪除的孤兒檔數，近期檔案需勾選「允許勾選近期檔案」才計入）；沿用原本輸入 `DELETE` 的二次確認彈窗，並依 `deleteMode` 切換標題與說明（一鍵清除模式改顯示範圍說明與耗時提醒，不列檔名清單）。
+  - 縮圖載入由逐張 `await` 改為每批 6 張並行，並以 `thumbLoadToken` 中止換頁後的過期載入、回收已產生的 blob URL（每頁 200 筆時逐張載入過慢）。
+- `frontend/src/services/imageAuditService.js`：`cleanup(filenames, includeRecent)` 帶出 `include_recent`；新增 `cleanupAll(includeRecent)` 呼叫 `delete_all_orphans=true`（不需把數千筆檔名送上去）。
+  - 附帶修正：原本「允許勾選近期檔案」只放行前端勾選，後端仍一律以 `recent_file` 跳過，勾了也刪不掉；現在該狀態會傳給後端。
+
+### 驗證
+- 執行 `npm run build` 成功編譯，無範本或語法錯誤。
+
+
+## 2026-08-18 新增圖片檔案稽核頁面 (`/image-audit`)
+
+### 背景
+配合 [NewFeaturesPlan_ImageFileAuditPlan.md](NewFeaturesPlan_ImageFileAuditPlan.md)，
+新增比對 Qdrant 圖片段落與地端圖片資料夾的維運頁面。設計決策見
+[NewFeatures.md](NewFeatures.md) 2026-08-18 條目。
+
+### 變更內容
+- `frontend/src/services/imageAuditService.js`（新增）：`scan(refresh)` / `cleanup(filenames)`。
+- `frontend/src/views/ImageAuditView.vue`（新增）：
+  - 四張統計卡（磁碟檔案 / 向量引用 / 孤兒檔 / 遺失檔）。「向量引用」刻意同時顯示
+    **檔名數與段落數**——同一張圖可被多個 point 引用，只顯示一個數字會對不起來。
+  - 三個分頁：孤兒檔（可勾選 + 批次刪除）、遺失檔（唯讀，附「複製 Point ID」）、正常（唯讀，
+    引用數 > 1 可展開看全部引用）。每頁 20 筆。
+  - **縮圖必須走 blob URL**：`/api/embedding/images/{filename}` 掛在 `embedding` router 下，
+    有 `Depends(get_current_user)`，`<img src>` 直接指過去瀏覽器不會帶 Authorization header → 401。
+    因此改用既有的 `imageService.fetchImageBlobUrl()`（axios 帶 token），只載入當前分頁的縮圖，
+    切分頁 / `onUnmounted` 時 `revokeObjectURL()`。遺失檔分頁不發請求（必然 404），顯示佔位方塊。
+  - `is_recent` 的檔案（mtime 在保護期內，可能是進行中的向量化任務產物）預設 checkbox disabled，
+    需另外勾「允許勾選近期檔案」才放行；關掉該開關時會一併移除已選取的近期檔案。
+  - 掃描回傳的 `errors[]` 非空時顯示琥珀色警示並**停用刪除按鈕**（孤兒判定不完整時不准清理）。
+  - 刪除二次確認 modal 要求手動輸入 `DELETE`（比照 `KnowledgeBaseSettingsView.vue` 的
+    `confirmInput` 做法），列出前 10 筆檔名；完成後依後端回傳的 `skipped` 分類明確提示
+    「N 筆在確認期間被重新引用」「N 筆無法複驗」「N 筆為近期檔案」。
+  - **不提供「一鍵刪除全部孤兒檔」的無確認捷徑。**
+- `frontend/src/router/index.js`：新增 `/image-audit` route（`requiresAuth: true`）。
+- `frontend/src/components/common/AppSidebar.vue`：`menuItems` 新增「圖片檔案稽核 (Image Audit)」，
+  置於「知識庫管理」之後。
+
+### 驗證
+`npm run build` 通過（427 modules）。實際頁面行為由使用者手動測試。
+
+---
+
 ## 2026-07-30 新增集團知識庫混合查詢法 (`KB_hybrid`) 前端介面支援
 
 ### 背景

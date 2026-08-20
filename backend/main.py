@@ -24,7 +24,8 @@ from routers import (
     users,
     external,
     external_api_keys,
-    app_registrations
+    app_registrations,
+    image_audit
 )
 
 # 設定日誌
@@ -79,6 +80,7 @@ app.include_router(users.router, prefix="/api")
 app.include_router(external.router, prefix="/api")
 app.include_router(external_api_keys.router, prefix="/api")
 app.include_router(app_registrations.router, prefix="/api")
+app.include_router(image_audit.router, prefix="/api")
 
 @app.get("/health")
 async def health_check():

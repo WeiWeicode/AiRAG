@@ -13,6 +13,7 @@ import FeedbackView from '../views/FeedbackView.vue'
 import RoleSettingsView from '../views/RoleSettingsView.vue'
 import KnowledgeBaseSettingsView from '../views/KnowledgeBaseSettingsView.vue'
 import AppRegistrationSettingsView from '../views/AppRegistrationSettingsView.vue'
+import ImageAuditView from '../views/ImageAuditView.vue'
 
 const routes = [
   {
@@ -89,6 +90,12 @@ const routes = [
     path: '/app-registrations',
     name: 'AppRegistrationSettings',
     component: AppRegistrationSettingsView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/image-audit',
+    name: 'ImageAudit',
+    component: ImageAuditView,
     meta: { requiresAuth: true }
   }
 ]

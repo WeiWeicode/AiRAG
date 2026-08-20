@@ -193,7 +193,13 @@ class ImageAuditService:
 }
 ```
 
-錯誤碼：`400`（`filenames` 空陣列 / 含非法路徑字元）、`401`（未登入）、`409`（本次掃描有 collection 失敗，拒絕清理）、`500`（image_dir 不存在或不可讀）。
+錯誤碼：`400`（`filenames` 空陣列）、`401`（未登入）、`500`（無法取得 Collection 清單等執行失敗）。
+
+> **實作時的調整（2026-08-18）**：原訂「掃描 `errors[]` 非空時 `cleanup` 直接回 `409`」，實作改為
+> **逐檔複驗，任一 Collection 查不動就跳過該檔（`reason: "verify_failed"`）**。同樣擋住「某個
+> Collection 掛掉導致它的圖全被當孤兒」，但判斷依據是清理當下的即時狀態而非可能已過期的掃描結果，
+> 粒度也更細（其他檔案照樣清得掉）。非法檔名同樣降級為 `skipped`（`invalid_filename`）而非整批 400。
+> 前端仍維持「掃描有錯就停用刪除按鈕」。
 
 ### 4.3 效能與規模
 
@@ -272,7 +278,7 @@ class ImageAuditService:
 |---|---|---|
 | 1 | 只掃部分 collection 就判孤兒 → 誤刪別的 KB 正在用的圖 | 掃描一律走 `get_collections()` 全量；掃描失敗的 collection 進 `errors[]` |
 | 2 | 掃描結果過期，清理時已被重新引用 | `cleanup` 每個檔案刪前重新 scroll 驗證（§4.1.3 step 2） |
-| 3 | 掃描有 collection 失敗，卻照樣清理 → 該 collection 的圖全被當孤兒 | **`errors[]` 非空時，後端 `cleanup` 直接回 `409` 拒絕執行**，前端同步禁用刪除按鈕並說明原因 |
+| 3 | 掃描有 collection 失敗，卻照樣清理 → 該 collection 的圖全被當孤兒 | 後端逐檔複驗，任一 Collection 查不動即跳過該檔（`verify_failed`）；前端在 `errors[]` 非空時禁用刪除按鈕並說明原因 |
 | 4 | 路徑穿越（前端傳 `../../config.py`） | `abspath` + 前綴檢查 + 拒絕含分隔字元的檔名 |
 | 5 | 掃描期間有 ingest 正在跑，新圖剛落地、point 還沒寫入 → 被判成孤兒 | 孤兒判定加 **mtime 保護期**：`mtime` 在最近 `INGEST_JOB_TIMEOUT` 秒內的檔案標為 `orphan_recent`，UI 顯示「可能是進行中的任務，建議稍後再確認」且**預設不可勾選**（需另開「顯示近期檔案」開關才放行）。少了這條，正在跑的同步任務會被這個頁面直接砍掉素材 |
 
@@ -286,7 +292,17 @@ class ImageAuditService:
 4. 建立 KB → 上傳含圖 PDF 並向量化 → 刪除該 KB → 掃描能列出這批孤兒檔（驗證 §1.1-1 的既有缺陷確實被這個頁面看得見）。
 5. 剛完成的 ingest（mtime 在保護期內）產生的圖不會被誤列為可刪孤兒。
 6. 前端縮圖在有 JWT 的情況下正常顯示，重新整理頁面不會 401。
-7. 掃描期間某個 collection 不存在 / 連線失敗 → 頁面顯示警示，刪除按鈕禁用，`POST /cleanup` 回 `409`。
+7. 掃描期間某個 collection 不存在 / 連線失敗 → 頁面顯示警示、刪除按鈕禁用；直接呼叫 `POST /cleanup` 時該檔以 `verify_failed` 跳過而非被刪除。
+
+---
+
+## 9. 實作狀態（2026-08-18）
+
+階段 1–4 全部完成。實際落地的檔案與設計決策見
+[NewFeatures.md](NewFeatures.md)、[BackendCorrection.md](BackendCorrection.md)、
+[FrontendCorrection.md](FrontendCorrection.md) 的 2026-08-18 條目，API 契約見 `docs/03_API_CONTRACT.md` §20。
+自動化驗證：`tests/test_image_audit_service.py`（本機，git-ignored）7 個案例全過。
+驗收條件 §7 各項需由使用者在實機手動確認。
 
 ---
 

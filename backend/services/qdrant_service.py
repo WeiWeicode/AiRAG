@@ -1602,6 +1602,70 @@ class QdrantService:
             raise e
 
     @classmethod
+    async def iter_all_image_points(cls, collection_name: str, page_size: int = 1000):
+        """
+        分頁 scroll 出該 Collection 全部 chunk_type == "image" 的段落，逐筆 yield
+        (point_id, payload)，供圖片檔案稽核比對使用。
+        與 get_image_points() 的差異：本方法刻意允許「無定位條件的全庫掃描」（稽核本來就要掃全部），
+        因此改用 offset 分頁並只取稽核需要的 payload 欄位，避免一次把上萬筆完整 payload 拉進記憶體。
+        """
+        client = cls.get_client()
+        offset = None
+        while True:
+            points, offset = await client.scroll(
+                collection_name=collection_name,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(key="chunk_type", match=models.MatchValue(value="image"))
+                    ]
+                ),
+                limit=page_size,
+                offset=offset,
+                with_payload=[
+                    "image_filename", "filename", "app_id", "doc_type",
+                    "source_id", "page", "caption_failed"
+                ],
+                with_vectors=False
+            )
+            for p in points:
+                yield str(p.id), (p.payload or {})
+            if offset is None:
+                break
+
+    @classmethod
+    async def count_points_by_image_filename(cls, collection_name: str, image_filename: str) -> bool:
+        """
+        確認該 Collection 是否仍有 point 引用這個圖片檔名（只取 1 筆即可判定），
+        供清理孤兒檔前的即時複驗使用。
+        """
+        client = cls.get_client()
+        scroll_result = await client.scroll(
+            collection_name=collection_name,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="image_filename",
+                        match=models.MatchValue(value=image_filename)
+                    )
+                ]
+            ),
+            limit=1,
+            with_payload=False,
+            with_vectors=False
+        )
+        return bool(scroll_result[0])
+
+    @classmethod
+    async def list_collection_names(cls) -> List[str]:
+        """
+        列出 Qdrant 內全部 Collection 名稱。圖片稽核必須掃過全部 Collection 才能判定孤兒檔，
+        只掃單一知識庫會把其他知識庫仍在使用的圖片誤判為可刪除。
+        """
+        client = cls.get_client()
+        res = await client.get_collections()
+        return [c.name for c in res.collections]
+
+    @classmethod
     async def get_by_parent_id(
         cls,
         collection_name: str,
