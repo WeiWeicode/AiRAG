@@ -1,5 +1,30 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-11-14 自動偵測本機 Ollama 模型，前端可切換對話生成模型
+
+### 背景
+專案改為個人作品展示用途，預設推論服務由公司地端 vLLM / llama.cpp 改為本機 Ollama。
+原本前端「LLM 模型」下拉寫死 `Qwen3.6-35B-A3B-FP8`，且選擇未實際生效（後端固定用 `.env` 的 `VLLM_MODEL`）。
+
+### 功能內容
+- 新增 `GET /api/models/list`：讀取 Ollama `/api/tags`（舊版缺 `capabilities` 時改查 `/api/show`），
+  回傳所有模型（含 `is_generation` / `is_embedding`）與目前對話、Instruct、Embedding 採用的模型；連不上 Ollama 回 503。
+- 啟動時（API 與 arq worker）自動補選 `.env` 未指定的模型：對話生成模型挑檔案最大的 completion 模型、
+  Instruct 語義解析模型挑檔案最小的；Embedding 不自動挑選（向量維度須與既有 Qdrant collection 一致），只在缺少時報錯。
+  已指定但未下載的模型只記錯誤，不靜默替換。
+- 前端「生成模型設定」下拉改為動態列出 Ollama 對話模型（排除 embedding），標示參數量與預設模型，可重新偵測。
+  選擇的模型實際用於 RAG 對話、外部 API 測試、Prompt A/B 測試與評估的答案生成
+  （語義解析、分批摘要、評估裁判仍用預設模型）。
+
+### 驗證
+- `/api/models/list` 正確列出本機 6 個模型並區分 4 個對話、2 個 embedding 模型。
+- 在容器內清空 `VLLM_MODEL`/`DenseVector_INSTRUCT_MODEL` 後呼叫自動挑選：對話選 `qwen3.8:27b-mxfp8`、Instruct 選 `frob/qwen3.5-instruct:9b`。
+- `POST /api/prompt/ab-test` 指定 `model: gemma4:12b`，Ollama `/api/ps` 確認載入的是 `gemma4:12b`。
+- `npm run build` 通過；前端畫面請使用者手動驗證。
+
+---
+
+
 ## 2026-08-20 圖片檔案稽核：一鍵清除全部孤兒檔與自訂每頁筆數
 
 ### 背景

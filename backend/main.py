@@ -25,7 +25,8 @@ from routers import (
     external,
     external_api_keys,
     app_registrations,
-    image_audit
+    image_audit,
+    models
 )
 
 # 設定日誌
@@ -42,6 +43,8 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Initializing AiRAG API Service...")
     await init_mongodb()
+    from services.model_discovery_service import ModelDiscoveryService
+    await ModelDiscoveryService.resolve_default_models()
     logger.info("AiRAG API Service initialized successfully.")
     yield
     logger.info("Shutting down AiRAG API Service...")
@@ -81,6 +84,7 @@ app.include_router(external.router, prefix="/api")
 app.include_router(external_api_keys.router, prefix="/api")
 app.include_router(app_registrations.router, prefix="/api")
 app.include_router(image_audit.router, prefix="/api")
+app.include_router(models.router, prefix="/api")
 
 @app.get("/health")
 async def health_check():

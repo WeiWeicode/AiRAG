@@ -1,5 +1,51 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-11-14 預設推論服務改為 Ollama 並支援請求層級指定對話模型
+
+功能全貌見 [NewFeatures.md](NewFeatures.md) 同日條目，本條僅記後端檔案異動。
+
+### 變更內容
+- `backend/services/model_discovery_service.py`（新增）：`list_models()`、`resolve_default_models()`。
+- `backend/routers/models.py`（新增）：`GET /api/models/list`；`backend/main.py` 註冊 router 並於 lifespan 呼叫自動挑選；`backend/worker.py` startup 同步呼叫。
+- `backend/config.py`：預設值改為 Ollama（`localhost:11434`、`EMBEDDING_API_STYLE=ollama`、`EMBEDDING_MODEL=qwen3-embedding:8b`），
+  `VLLM_MODEL`/`DenseVector_INSTRUCT_MODEL` 預設留空交由自動偵測；`VLLM_USE_TOKENIZE_ENDPOINT` 預設改 `false`（Ollama 無 `/tokenize`，原本每次對話都會記一筆 404 warning）。
+- `backend/services/llm_service.py`：`chat_completion()` 新增 `model` 參數，未指定時用 `settings.VLLM_MODEL`；錯誤日誌改印實際使用的模型。
+- `backend/routers/rag.py`：讀取原本未使用的 `ChatParams.model` 並傳給最終答案生成。
+- `backend/routers/prompt.py`：A/B 測試讀取 `variant.params.model`。
+- `backend/routers/evaluation.py`：答案生成使用 `params.model`；報告的模型欄位預設改為 `settings.VLLM_MODEL`（原寫死 `Qwen3.6-35B-A3B-FP8`）。
+- `backend/routers/knowledge_base.py`：新建知識庫的 `embedding_model` 改用 `settings.EMBEDDING_MODEL`（原寫死）。
+- `backend/routers/embedding.py`：`/vectorize` 回應的 `embedding_model` 改回傳實際使用的 `settings.EMBEDDING_MODEL`。
+
+### 驗證
+- `python3 -m py_compile` 通過；重啟 backend/worker 後無錯誤，端點測試見 NewFeatures.md。
+
+---
+
+
+## 2026-11-14 本機 Docker 部署：合併上游 docker-compose 與共用 MongoDB 設定
+
+### 背景
+`git pull` 拉下上游 30 個 commit，上游 `docker-compose.yml` 新增 `worker`/`redis` 服務、MongoDB `--auth` 與 Qdrant API Key；
+本機則已改為使用共用服務 `shared-mongodb`（`/Users/wei/Code/shared/docker-compose.yml`，無認證）並將埠綁定 `127.0.0.1`，兩者衝突。
+部署時另遇兩個問題：根目錄無 `.env` 導致 `QDRANT_API_KEY` 為空字串；本機 Homebrew redis 已佔用 `127.0.0.1:6379`，`airag-redis` 啟動失敗。
+
+### 變更內容
+- `docker-compose.yml`（本機設定，未 commit）：
+  - 保留本機設定：不含 `mongodb` 服務，`backend`/`worker` 皆用 `mongodb://shared-mongodb:27017` 並加入外部網路 `shared-net`；對外埠綁定 `127.0.0.1`。
+  - 採用上游：`worker`、`redis` 服務、`mem_limit`/`restart`、`QDRANT__SERVICE__API_KEY`/`QDRANT_API_KEY`/`REDIS_HOST`。
+  - `redis` 不再發佈埠到宿主機（容器間走 `airag-network`）。
+- 根目錄 `.env`（git-ignored，新增）與 `backend/.env`：新增隨機產生的 `QDRANT_API_KEY`。
+
+### 驗證
+- `docker compose up --build -d` 後 5 個容器皆 Up；backend/worker 日誌顯示 MongoDB、Qdrant（帶 key）、Redis 連線成功。
+- `GET http://127.0.0.1:53010/health` 200、前端 200；Qdrant 無 key 存取回 401。
+- 已知警告：本機 `qdrant/qdrant:latest` 快取映像為 1.18.2，與 client 1.20.0 版本差距過大（已於同日升級，見下）。
+
+### 後續：Qdrant 1.18.2 → 1.20.1 升級
+- 先停 `airag-qdrant`，將 `airag_qdrant_data` volume 打包備份至 `backups/qdrant_data-1.18.2-20261114.tgz`（`backups/` 僅加入本機 `.git/info/exclude`）。
+- 依 Qdrant 建議逐一小版本升級：先以臨時容器 `qdrant/qdrant:v1.19.2` 掛載同一 volume 啟動、確認 collection 復原後停止，再 `docker compose pull` 後以 `latest`（v1.20.1）重建 `qdrant`，並重啟 `backend`/`worker`。
+- 驗證：Qdrant 回報版本 1.20.1；`kb_6a4641efb48d5385ff21e672` 狀態 green、50 points；backend/worker 日誌不再出現版本不相容警告；`/health` 200。
+
 ## 2026-08-20 圖片稽核清理複驗改為單次全庫引用集合比對，並支援一鍵清除
 
 ### 背景

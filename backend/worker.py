@@ -32,6 +32,9 @@ async def startup(ctx):
     """
     from models.mongodb import init_mongodb
     await init_mongodb()
+    # 圖片描述會用到對話模型，worker 為獨立行程，需自行補選 .env 未指定的模型
+    from services.model_discovery_service import ModelDiscoveryService
+    await ModelDiscoveryService.resolve_default_models()
     logger.info("arq worker 已啟動，MongoDB/Beanie 初始化完成。")
 
 

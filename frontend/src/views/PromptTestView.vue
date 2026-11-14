@@ -161,13 +161,13 @@ const handleABTest = async () => {
           label: "Variant A (低溫度 - 0.1)",
           system_prompt: systemPrompt.value,
           user_prompt_template: userPromptTemplate.value,
-          params: { temperature: 0.1, top_p: 0.9, max_tokens: paramsStore.maxTokens }
+          params: { temperature: 0.1, top_p: 0.9, max_tokens: paramsStore.maxTokens, model: paramsStore.model || undefined }
         },
         {
           label: "Variant B (高溫度 - 0.9)",
           system_prompt: systemPrompt.value,
           user_prompt_template: userPromptTemplate.value,
-          params: { temperature: 0.9, top_p: 0.9, max_tokens: paramsStore.maxTokens }
+          params: { temperature: 0.9, top_p: 0.9, max_tokens: paramsStore.maxTokens, model: paramsStore.model || undefined }
         }
       ]
     }

@@ -47,7 +47,7 @@ onMounted(() => {
           class="w-1.5 h-1.5 rounded-full"
           :class="isConnected ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : 'bg-rose-500 shadow-[0_0_8px_#ef4444]'"
         ></span>
-        {{ isConnected ? 'vLLM / llama.cpp connected' : 'Backend disconnected' }}
+        {{ isConnected ? 'Backend connected' : 'Backend disconnected' }}
       </span>
     </div>
   </header>

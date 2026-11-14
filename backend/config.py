@@ -13,9 +13,10 @@ class Settings:
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
 
-    # vLLM
-    VLLM_BASE_URL: str = os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1")
-    VLLM_MODEL: str = os.getenv("VLLM_MODEL", "Qwen3.6-35B-A3B-FP8")
+    # 對話生成 LLM（OpenAI 相容 /chat/completions，預設為本機 Ollama；改指向 vLLM / LM Studio 亦可）
+    VLLM_BASE_URL: str = os.getenv("VLLM_BASE_URL", "http://localhost:11434/v1")
+    # 留空 = 啟動時自動從 Ollama 已下載模型中挑選（見 services/model_discovery_service.py）
+    VLLM_MODEL: str = os.getenv("VLLM_MODEL", "")
     # vLLM 部署時的 --max-model-len。設 > 0 時，chat_completion 會在送出前自動裁切 max_tokens，
     # 避免「prompt tokens + max_tokens」超過模型上限被回 400（呼叫端可能帶入很大的 max_tokens）。
     # 設 0 代表停用自動裁切，維持原本行為。
@@ -25,17 +26,19 @@ class Settings:
     # 且 chat template 本身也會佔用 token，需留邊際避免卡在上限
     VLLM_CONTEXT_SAFETY_MARGIN: int = int(os.getenv("VLLM_CONTEXT_SAFETY_MARGIN", "4096"))
     # 是否呼叫 vLLM /tokenize 取得精確的 prompt token 數（多一次輕量 HTTP）。設 false 時一律用字元估算。
-    VLLM_USE_TOKENIZE_ENDPOINT: bool = os.getenv("VLLM_USE_TOKENIZE_ENDPOINT", "true").lower() == "true"
+    # Ollama 沒有此端點，預設關閉；改接 vLLM 時建議設為 true
+    VLLM_USE_TOKENIZE_ENDPOINT: bool = os.getenv("VLLM_USE_TOKENIZE_ENDPOINT", "false").lower() == "true"
 
-    # llama.cpp
-    LLAMACPP_BASE_URL: str = os.getenv("LLAMACPP_BASE_URL", "http://localhost:8081")
-    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "Qwen3-Embedding-8B-Q8_0.gguf")
+    # Embedding 服務（預設為本機 Ollama）。模型不自動挑選：向量維度須與既有 Qdrant collection 一致
+    LLAMACPP_BASE_URL: str = os.getenv("LLAMACPP_BASE_URL", "http://localhost:11434")
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:8b")
     # Embedding 服務的 API 風格："llamacpp"（預設，原生 /embedding）、"ollama"（原生 /api/embeddings）、"openai"（OpenAI 相容 /v1/embeddings，適用 LM Studio）
-    EMBEDDING_API_STYLE: str = os.getenv("EMBEDDING_API_STYLE", "llamacpp")
+    EMBEDDING_API_STYLE: str = os.getenv("EMBEDDING_API_STYLE", "ollama")
 
-    # llama.cpp (Instruct 語義化)
-    DENSE_VECTOR_LLAMACPP_BASE_URL: str = os.getenv("DenseVector_LLAMACPP_BASE_URL", "http://localhost:8082")
-    DENSE_VECTOR_INSTRUCT_MODEL: str = os.getenv("DenseVector_INSTRUCT_MODEL", "Qwen3VL-8B-Instruct-Q4_K_M.gguf")
+    # Instruct 語義化（將查詢轉換為結構化 JSON，預設為本機 Ollama）
+    DENSE_VECTOR_LLAMACPP_BASE_URL: str = os.getenv("DenseVector_LLAMACPP_BASE_URL", "http://localhost:11434")
+    # 留空 = 啟動時自動從 Ollama 已下載模型中挑選檔案最小的對話模型
+    DENSE_VECTOR_INSTRUCT_MODEL: str = os.getenv("DenseVector_INSTRUCT_MODEL", "")
 
     # Qdrant
     QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")

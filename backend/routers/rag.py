@@ -247,8 +247,12 @@ async def rag_chat_stream(request: ChatRequest):
     history_context_turns = settings.SEMANTIC_JSON_HISTORY_TURNS
     pinned_filename_param = None
     custom_system_prompt = None
+    # 前端選定的對話生成模型，None 時由 LLMService 採用預設（settings.VLLM_MODEL）
+    chat_model = None
 
     if request.params:
+        if request.params.model:
+            chat_model = request.params.model
         if request.params.temperature is not None:
             temperature = request.params.temperature
         if request.params.top_k is not None:
@@ -844,7 +848,8 @@ async def rag_chat_stream(request: ChatRequest):
             max_tokens=max_tokens,
             repetition_penalty=repetition_penalty,
             frequency_penalty=frequency_penalty,
-            stream=True
+            stream=True,
+            model=chat_model
         )
 
         # 重複輸出偵測：即使 repetition_penalty 未能完全避免，也要能主動中斷無限迴圈

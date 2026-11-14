@@ -36,7 +36,8 @@ export const useParamsStore = defineStore('params', {
     simulatedUserId: null,
 
     // Generation parameters
-    model: 'Qwen3.6-35B-A3B-FP8',
+    // 空字串 = 由後端採用預設模型；LlmParamsPanel 載入 Ollama 模型清單後會填入後端預設值
+    model: '',
     temperature: 0.3,
     maxTokens: 22768,
 

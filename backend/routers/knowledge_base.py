@@ -9,6 +9,7 @@ from schemas.knowledge_base import (
 from models.knowledge_base import KnowledgeBase
 from services.qdrant_service import QdrantService
 from utils.security import get_current_user
+from config import settings
 
 logger = logging.getLogger("airag.kb_router")
 router = APIRouter(prefix="/knowledge-bases", tags=["Knowledge Base"], dependencies=[Depends(get_current_user)])
@@ -62,7 +63,7 @@ async def create_knowledge_base(request: KnowledgeBaseCreate, current_user: str 
             name=request.name,
             description=request.description,
             qdrant_collection_name=qdrant_collection_name,
-            embedding_model="Qwen3-Embedding-8B-Q8_0.gguf",
+            embedding_model=settings.EMBEDDING_MODEL,
             chunk_count=0,
             created_by=current_user,
             created_at=datetime.utcnow(),

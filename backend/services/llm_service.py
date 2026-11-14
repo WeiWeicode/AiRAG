@@ -195,18 +195,21 @@ class LLMService:
         frequency_penalty: float = None,
         stream: bool = False,
         return_finish_reason: bool = False,
-        timeout: float = 60.0
+        timeout: float = 60.0,
+        model: Optional[str] = None
     ) -> Any:
         """
         向 vLLM /chat/completions 發送請求。
         `timeout` 預設 60 秒；`max_tokens` 較大或請求內容複雜（例如多模態圖片描述）時，
         生成時間可能遠超過 60 秒，呼叫端應視情況傳入較長的 timeout，避免被誤判為連線失敗。
+        `model` 為前端選定的模型，未指定時使用 settings.VLLM_MODEL（啟動時自動偵測的預設值）。
         """
+        model = model or settings.VLLM_MODEL
         url = f"{settings.VLLM_BASE_URL.rstrip('/')}/chat/completions"
         headers = {"Content-Type": "application/json"}
         max_tokens = await cls._clamp_max_tokens(messages, max_tokens)
         payload = {
-            "model": settings.VLLM_MODEL,
+            "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -232,7 +235,7 @@ class LLMService:
                                 error_body = (await response.aread()).decode("utf-8", errors="ignore")
                                 logger.error(
                                     f"vLLM chat_completion 回應 HTTP {response.status_code}，"
-                                    f"model={settings.VLLM_MODEL} max_tokens={max_tokens} "
+                                    f"model={model} max_tokens={max_tokens} "
                                     f"messages_chars={sum(len(str(m.get('content', ''))) for m in messages)}，"
                                     f"回應內容: {error_body[:1000]}"
                                 )
@@ -255,7 +258,7 @@ class LLMService:
                     if response.status_code >= 400:
                         logger.error(
                             f"vLLM chat_completion 回應 HTTP {response.status_code}，"
-                            f"model={settings.VLLM_MODEL} max_tokens={max_tokens}，"
+                            f"model={model} max_tokens={max_tokens}，"
                             f"回應內容: {response.text[:1000]}"
                         )
                     response.raise_for_status()

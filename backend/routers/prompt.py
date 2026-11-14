@@ -123,7 +123,8 @@ async def ab_test_prompt(req: ABTestRequest):
                     messages=messages,
                     temperature=float(temperature),
                     max_tokens=int(max_tokens),
-                    stream=True
+                    stream=True,
+                    model=params.get("model")
                 )
                 async for raw_chunk in vllm_stream:
                     try:

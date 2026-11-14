@@ -19,6 +19,7 @@ from models.knowledge_base import KnowledgeBase
 from models.tag import Tag
 from models.class_option import ClassOption
 from utils.security import get_current_user
+from config import settings
 
 logger = logging.getLogger("airag.embedding_router")
 router = APIRouter(prefix="/embedding", tags=["Embedding"], dependencies=[Depends(get_current_user)])
@@ -499,7 +500,8 @@ async def vectorize_chunks(request: VectorizeRequest):
         return VectorizeResponse(
             knowledge_base_id=str(kb.id),
             inserted_count=inserted,
-            embedding_model=request.embedding_model,
+            # 回傳實際使用的模型（request.embedding_model 只是前端帶入的標示，不影響向量化）
+            embedding_model=settings.EMBEDDING_MODEL,
             elapsed_ms=elapsed
         )
     except Exception as e:

@@ -1,5 +1,23 @@
 <!-- 前端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-11-14 LLM 模型下拉改為自動偵測 Ollama 模型
+
+功能全貌見 [NewFeatures.md](NewFeatures.md) 同日條目。
+
+### 變更內容
+- `frontend/src/services/modelService.js`（新增）：`list()` 呼叫 `GET /api/models/list`。
+- `frontend/src/components/params/LlmParamsPanel.vue`：下拉改為動態列出對話模型，含載入中／錯誤狀態與「重新偵測」按鈕；未選或原選擇消失時套用後端預設模型。
+- `frontend/src/stores/paramsStore.js`：`model` 預設改為空字串（由後端決定預設）。
+- `frontend/src/views/PromptTestView.vue`：A/B 測試兩個 variant 的 `params` 帶入 `model`。
+- `frontend/src/views/EvaluationView.vue`：`params.model` 改用 `paramsStore.model`（原寫死）。
+- `frontend/src/components/common/AppHeader.vue`：連線狀態文字由 `vLLM / llama.cpp connected` 改為 `Backend connected`（該燈號實際只檢查後端 `/health`）。
+
+### 驗證
+- `npm run build` 通過；畫面請使用者手動驗證。
+
+---
+
+
 ## 2026-08-20 圖片檔案稽核頁面：自訂每頁筆數與一鍵清除全部孤兒檔
 
 ### 背景

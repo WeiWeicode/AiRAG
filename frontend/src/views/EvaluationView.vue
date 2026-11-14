@@ -119,7 +119,7 @@ const startEvaluation = async (data) => {
       dataset_id: datasetId,
       knowledge_base_id: paramsStore.knowledgeBaseId,
       params: {
-        model: 'Qwen3.6-35B-A3B-FP8',
+        model: paramsStore.model || undefined,
         temperature: 0.3,
         top_k: 5,
         max_tokens: maxTokensVal,

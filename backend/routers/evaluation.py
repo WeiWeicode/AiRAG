@@ -15,6 +15,7 @@ from services.llm_service import LLMService
 from services.rerank_service import RerankService
 from services.feedback_boost_service import FeedbackBoostService
 from utils.security import get_current_user
+from config import settings
 
 logger = logging.getLogger("airag.evaluation_router")
 router = APIRouter(prefix="/evaluation", tags=["Evaluation"], dependencies=[Depends(get_current_user)])
@@ -358,7 +359,8 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
                     messages=messages,
                     temperature=0.3,
                     max_tokens=max_tokens,
-                    stream=False
+                    stream=False,
+                    model=payload.params.model if payload.params else None
                 )
                 generated_answer = generated_answer.strip()
             except Exception as ge:
@@ -455,7 +457,7 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
             dataset_id=dataset.id,
             dataset_name=dataset.name,
             knowledge_base_id=str(kb.id) if kb else None,
-            model=payload.params.model if (payload.params and payload.params.model) else "Qwen3.6-35B-A3B-FP8",
+            model=payload.params.model if (payload.params and payload.params.model) else settings.VLLM_MODEL,
             params=EvalParams(
                 temperature=payload.params.temperature if (payload.params and payload.params.temperature is not None) else 0.3,
                 top_k=top_k,
