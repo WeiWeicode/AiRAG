@@ -1,5 +1,40 @@
 <!-- 後端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-11-14 對話請求新增 enable_thinking 參數
+
+功能全貌見 [NewFeatures.md](NewFeatures.md) 同日「思考模式」條目。
+
+### 變更內容
+- `backend/routers/rag.py`：`ChatParams` 新增 `enable_thinking: Optional[bool]`，為 `False` 時最終答案生成帶 `reasoning_effort="none"`（外部 API `/api/external/chat` 共用同一套 schema）。
+- `backend/routers/prompt.py`：A/B 測試讀取 `variant.params.enable_thinking`。
+- `backend/routers/evaluation.py`：`EvalParamsInput` 新增 `enable_thinking`，套用於答案生成（評估裁判不受影響）。
+
+---
+
+## 2026-11-14 本機 Ollama 開啟 3 路並行、圖片描述並行數調為 2
+
+### 背景
+先前實測 Ollama 以預設單一 slot 運行，並行請求只會排隊（1/2/4 個請求總耗時 3.5s / 7.1s / 14.3s），
+調高 `IMAGE_CAPTION_CONCURRENCY` 沒有效果。改為讓 Ollama 可同時處理 3 個對話，後端圖片描述最多 2 張並行，
+保留 1 路給同時進行的 RAG 對話。
+
+### 變更內容（皆為本機設定，不在版控內）
+- `~/Library/LaunchAgents/com.ollama.serve.plist`：`EnvironmentVariables` 新增 `OLLAMA_NUM_PARALLEL=3`
+  （原檔備份為 `com.ollama.serve.plist.bak-20261114`），以 `launchctl bootout` / `bootstrap` 重新載入。
+- `backend/.env`：新增 `IMAGE_CAPTION_CONCURRENCY=2`（backend 與 worker 共用）。`config.py` 預設值仍為 1。
+
+### 驗證
+- 新的 `ollama serve` 行程環境含 `OLLAMA_NUM_PARALLEL=3`；載入模型後 llama-server 參數為 `-c 786432 -np 3`（每路 262144）。
+- 從容器對 `qwen3.6:35b` 並行測試（每請求 400 tokens）：1/2/3 個請求總耗時 3.6s / 4.8s / 6.3s，確認真正並行。
+- 模型佔用 19.9GB，系統可用記憶體 64%。
+- backend 與 worker 讀到 `IMAGE_CAPTION_CONCURRENCY=2`。
+
+### 已知限制
+- Ollama.app 本身也會啟動一個 `ollama serve`（監聽 `*:11434` IPv6），未套用此設定；
+  目前 127.0.0.1 與 Docker 的請求都由 LaunchAgent 的行程處理。
+
+---
+
 ## 2026-11-14 預設推論服務改為 Ollama 並支援請求層級指定對話模型
 
 功能全貌見 [NewFeatures.md](NewFeatures.md) 同日條目，本條僅記後端檔案異動。

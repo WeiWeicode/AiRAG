@@ -120,6 +120,7 @@ const startEvaluation = async (data) => {
       knowledge_base_id: paramsStore.knowledgeBaseId,
       params: {
         model: paramsStore.model || undefined,
+        enable_thinking: paramsStore.enableThinking,
         temperature: 0.3,
         top_k: 5,
         max_tokens: maxTokensVal,

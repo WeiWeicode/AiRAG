@@ -119,6 +119,7 @@ export const useChatStore = defineStore('chat', {
         selected_db_profile_id: selectedDbProfileId,
         params: {
           model: paramsStore.model,
+          enable_thinking: paramsStore.enableThinking,
           temperature: paramsStore.temperature,
           max_tokens: paramsStore.maxTokens,
           top_k: paramsStore.topK,

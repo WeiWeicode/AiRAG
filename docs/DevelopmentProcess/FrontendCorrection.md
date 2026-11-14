@@ -1,5 +1,17 @@
 <!-- 前端修正紀錄(最新紀錄放最前面) -->
 
+## 2026-11-14 生成模型設定新增思考模式開關
+
+### 變更內容
+- `frontend/src/components/params/LlmParamsPanel.vue`：模型下拉下方新增 switch，依選定模型 `capabilities` 決定是否可用，下方顯示目前模式說明。
+- `frontend/src/stores/paramsStore.js`：新增 `enableThinking`（預設 `true`）。
+- `frontend/src/stores/chatStore.js`、`externalChatStore.js`、`views/PromptTestView.vue`、`views/EvaluationView.vue`：請求參數帶入 `enable_thinking`。
+
+### 驗證
+- `npm run build` 通過；畫面請使用者手動驗證。
+
+---
+
 ## 2026-11-14 LLM 模型下拉改為自動偵測 Ollama 模型
 
 功能全貌見 [NewFeatures.md](NewFeatures.md) 同日條目。

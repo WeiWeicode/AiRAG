@@ -2,6 +2,7 @@ import logging
 from typing import Dict, List, Any
 from fastembed import SparseTextEmbedding
 from qdrant_client import models
+from config import settings
 
 logger = logging.getLogger("airag.sparse_embedding")
 
@@ -43,7 +44,7 @@ class SparseEmbeddingService:
         """
         try:
             model = cls.get_model()
-            embeddings = list(model.embed(texts, batch_size=16))
+            embeddings = list(model.embed(texts, batch_size=settings.SPARSE_EMBEDDING_BATCH_SIZE))
             
             return [
                 models.SparseVector(

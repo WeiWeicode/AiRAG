@@ -26,6 +26,7 @@ export function buildExternalChatPayload(paramsStore, { question, chatHistory = 
     selected_db_profile_id: selectedDbProfileId,
     params: {
       model: paramsStore.model,
+      enable_thinking: paramsStore.enableThinking,
       temperature: paramsStore.temperature,
       max_tokens: paramsStore.maxTokens,
       top_k: paramsStore.topK,

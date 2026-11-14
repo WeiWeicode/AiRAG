@@ -32,6 +32,7 @@ class DatasetCreateInput(BaseModel):
 
 class EvalParamsInput(BaseModel):
     model: Optional[str] = None
+    enable_thinking: Optional[bool] = None
     temperature: Optional[float] = None
     top_k: Optional[int] = None
     score_threshold: Optional[float] = None
@@ -360,7 +361,8 @@ async def run_evaluation(payload: EvalRunRequest, current_user: str = Depends(ge
                     temperature=0.3,
                     max_tokens=max_tokens,
                     stream=False,
-                    model=payload.params.model if payload.params else None
+                    model=payload.params.model if payload.params else None,
+                    reasoning_effort="none" if (payload.params and payload.params.enable_thinking is False) else None
                 )
                 generated_answer = generated_answer.strip()
             except Exception as ge:

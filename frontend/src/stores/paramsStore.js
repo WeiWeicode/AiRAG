@@ -38,6 +38,8 @@ export const useParamsStore = defineStore('params', {
     // Generation parameters
     // 空字串 = 由後端採用預設模型；LlmParamsPanel 載入 Ollama 模型清單後會填入後端預設值
     model: '',
+    // 思考模式：關閉時後端送 reasoning_effort="none"，模型直接回答
+    enableThinking: true,
     temperature: 0.3,
     maxTokens: 22768,
 

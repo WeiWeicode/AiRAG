@@ -1,5 +1,55 @@
 <!-- BUG修正(最新紀錄放最前面) -->
 
+## 2026-11-14 含大量圖片的 PDF 批次上傳逾時回 504 修正
+
+### 背景
+批次寫入一份 21MB PDF（勾選「自動擷取內嵌圖片並產生描述」），600 秒後前端顯示 `Request failed with status code 504`。
+`POST /api/embedding/upload` 會在同一個請求內同步逐張產生圖片描述：該 PDF 抽出 89 張、過濾後送描述 52 張，
+每張約 15–25 秒，合計約 18 分鐘，超過 nginx `proxy_read_timeout 600s` 而被斷線；後端仍繼續跑完，但結果已無人接收。
+
+### 原因分析
+- 調高 `IMAGE_CAPTION_CONCURRENCY` 無效：實測 Ollama 對 `qwen3.6:35b` 並行 1/2/4 個請求的總耗時為 3.5s / 7.1s / 14.3s，
+  請求在 Ollama 端排隊，單機吞吐固定。
+- 實際耗時主因是思考模型的「思考」：同一張圖預設 15.0s、1484 tokens（思考 1975 字、描述 536 字）；
+  送 `reasoning_effort: "none"` 為 4.1s、433 tokens，描述 787 字，內容更完整。
+
+### 變更內容
+- `backend/config.py`：新增 `IMAGE_CAPTION_REASONING_EFFORT`（預設 `"none"`，空字串 = 不送此參數）。
+- `backend/services/llm_service.py`：`chat_completion()` 新增 `reasoning_effort` 參數；`describe_image()` 帶入上述設定。
+- `nginx.conf`：`/api` 的 `proxy_read_timeout` 由 600s 改為 3600s，為更大的文件保留餘裕。
+
+### 驗證
+- 於 `airag-backend` 容器內以 `LLMService.describe_image()` 描述同一張圖：3.3s、未截斷、520 字，內容正確。
+- `nginx -T` 確認 `proxy_read_timeout 3600s` 已生效。
+- 以此速度估算 52 張約 3–4 分鐘；前端重新批次上傳該 PDF 請使用者手動驗證。
+
+### 已知限制
+- 上傳仍為同步請求，期間前端只能等待；被中斷的上傳在後端仍會跑完並寫入圖片檔，可能留下孤兒圖片（可用「圖片檔案稽核」清除）。
+
+---
+
+## 2026-11-14 文件向量化時 SPLADE 稀疏向量批次過大導致後端 OOM-kill 修正
+
+### 背景
+在本機（Docker Desktop VM 僅 7.7GB，且與其他專案容器共用）上傳約 6.8 萬字的 PDF 執行「向量化與寫入」，
+前端跳出「向量化與寫入失敗，請檢查後端服務與資料庫連線」。`docker events` 顯示 `airag-backend` 發生 `oom` 後以 exit 137 被重啟，
+日誌停在 fastembed SPLADE 模型初始化完成之後，無 Python traceback。
+原因：`SparseEmbeddingService.get_sparse_vectors_batch()` 寫死 `batch_size=16`。SPLADE 輸出為 batch × 512 token × 30522 詞彙的
+float32 logits（16 段約 1GB），後處理（relu/log/mask/max）還會複製數份，峰值遠超過容器剩餘可用記憶體。
+公司地端主機記憶體充裕，因此先前未曾觸發。
+
+### 變更內容
+- `backend/config.py`：新增 `SPARSE_EMBEDDING_BATCH_SIZE`（預設 1）。
+- `backend/services/sparse_embedding_service.py`：`get_sparse_vectors_batch()` 改用上述設定取代寫死的 16。
+
+### 驗證
+- 以獨立一次性容器（`-m 6g`）量測 32 段長中文：batch=16 被 OOM-kill；batch=4 峰值 2.3GB / 21.1s；batch=2 峰值 1.6GB / 19.4s；
+  batch=1 峰值 1.3GB / 19.0s（模型載入本身約 1.0GB）。批次化在 CPU 上沒有加速效果，故預設 1。
+- 修正後於 `airag-backend` 容器內對 60 段長文字呼叫 `get_sparse_vectors_batch()`：60 段全數產生非空稀疏向量，峰值 1.15GB，容器未重啟。
+- 前端重新上傳該 PDF 的完整流程請使用者手動驗證。
+
+---
+
 ## 2026-08-18 PDF 的圖片描述永遠進不了文字脈絡；非通用格式圖片的 MIME 一律無效
 
 ### 背景

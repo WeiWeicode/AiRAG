@@ -196,7 +196,8 @@ class LLMService:
         stream: bool = False,
         return_finish_reason: bool = False,
         timeout: float = 60.0,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None
     ) -> Any:
         """
         向 vLLM /chat/completions 發送請求。
@@ -220,6 +221,9 @@ class LLMService:
             payload["repetition_penalty"] = repetition_penalty
         if frequency_penalty is not None:
             payload["frequency_penalty"] = frequency_penalty
+        # 思考模型的推理強度（OpenAI 相容參數，Ollama 支援 "none" 關閉思考）
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
         
         try:
             client = httpx.AsyncClient(timeout=timeout)
@@ -439,7 +443,8 @@ class LLMService:
                 messages, temperature=0.3, max_tokens=settings.IMAGE_CAPTION_MAX_TOKENS,
                 timeout=300.0, stream=True,
                 repetition_penalty=settings.DEFAULT_REPETITION_PENALTY,
-                frequency_penalty=settings.DEFAULT_FREQUENCY_PENALTY
+                frequency_penalty=settings.DEFAULT_FREQUENCY_PENALTY,
+                reasoning_effort=settings.IMAGE_CAPTION_REASONING_EFFORT or None
             )
             async for raw_chunk in stream:
                 try:

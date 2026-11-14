@@ -1,5 +1,20 @@
 <!-- 新功能紀錄(最新紀錄放最前面) -->
 
+## 2026-11-14 生成模型設定新增「思考模式」開關
+
+### 功能內容
+- 前端「生成模型設定」的模型下拉下方新增思考模式開關（預設開啟）。關閉時後端送 `reasoning_effort: "none"`，模型直接回答；
+  開啟時不送此參數，維持模型預設的先推理再回答。
+- 選定模型的 Ollama `capabilities` 不含 `thinking` 時開關停用並提示「此模型不支援思考模式」。
+- 套用範圍與模型選擇相同：RAG 對話、外部 API 測試、Prompt A/B 測試、評估的答案生成。
+
+### 驗證
+- `POST /api/prompt/ab-test`（`qwen3.6:35b`）：`enable_thinking=true` 回 501 個 reasoning 事件、5.4s；
+  `enable_thinking=false` 回 0 個 reasoning 事件、0.34s。
+- `npm run build` 通過；畫面與 RAG 對話頁實際切換請使用者手動驗證。
+
+---
+
 ## 2026-11-14 自動偵測本機 Ollama 模型，前端可切換對話生成模型
 
 ### 背景

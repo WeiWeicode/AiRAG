@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useParamsStore } from '../../stores/paramsStore'
 import modelService from '../../services/modelService'
 
@@ -34,6 +34,12 @@ const modelLabel = (m) => {
   const notes = [size, m.name === defaultChatModel.value ? '預設' : ''].filter(Boolean)
   return notes.length ? `${m.name} (${notes.join('・')})` : m.name
 }
+
+// 選定模型是否支援思考模式（依 Ollama capabilities；清單尚未載入時不限制）
+const selectedSupportsThinking = computed(() => {
+  const selected = chatModels.value.find(m => m.name === paramsStore.model)
+  return !selected || selected.capabilities.includes('thinking')
+})
 
 onMounted(loadModels)
 </script>
@@ -70,6 +76,34 @@ onMounted(loadModels)
         </option>
       </select>
       <p v-if="modelError" class="text-xs text-[#ef4444]">{{ modelError }}</p>
+    </div>
+
+    <!-- Thinking Mode Toggle -->
+    <div class="flex flex-col gap-1.5">
+      <div class="flex justify-between items-center">
+        <label class="text-xs font-semibold text-[#9ca3af] uppercase tracking-wider">思考模式 (Thinking)</label>
+        <button
+          type="button"
+          role="switch"
+          :aria-checked="paramsStore.enableThinking && selectedSupportsThinking"
+          :disabled="!selectedSupportsThinking"
+          @click="paramsStore.enableThinking = !paramsStore.enableThinking"
+          class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          :class="paramsStore.enableThinking && selectedSupportsThinking ? 'bg-[#8b5cf6]' : 'bg-white/15'"
+        >
+          <span
+            class="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform"
+            :class="paramsStore.enableThinking && selectedSupportsThinking ? 'translate-x-[18px]' : 'translate-x-0.5'"
+          ></span>
+        </button>
+      </div>
+      <p class="text-xs text-[#6b7280]">
+        {{ !selectedSupportsThinking
+          ? '此模型不支援思考模式'
+          : paramsStore.enableThinking
+            ? '先推理再回答，較準確但較慢'
+            : '直接回答，速度較快' }}
+      </p>
     </div>
 
     <!-- Temperature Slider -->

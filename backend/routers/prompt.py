@@ -124,7 +124,8 @@ async def ab_test_prompt(req: ABTestRequest):
                     temperature=float(temperature),
                     max_tokens=int(max_tokens),
                     stream=True,
-                    model=params.get("model")
+                    model=params.get("model"),
+                    reasoning_effort="none" if params.get("enable_thinking") is False else None
                 )
                 async for raw_chunk in vllm_stream:
                     try:

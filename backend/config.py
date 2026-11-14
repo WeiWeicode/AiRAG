@@ -44,6 +44,10 @@ class Settings:
     QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
     QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))
     QDRANT_API_KEY: Optional[str] = os.getenv("QDRANT_API_KEY", None)
+    # SPLADE 稀疏向量每批段落數。SPLADE 輸出為 batch × 512 token × 30522 詞彙的 float32 logits，
+    # 後處理還會複製數份：實測 batch=16 在 6GB 上限內被 OOM-kill，batch=4 峰值 2.3GB，
+    # batch=1 峰值 1.3GB 且總耗時相同（CPU 運算瓶頸，批次化無加速效果），故預設 1
+    SPARSE_EMBEDDING_BATCH_SIZE: int = int(os.getenv("SPARSE_EMBEDDING_BATCH_SIZE", "1"))
 
     # MongoDB
     MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
@@ -119,6 +123,10 @@ class Settings:
     # 單張圖片描述的生成長度上限。描述僅供語意檢索使用，且最終仍會被切碎成多個 chunk，
     # 過大的上限只會讓單張圖片的生成時間不可預期（含大量圖片的 PDF 因此整份同步逾時）
     IMAGE_CAPTION_MAX_TOKENS: int = int(os.getenv("IMAGE_CAPTION_MAX_TOKENS", "4096"))
+    # 圖片描述送出的 reasoning_effort（留空 = 不送，交由模型預設）。思考模型描述圖片時大部分時間花在思考：
+    # 實測 Ollama qwen3.6:35b 同一張圖預設 15.0s / 1484 tokens，設 "none" 為 4.1s / 433 tokens 且描述更完整。
+    # 改接不支援此參數的服務時請設為空字串
+    IMAGE_CAPTION_REASONING_EFFORT: str = os.getenv("IMAGE_CAPTION_REASONING_EFFORT", "none")
     # PDF 內嵌圖片的過濾門檻：小於此尺寸（像素）或位元組數者視為 logo／裝飾線／圖示，
     # 不送多模態模型描述，避免一份文件的圖片數量被版面元素灌爆
     IMAGE_MIN_WIDTH: int = int(os.getenv("IMAGE_MIN_WIDTH", "100"))

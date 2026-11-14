@@ -29,6 +29,8 @@ class ChatHistoryItem(BaseModel):
 
 class ChatParams(BaseModel):
     model: Optional[str] = None
+    # 是否啟用思考模式；False 時送 reasoning_effort="none"，None/True 維持模型預設
+    enable_thinking: Optional[bool] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     repetition_penalty: Optional[float] = None
@@ -249,10 +251,13 @@ async def rag_chat_stream(request: ChatRequest):
     custom_system_prompt = None
     # 前端選定的對話生成模型，None 時由 LLMService 採用預設（settings.VLLM_MODEL）
     chat_model = None
+    reasoning_effort = None
 
     if request.params:
         if request.params.model:
             chat_model = request.params.model
+        if request.params.enable_thinking is False:
+            reasoning_effort = "none"
         if request.params.temperature is not None:
             temperature = request.params.temperature
         if request.params.top_k is not None:
@@ -849,7 +854,8 @@ async def rag_chat_stream(request: ChatRequest):
             repetition_penalty=repetition_penalty,
             frequency_penalty=frequency_penalty,
             stream=True,
-            model=chat_model
+            model=chat_model,
+            reasoning_effort=reasoning_effort
         )
 
         # 重複輸出偵測：即使 repetition_penalty 未能完全避免，也要能主動中斷無限迴圈
